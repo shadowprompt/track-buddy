@@ -83,18 +83,77 @@ def fetch_roads(
     缓存带 bbox 校验：bbox 变了必须重新拉，否则会把「查错区域」的结果
     一直用下去（这个坑踩过——早期 bbox 少算了一个角，缓存里存的就是
     偏移 4.4 公里的路网，之后每次识别都错）。
+
+    缓存格式支持**多块**存储：``{"blocks": [{"bbox": [...], "roads": [...]}]}``。
+    为什么需要多块：Overpass 拉一次路网要 20-40 秒（实测浦东一带），
+    而每次识别的 bbox 都略有不同——单块缓存会导致每次都重新拉。
+    多块缓存让「bbox 已被某个块完全包含」时直接复用。
+
+    **复用条件是「完全包含」而非「重叠」**：重叠时复用会把区域外的
+    道路混进结果。这正是早期踩过的坑——缓存里存着偏移 4.4 公里的路网，
+    之后每次识别都错在错的地方，且因为「有数据」而看不出异常。
     """
     key = [round(v, 4) for v in bbox]
-    if cache_path and os.path.exists(cache_path):
-        try:
-            with open(cache_path, encoding="utf-8") as f:
-                raw = json.load(f)
-            if raw.get("bbox") == key:
-                return [(nm, [(p[0], p[1]) for p in pts])
-                        for nm, pts in raw.get("roads", [])]
-        except Exception:
-            pass
+    blocks = _load_cache_blocks(cache_path)
 
+    # 找完全包含目标 bbox 的缓存块
+    for blk in blocks:
+        bb = blk.get("bbox")
+        if bb and _bbox_contains(bb, key):
+            return [(nm, [(p[0], p[1]) for p in pts])
+                    for nm, pts in blk.get("roads", [])]
+
+    roads = _fetch_roads_missing(bbox, timeout)
+    _save_cache_block(cache_path, key, roads)
+    return roads
+
+
+def _load_cache_blocks(cache_path: str | None) -> list[dict]:
+    """读缓存，兼容单块与多块两种格式。"""
+    if not cache_path or not os.path.exists(cache_path):
+        return []
+    try:
+        with open(cache_path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    if "blocks" in raw:
+        return [b for b in raw.get("blocks", []) if isinstance(b, dict)]
+    # 旧格式：{"bbox": [...], "roads": [...]}
+    if "bbox" in raw:
+        return [{"bbox": raw["bbox"], "roads": raw.get("roads", [])}]
+    return []
+
+
+def _save_cache_block(
+    cache_path: str | None, bbox: list[float], roads: list
+) -> None:
+    """把一次查询结果并入缓存（保留其他块）。"""
+    if not cache_path:
+        return
+    blocks = _load_cache_blocks(cache_path)
+    blocks = [b for b in blocks if b.get("bbox") != bbox]
+    blocks.append({"bbox": bbox, "roads": [[nm, pts] for nm, pts in roads]})
+    # 只保留最近 8 块，避免缓存无限膨胀
+    blocks = blocks[-8:]
+    try:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump({"blocks": blocks}, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _bbox_contains(outer: list[float], inner: list[float]) -> bool:
+    """outer 是否完全包含 inner。"""
+    return (outer[0] <= inner[0] and outer[1] <= inner[1]
+            and outer[2] >= inner[2] and outer[3] >= inner[3])
+
+
+def _fetch_roads_missing(
+    bbox: tuple[float, float, float, float], timeout: float
+) -> list[tuple[str, list[tuple[float, float]]]]:
+    """实际走网络拉取指定 bbox 的道路。"""
     roads: list[tuple[str, list[tuple[float, float]]]] = []
     errors = []
     try:
@@ -127,16 +186,6 @@ def fetch_roads(
 
     if not roads:
         raise RuntimeError("路网获取失败：" + "，".join(errors))
-
-    if cache_path:
-        try:
-            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump({"bbox": key,
-                           "roads": [[nm, pts] for nm, pts in roads]},
-                          f, ensure_ascii=False)
-        except OSError:
-            pass
     return roads
 
 

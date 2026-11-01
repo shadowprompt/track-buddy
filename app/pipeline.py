@@ -315,6 +315,8 @@ class RidePipeline:
 
         matched = 0
         matched_names: set[str] = set()
+        # 未命中词典/在线服务的地名，交给冷启动批量处理
+        pending: list[Anchor] = []
         for a in targets:
             # 够用即停：RANSAC 至少要 3 个内点，拿到 5 个已足够稳定。
             # 不提前停的话，冷启动要逐个查 14 个地名，而 OSM 检索有
@@ -325,8 +327,12 @@ class RidePipeline:
                     "其余候选未继续查询"
                 )
                 break
-            results = self.geocoder.geocode(a.name, city=city, allow_online=allow_online)
+            results = self.geocoder.geocode(
+                a.name, city=city, allow_online=allow_online,
+                allow_cold_start=False,
+            )
             if not results:
+                pending.append(a)
                 continue
             matched += 1
             matched_names.add(a.name)
@@ -344,6 +350,19 @@ class RidePipeline:
                         match_quality=r.quality,
                     )
                 )
+
+        # --- 冷启动：批量检索未命中的地名 ---
+        #
+        # 必须**批量**而不是逐个：单个地名无法自证位置——
+        # 「花园2期」能匹配到朗香/星宇/尼德兰/三湘盛世四个不同小区的「2期」。
+        # 但多个独立检索的地名若彼此都落在 1 公里内，那片区域就是真的，
+        # 再用它过滤其余候选。实测浦东一例正是靠这个定位成功的。
+        if pending and allow_online and self.cfg.allow_online and city:
+            cold_pairs = self._cold_start_pairs(pending, city, warnings)
+            pairs.extend(cold_pairs)
+            matched_names.update({p.name for p in cold_pairs})
+            matched += len({p.name for p in cold_pairs})
+
         if not pairs:
             warnings.append(
                 "所有锚点均未匹配到坐标：可能是冷启动城市，或未配置地图服务密钥"
@@ -351,6 +370,45 @@ class RidePipeline:
             )
         else:
             warnings.append(f"{matched}/{len(targets)} 个 POI 锚点匹配到坐标")
+        return pairs
+
+    def _cold_start_pairs(
+        self, anchors: list[Anchor], city: str, warnings: list[str]
+    ) -> list[AnchorPair]:
+        """用 OSM 冷启动为未命中的锚点找坐标。"""
+        try:
+            from .coldstart import get_cold_start
+
+            cold = get_cold_start(str(self.cfg.road_cache_dir / "coldstart.json"))
+            found = cold.lookup_many([a.name for a in anchors], city)
+        except Exception as exc:  # noqa: BLE001 — 冷启动失败不应影响主流程
+            warnings.append(f"冷启动地理编码失败：{type(exc).__name__}")
+            return []
+
+        if not found:
+            warnings.append(
+                f"冷启动未找到可用坐标（{len(anchors)} 个地名在 OSM 中无同名或近名要素）。"
+                "截图里的地名可能尚未被 OSM 收录——可在地图上点选纠正，或配置 "
+                "AMAP_KEY / TMAP_KEY 使用与美团底图同源的在线地理编码"
+            )
+            return []
+
+        pairs: list[AnchorPair] = []
+        for a in anchors:
+            places = found.get(a.name) or []
+            for p in places[:3]:
+                pairs.append(
+                    AnchorPair(
+                        name=a.name,
+                        px=a.px,
+                        py=a.py,
+                        weight=a.weight,
+                        kind=a.kind,
+                        lon=p.lon,
+                        lat=p.lat,
+                        match_quality=0.6 * p.score,
+                    )
+                )
         return pairs
 
     def _road_refine(self, reg: Registration, track: TrackResult):

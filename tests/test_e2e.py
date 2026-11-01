@@ -195,14 +195,20 @@ def main() -> int:
         from scipy.spatial import cKDTree
 
         g = res.geojson_gcj02["features"][0]["geometry"]["coordinates"]
-        # 复用流水线刚写好的路网缓存（bbox 与流水线一致，避免重复拉取）
+        # 复用流水线刚写好的路网缓存（避免重复拉取）。
+        # 缓存现在是多块格式 {"blocks": [{bbox, roads}]}，但要兼容旧的单块格式
+        # {"bbox", roads}——两者的 roads 都是 [[路名, 点串], ...]。
         _cache = CONFIG.road_cache_dir / "roads.json"
+        _roads: list = []
         if _cache.exists():
-            with open(_cache, encoding="utf-8") as _f:
-                _raw = json.load(_f)
-            _roads = [(nm, [(p[0], p[1]) for p in pts])
-                      for nm, pts in _raw.get("roads", [])]
-        else:
+            from app.roadfit import _load_cache_blocks
+
+            _blocks = _load_cache_blocks(str(_cache))
+            if _blocks:
+                _roads = [(nm, [(p[0], p[1]) for p in pts])
+                          for blk in _blocks
+                          for nm, pts in blk.get("roads", [])]
+        if not _roads:
             _roads = fetch_roads((121.3300, 31.1900, 121.4000, 31.2450), timeout=90)
         _net = RoadNetwork(_roads)
         _pts = np.array([lonlat_to_mercator(lo, la) for lo, la in g])
@@ -397,6 +403,54 @@ def main() -> int:
     check(200 < d_east < 700 and -400 < d_north < -100,
           "GCJ-02→WGS-84 偏移量与已知基准一致（上海约东 450m/南 200m）",
           f"东 {d_east:.0f} m, 北 {d_north:.0f} m")
+
+    print("\n[15] 冷启动：名称相似度与多锚点互证（回归项）")
+    # 早期冷启动要求「完全同名」，浦东那张截图 6 个 POI 全部 0 命中：
+    #   OCR「进才实验中学」 → OSM「上海市进才实验中学」（前缀被截）
+    #   OCR「水清木华」     → OSM「水清木华公寓」（后缀被截）
+    #   OCR「花园2期」     → OSM「朗香花园2期」「星宇花园2期」…（多个候选）
+    from app.coldstart import name_score, ColdStartGeocoder, _haversine_m
+
+    check(name_score("进才实验中学", "上海市进才实验中学") > 0.85,
+          "OCR 名是 OSM 名的子串时得高分",
+          f"{name_score('进才实验中学', '上海市进才实验中学'):.3f}")
+    check(name_score("水清木华", "水清木华公寓") > 0.85,
+          "OCR 名缺后缀时同样得高分",
+          f"{name_score('水清木华', '水清木华公寓'):.3f}")
+    check(name_score("乡土田园区", "何文田上海水配水庫") < 0.3,
+          "完全无关的地名得低分",
+          f"{name_score('乡土田园区', '何文田上海水配水庫'):.3f}")
+
+    # 互证：两个真实地名互相印证，异地同名地点应被排除
+    from app.coldstart import OsmPlace
+    cs = ColdStartGeocoder.__new__(ColdStartGeocoder)  # 不联网，只测纯逻辑
+    good_a = OsmPlace(name="上海市进才实验中学", lon=121.5567, lat=31.2255, kind="poi")
+    good_b = OsmPlace(name="水清木华公寓", lon=121.5610, lat=31.2248, kind="poi")
+    wrong = OsmPlace(name="水清木华", lon=119.9641, lat=31.8040, kind="poi")  # 安徽
+    cands = {
+        "进才实验中学": [good_a],
+        "水清木华": [good_b, wrong],
+        "花园2期": [
+            OsmPlace(name="星宇花园2期", lon=121.3944, lat=31.2811, kind="poi"),
+            OsmPlace(name="朗香花园2期", lon=121.3779, lat=31.3213, kind="poi"),
+        ],
+    }
+    center = cs._find_region_center(cands)
+    check(center is not None, "互证能定位出区域中心")
+    if center:
+        clon, clat, names = center
+        # 互证的语义是「簇心周围有这些不同地名的候选」，
+        # 因此只要 ≥2 个不同地名成立，就说明它们互相印证了。
+        check(len(names) >= 2, "至少两个不同地名互相印证",
+              f"簇心周边有 {sorted(names)}")
+        d_wrong = _haversine_m(clon, clat, wrong.lon, wrong.lat)
+        check(d_wrong > 1500, "异地同名地点被排除在区域外",
+              f"距簇心 {d_wrong/1000:.0f} km")
+        # 簇心应落在两个真锚点之间
+        d_a = _haversine_m(clon, clat, good_a.lon, good_a.lat)
+        d_b = _haversine_m(clon, clat, good_b.lon, good_b.lat)
+        check(d_a < 800 and d_b < 800,
+              "簇心紧邻两个真锚点", f"距两锚点 {d_a:.0f} m / {d_b:.0f} m")
 
     print("\n" + "=" * 66)
     ok = sum(1 for r in results if r[0])

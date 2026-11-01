@@ -334,7 +334,8 @@ class Geocoder:
     # ---------- 对外接口 ----------
 
     def geocode(
-        self, name: str, city: str = "", allow_online: bool = True
+        self, name: str, city: str = "", allow_online: bool = True,
+        allow_cold_start: bool = True,
     ) -> list[GeocodeResult]:
         """地理编码一个地名，返回候选列表（GCJ-02）。
 
@@ -352,8 +353,13 @@ class Geocoder:
 
         **追加（2026-11-01）**：词典未命中时走 OSM 冷启动检索。
         换区域（词典没覆盖的地方）时，此前是「0 个锚点 → 配准失败」，
-        而截图上其实印着「安龙小区」「长宁实验小学」这类真实地名，
-        OCR 已经读出来了，只是无处可查。冷启动让新区域也能识别。
+        而截图上其实印着「安龙小区」「进才实验中学」这类真实地名，
+        OCR 已经读出来了，只是无处可查。
+
+        但冷启动**必须批量调用**（见 ``app/coldstart.py``）：单个地名
+        无法自证位置，需要多个地名的候选互相印证才能锁定区域。
+        因此这里默认关闭（``allow_cold_start=False`` 由 pipeline 统一走
+        批量接口），保留此参数只为单点查询的兼容场景。
         """
         # 1) 用户确认过的坐标永远优先
         user = self.lexicon.lookup_by_source(name, city, ("user",))
@@ -384,8 +390,8 @@ class Geocoder:
             return local
 
         # 4) OSM 冷启动：词典与在线服务都没命中时的最后一道网。
-        #    仅在明确允许联网时使用（allow_online=False 表示纯离线模式）。
-        if allow_online and self.cfg.allow_online and city:
+        #    单点查询（无互证）精度有限，生产路径请走 pipeline 的批量接口。
+        if allow_cold_start and allow_online and self.cfg.allow_online and city:
             cold = self._cold_start(name, city)
             if cold:
                 return cold
