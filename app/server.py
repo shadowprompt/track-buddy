@@ -1,0 +1,199 @@
+"""FastAPI 服务：上传截图 → 返回 GeoJSON 轨迹。"""
+
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from .config import CONFIG, DATA_DIR, ROOT, load_dotenv
+from .cv_utils import imread_unicode
+from .pipeline import RidePipeline
+
+load_dotenv()
+
+app = FastAPI(
+    title="美团骑行截图轨迹识别",
+    description="从美团骑行截图反推 GPS 轨迹，输出 GeoJSON",
+    version="0.1.0",
+)
+
+_pipeline = RidePipeline(CONFIG)
+UPLOAD_DIR = DATA_DIR / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@app.get("/api/health")
+def health() -> dict[str, Any]:
+    """健康检查，同时报告当前可用的地理编码能力。"""
+    return {
+        "status": "ok",
+        "version": app.version,
+        "geocoding": {
+            "amap": bool(CONFIG.amap_key),
+            "tmap": bool(CONFIG.tmap_key),
+            "baidu": bool(CONFIG.baidu_key),
+            "tianditu": bool(CONFIG.tianditu_key),
+            "online_available": CONFIG.has_online_key,
+        },
+        "lexicon": _pipeline.lexicon.stats(),
+    }
+
+
+@app.post("/api/recognize")
+async def recognize(
+    file: UploadFile = File(...),
+    city: str = Form(""),
+    output_crs: str = Form("WGS-84"),
+    allow_online: bool = Form(True),
+) -> JSONResponse:
+    """上传截图，识别轨迹并返回 GeoJSON。"""
+    data = await file.read()
+    max_bytes = CONFIG.vision.max_upload_mb * 1024 * 1024
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"文件超过 {CONFIG.vision.max_upload_mb}MB 限制")
+    if not data:
+        raise HTTPException(status_code=400, detail="空文件")
+
+    # 保存原图，便于前端叠加显示与问题排查
+    ext = Path(file.filename or "shot.jpg").suffix.lower() or ".jpg"
+    if ext not in (".jpg", ".jpeg", ".png", ".webp"):
+        ext = ".jpg"
+    shot_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    shot_path = UPLOAD_DIR / f"{shot_id}{ext}"
+    shot_path.write_bytes(data)
+
+    try:
+        img = imread_unicode(shot_path)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=f"图片解析失败: {exc}") from exc
+
+    try:
+        result = _pipeline.run(
+            img,
+            city=city.strip(),
+            allow_online=allow_online,
+            output_crs=output_crs,
+        )
+    except Exception as exc:  # noqa: BLE001 — 兜底，避免单次请求打挂服务
+        raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc
+
+    payload: dict[str, Any] = {
+        "ok": result.confidence > 0 and result.track_points > 0,
+        "shot_id": shot_id,
+        "shot_url": f"/api/shots/{shot_id}{ext}",
+        "geojson": result.geojson,
+        "geojson_gcj02": result.geojson_gcj02,
+        "confidence": result.confidence,
+        "crs": result.crs,
+        "track_points": result.track_points,
+        "distance_m": result.distance_m,
+        "anchors_used": result.anchors_used,
+        "anchors_rejected": result.anchors_rejected,
+        "road_attribution": result.road_attribution,
+        "road_fit": result.road_fit,
+        "diagnostics": result.diagnostics,
+        "warnings": result.warnings,
+        "elapsed_ms": result.elapsed_ms,
+        "track_polyline_px": result.track_polyline_px,
+        "image_size": list(result.image_size),
+    }
+    return JSONResponse(payload)
+
+
+@app.get("/api/shots/{name}")
+def get_shot(name: str) -> FileResponse:
+    """回传原图，供前端叠加轨迹显示。"""
+    path = UPLOAD_DIR / name
+    if not path.exists() or path.parent != UPLOAD_DIR:
+        raise HTTPException(status_code=404, detail="图片不存在")
+    return FileResponse(path)
+
+
+@app.post("/api/feedback")
+async def feedback(payload: dict[str, Any]) -> dict[str, Any]:
+    """用户确认/纠正锚点。
+
+    这是「越用越准」的数据入口：每次纠正都会强化本地词典中
+    该地名对应的坐标，下次同区域识别时直接命中，精度更高。
+    """
+    name = str(payload.get("name", "")).strip()
+    lon = payload.get("lon")
+    lat = payload.get("lat")
+    if not name or lon is None or lat is None:
+        raise HTTPException(status_code=400, detail="缺少 name/lon/lat")
+
+    city = str(payload.get("city", "")).strip()
+    # 词典内部统一存 GCJ-02
+    if str(payload.get("crs", "GCJ-02")).upper().startswith("WGS"):
+        from .geo.coords import wgs84_to_gcj02
+
+        lon, lat = wgs84_to_gcj02(float(lon), float(lat))
+    _pipeline.lexicon.remember(
+        name, float(lon), float(lat), city=city, source="user", boost=2.0
+    )
+    return {"ok": True, "lexicon": _pipeline.lexicon.stats()}
+
+
+@app.get("/api/lexicon")
+def lexicon() -> dict[str, Any]:
+    """查看本地词典内容。"""
+    return {
+        "stats": _pipeline.lexicon.stats(),
+        "entries": _pipeline.lexicon._data,  # noqa: SLF001 — 只读展示
+    }
+
+
+@app.get("/api/lexicon/export")
+def lexicon_export() -> FileResponse:
+    """导出词典为 JSON 文件。"""
+    path = DATA_DIR / "lexicon.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="词典尚未建立")
+    return FileResponse(path, media_type="application/json", filename="lexicon.json")
+
+
+# --- 静态前端 ---
+WEB_DIR = ROOT / "web"
+if WEB_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
+
+
+@app.get("/")
+def index() -> FileResponse:
+    page = WEB_DIR / "index.html"
+    if not page.exists():
+        raise HTTPException(status_code=404, detail="前端页面缺失")
+    return FileResponse(page, media_type="text/html")
+
+
+def main() -> None:
+    """命令行入口：python -m app.server"""
+    import argparse
+
+    import uvicorn
+
+    p = argparse.ArgumentParser(description="美团骑行截图轨迹识别服务")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--reload", action="store_true")
+    args = p.parse_args()
+
+    print(f"服务启动中… http://{args.host}:{args.port}")
+    uvicorn.run(
+        "app.server:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>美团骑行截图轨迹识别</title>
+<style>
+  :root {
+    --bg: #f7f7f8;
+    --panel: #ffffff;
+    --border: rgba(0,0,0,0.08);
+    --text: #1f2329;
+    --text-2: #646a73;
+    --text-3: #8f959e;
+    --accent: #534ab7;
+    --accent-soft: #eeedfe;
+    --ok: #0f6e56;
+    --warn: #ba7517;
+    --err: #d54941;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; height:100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.6;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 24px 20px 60px; }
+  header { margin-bottom: 20px; }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 6px; }
+  .sub { color: var(--text-2); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 400px 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px;
+  }
+  .card h2 { font-size: 14px; font-weight: 500; margin: 0 0 12px; }
+  .drop {
+    border: 1.5px dashed rgba(0,0,0,0.18); border-radius: var(--radius);
+    padding: 26px 14px; text-align: center; cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  .drop .big { font-size: 14px; margin-bottom: 4px; }
+  .drop .hint { font-size: 12px; color: var(--text-3); }
+  .row { display:flex; gap:10px; margin-top:14px; }
+  .row > * { flex:1; }
+  label { display:block; font-size:12px; color:var(--text-2); margin-bottom:5px; }
+  input[type=text], select {
+    width:100%; padding:8px 10px; border:1px solid var(--border);
+    border-radius:8px; font:inherit; font-size:13px; background:var(--panel); color:var(--text);
+  }
+  input:focus, select:focus { outline:none; border-color:var(--accent); }
+  button {
+    padding:9px 16px; border:1px solid transparent; border-radius:8px;
+    background:var(--accent); color:#fff; font:inherit; font-size:13px; cursor:pointer;
+  }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.ghost { background:var(--panel); color:var(--text); border-color:var(--border); }
+  .status { margin-top:14px; font-size:13px; padding:10px 12px; border-radius:8px; display:none; }
+  .status.show { display:block; }
+  .status.info { background:#e6f1fb; color:#185fa5; }
+  .status.err { background:#fcebeb; color:#a32d2d; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:10px; margin-top:14px; }
+  .stat { background:var(--bg); border-radius:8px; padding:10px 12px; }
+  .stat .k { font-size:11px; color:var(--text-3); }
+  .stat .v { font-size:17px; font-weight:500; margin-top:2px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; margin-top:10px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); }
+  th { color:var(--text-3); font-weight:400; }
+  td.num { font-family:var(--font-mono, monospace); }
+  .tag { display:inline-block; padding:1px 7px; border-radius:20px; font-size:11px; }
+  .tag.in { background:#e1f5ee; color:#0f6e56; }
+  .tag.out { background:#f1efe8; color:#5f5e5a; }
+  .tag.icon { background:#eeedfe; color:#534ab7; }
+  #map, #preview { width:100%; height:480px; border-radius:var(--radius); overflow:hidden; }
+  #preview { position:relative; background:#eee; display:none; }
+  #preview img { width:100%; display:block; }
+  #preview canvas { position:absolute; inset:0; width:100%; height:100%; }
+  .tabs { display:flex; gap:6px; margin-bottom:12px; }
+  .tab {
+    padding:6px 14px; border-radius:8px; font-size:13px; cursor:pointer;
+    background:var(--bg); color:var(--text-2); border:1px solid transparent;
+  }
+  .tab.on { background:var(--accent-soft); color:var(--accent); border-color:rgba(83,74,183,.25); }
+  .note { font-size:12px; color:var(--text-3); margin-top:10px; line-height:1.7; }
+  .kv { display:flex; justify-content:space-between; padding:5px 0; font-size:12px; border-bottom:1px solid var(--border); }
+  .kv:last-child { border-bottom:none; }
+  .kv span:first-child { color:var(--text-2); }
+  .kv span:last-child { font-family:var(--font-mono, monospace); }
+  .warnlist { margin:8px 0 0; padding-left:18px; font-size:12px; color:var(--text-2); }
+  a.dl { display:inline-block; margin-top:10px; color:var(--accent); font-size:13px; }
+  .spin { display:inline-block; width:12px; height:12px; border:2px solid rgba(83,74,183,.3);
+    border-top-color:var(--accent); border-radius:50%; animation:sp .7s linear infinite; vertical-align:-1px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation:none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>美团骑行截图轨迹识别</h1>
+    <div class="sub">上传骑行截图 → 提取轨迹线 → 地理配准 → 输出 GeoJSON 轨迹</div>
+  </header>
+
+  <div class="grid">
+    <!-- 左：控制面板 -->
+    <div>
+      <div class="card">
+        <h2>上传截图</h2>
+        <div class="drop" id="drop">
+          <div class="big">点击选择，或拖拽图片到此处</div>
+          <div class="hint">支持 JPG / PNG / WebP，最大 20MB</div>
+          <input type="file" id="file" accept="image/*" hidden>
+        </div>
+
+        <div class="row">
+          <div>
+            <label for="city">城市提示（可选）</label>
+            <input type="text" id="city" placeholder="如 上海" value="上海">
+          </div>
+          <div>
+            <label for="crs">输出坐标系</label>
+            <select id="crs">
+              <option value="WGS-84">WGS-84（GPS 标准）</option>
+              <option value="GCJ-02">GCJ-02（火星坐标）</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label for="online">在线地理编码</label>
+            <select id="online">
+              <option value="1">启用（需配置地图密钥）</option>
+              <option value="0">仅用本地词典</option>
+            </select>
+          </div>
+          <div style="flex:0 0 auto; display:flex; align-items:flex-end;">
+            <button id="go" disabled style="width:100%;">开始识别</button>
+          </div>
+        </div>
+
+        <div class="status" id="status"></div>
+      </div>
+
+      <div class="card" id="resultCard" style="margin-top:16px; display:none;">
+        <h2>识别结果</h2>
+        <div class="stats" id="stats"></div>
+        <a class="dl" id="dl" download="trajectory_gcj02.geojson">↓ 下载 GeoJSON（GCJ-02，腾讯/高德底图）</a>
+        <a class="dl" id="dlG" style="margin-left:14px; display:none;" download="trajectory_wgs84.geojson">↓ 下载 WGS-84 版本（GPS 设备 / Strava）</a>
+        <div class="note" style="margin-top:8px;">
+          <b>在腾讯地图 / 高德 / 美团里查看，请用 GCJ-02 版本。</b>
+          WGS-84 版本在中国境内与底图相差约 290 米，直接加载会明显偏离道路。
+          只有导入 GPS 设备、Strava、Garmin 或 GIS 工具时才用 WGS-84。
+        </div>
+        <div class="note" id="diag"></div>
+      </div>
+
+      <div class="card" id="roadCard" style="margin-top:16px; display:none;">
+        <h2>经过的道路</h2>
+        <div id="roadSummary"></div>
+        <table style="margin-top:10px;">
+          <thead><tr><th>道路</th><th>里程</th><th>占比</th></tr></thead>
+          <tbody id="roadRows"></tbody>
+        </table>
+        <div class="note" id="roadNote"></div>
+      </div>
+
+      <div class="card" id="anchorCard" style="margin-top:16px; display:none;">
+        <h2>锚点明细</h2>
+        <table>
+          <thead><tr><th>名称</th><th>类型</th><th>状态</th><th></th></tr></thead>
+          <tbody id="anchorRows"></tbody>
+        </table>
+        <div class="note">「内点」= 参与配准并通过几何一致性校验；「离群」= 被 RANSAC 剔除。
+          选中一个内点后，可在下方地图上点击其正确位置进行纠正——每次纠正都会强化本地词典，
+          同区域后续识别将更准。</div>
+        <div id="correctBox" style="margin-top:12px; display:none;">
+          <div class="note" style="margin-bottom:8px;">
+            正在纠正「<b id="correctName"></b>」。请在<strong>地图</strong>上点击该地点的正确位置。
+          </div>
+          <button class="ghost" id="cancelCorrect">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右：可视化 -->
+    <div class="card">
+      <div class="tabs">
+        <div class="tab on" data-v="map">地图</div>
+        <div class="tab" data-v="preview">原图叠加</div>
+      </div>
+      <div id="map"></div>
+      <div id="preview"><img id="prevImg"><canvas id="prevCanvas"></canvas></div>
+      <div class="note" id="mapNote">
+        底图使用腾讯地图。若轨迹位置明显偏离，可回到左侧查看锚点明细并提交纠正——
+        每次纠正都会强化本地词典，同区域后续识别将更准。
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // 合规：腾讯地图 GL JS 走 WorkBuddy 本地代理，密钥不下发到前端。
+  // 占位符由运行时自动替换为真实端口与密钥。
+  window._TMapSecurityConfig = {
+    serviceHost: 'http://127.0.0.1:__WB_HTTP_PORT__/_TMapService/_wbt/__WB_TMAP_SECRET__',
+  };
+</script>
+<script src="https://map.qq.com/api/gljs?v=1.exp"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const drop = $('drop'), fileInput = $('file'), go = $('go'), status = $('status');
+  let picked = null, lastResult = null;
+  let map = null, polyline = null, markers = [];
+
+  // ---------- 上传交互 ----------
+  drop.onclick = () => fileInput.click();
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = (e) => {
+    e.preventDefault(); drop.classList.remove('over');
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+  };
+  fileInput.onchange = () => { if (fileInput.files[0]) setFile(fileInput.files[0]); };
+
+  function setFile(f) {
+    picked = f;
+    go.disabled = false;
+    drop.querySelector('.big').textContent = f.name;
+    drop.querySelector('.hint').textContent =
+      (f.size / 1024 / 1024).toFixed(2) + ' MB · 点击可重新选择';
+    hideStatus();
+  }
+
+  function showStatus(msg, kind) {
+    status.className = 'status show ' + (kind || 'info');
+    status.innerHTML = msg;
+  }
+  function hideStatus() { status.className = 'status'; }
+
+  // ---------- 识别 ----------
+  go.onclick = async () => {
+    if (!picked) return;
+    go.disabled = true;
+    showStatus('<span class="spin"></span> 正在识别：提取轨迹线、OCR 识别地名、地理配准中…');
+
+    const fd = new FormData();
+    fd.append('file', picked);
+    fd.append('city', $('city').value.trim());
+    fd.append('output_crs', $('crs').value);
+    fd.append('allow_online', $('online').value);
+
+    try {
+      const r = await fetch('/api/recognize', { method: 'POST', body: fd });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
+      lastResult = data;
+      render(data);
+    } catch (e) {
+      showStatus('识别失败：' + (e.message || e), 'err');
+    } finally {
+      go.disabled = false;
+    }
+  };
+
+  // ---------- 渲染结果 ----------
+  function render(d) {
+    $('resultCard').style.display = 'block';
+    $('anchorCard').style.display = 'block';
+
+    const dist = d.distance_m > 1000
+      ? (d.distance_m / 1000).toFixed(2) + ' km'
+      : Math.round(d.distance_m) + ' m';
+
+    $('stats').innerHTML = [
+      ['置信度', (d.confidence * 100).toFixed(0) + '%'],
+      ['轨迹点', d.track_points],
+      ['里程', dist],
+      ['坐标系', d.crs],
+      ['配准残差', (d.diagnostics.rmse_m || 0).toFixed(0) + ' m'],
+      ['内点/离群', d.diagnostics.inliers + '/' + d.diagnostics.outliers],
+    ].map(([k, v]) =>
+      '<div class="stat"><div class="k">' + k + '</div><div class="v">' + v + '</div></div>'
+    ).join('');
+
+    // 诊断信息
+    const dg = d.diagnostics;
+    const chk = dg.anchor_backproj_px;
+    $('diag').innerHTML =
+      '<div class="kv"><span>模型</span><span>' + dg.model + '</span></div>' +
+      '<div class="kv"><span>比例尺（地面）</span><span>' + (dg.scale_ground_m_per_px || 0).toFixed(3) + ' m/px</span></div>' +
+      '<div class="kv"><span>旋转角</span><span>' + dg.rotation_deg.toFixed(2) + '°</span></div>' +
+      '<div class="kv"><span>锚点反投影偏移</span><span>' + (chk >= 0 ? chk.toFixed(0) + ' px' : '—') + '</span></div>' +
+      '<div class="kv"><span>OCR 文本框</span><span>' + dg.ocr_texts + '</span></div>' +
+      '<div class="kv"><span>耗时</span><span>' + d.elapsed_ms + ' ms</span></div>' +
+      (d.warnings && d.warnings.length
+        ? '<ul class="warnlist">' + d.warnings.map(w => '<li>' + w + '</li>').join('') + '</ul>'
+        : '');
+
+    // 路名归属
+    const ra = d.road_attribution;
+    if (ra && ra.segments && ra.segments.length) {
+      $('roadCard').style.display = 'block';
+      const total = ra.segments.reduce((s, x) => s + x.length_m, 0) || 1;
+      const rf = d.road_fit || {};
+      let src = '截图自带标注';
+      if (ra.source === 'amap') src = '高德路径规划（与美团底图同源）';
+      else if (ra.source === 'road_network') src = '轨迹与真实路网的贴合并集（几何判定）';
+      let html = '<div class="kv"><span>归属来源</span><span>' + src + '</span></div>';
+      if (rf.ok) {
+        html += '<div class="kv"><span>路网校正</span><span>东 ' +
+          (rf.shift_e_m >= 0 ? '+' : '') + Math.round(rf.shift_e_m) + ' m / 北 ' +
+          (rf.shift_n_m >= 0 ? '+' : '') + Math.round(rf.shift_n_m) + ' m</span></div>';
+        html += '<div class="kv"><span>贴路中位距离</span><span>' +
+          Math.round(rf.median_before_m) + ' m → <b>' +
+          Math.round(rf.median_after_m) + ' m</b></span></div>';
+      }
+      $('roadSummary').innerHTML = html;
+      $('roadRows').innerHTML = ra.segments.map(x =>
+        '<tr><td>' + esc(x.road) + '</td><td class="num">' +
+        Math.round(x.length_m) + ' m</td><td class="num">' +
+        (x.length_m / total * 100).toFixed(0) + '%</td></tr>').join('');
+      $('roadNote').innerHTML = esc(ra.note || '');
+    } else if (ra && ra.note) {
+      $('roadCard').style.display = 'block';
+      $('roadSummary').innerHTML = '';
+      $('roadRows').innerHTML = '';
+      $('roadNote').innerHTML = esc(ra.note);
+    }
+
+    // 锚点表
+    const rows = [];
+    (d.anchors_used || []).forEach(a => rows.push(
+      '<tr><td>' + a.name + '</td><td><span class="tag in">' +
+      (a.kind === 'icon' ? '图标' : '地标') + '</span></td>' +
+      '<td><span class="tag in">内点</span></td>' +
+      '<td><button class="ghost" data-fix="' + esc(a.name) + '" style="padding:2px 8px;font-size:11px;">纠正</button></td></tr>'));
+    (d.anchors_rejected || []).forEach(a => rows.push(
+      '<tr><td>' + a.name + '</td><td><span class="tag out">文字</span></td>' +
+      '<td><span class="tag out">离群</span></td><td></td></tr>'));
+    $('anchorRows').innerHTML = rows.join('') || '<tr><td colspan="4">无</td></tr>';
+    $('anchorRows').querySelectorAll('[data-fix]').forEach(b => {
+      b.onclick = () => startCorrect(b.dataset.fix);
+    });
+
+    // GeoJSON 下载：默认给 GCJ-02（中文底图能直接对上），WGS-84 作为次选
+    const blob = new Blob([JSON.stringify(d.geojson_gcj02 || d.geojson, null, 2)],
+                          { type: 'application/geo+json' });
+    $('dl').href = URL.createObjectURL(blob);
+    const blobG = new Blob([JSON.stringify(d.geojson, null, 2)], { type: 'application/geo+json' });
+    $('dlG').href = URL.createObjectURL(blobG);
+    $('dlG').style.display = 'inline-block';
+
+    // 地图
+    drawMap(d);
+    drawPreview(d);
+
+    if (d.ok) {
+      showStatus('识别完成。置信度 ' + (d.confidence * 100).toFixed(0) +
+        '%，输出 ' + d.track_points + ' 个轨迹点。', 'info');
+    } else {
+      showStatus('未能得到坐标结果，请查看下方诊断信息。', 'err');
+    }
+  }
+
+  // ---------- 腾讯地图 ----------
+  function drawMap(d) {
+    // 关键：腾讯底图是 GCJ-02 坐标。若直接用 WGS-84 坐标绘制，
+    // 轨迹会整体偏移约 350 米。必须选用 GCJ-02 版本。
+    const gj = d.geojson_gcj02 || d.geojson;
+    const coords = gj.features[0].geometry.coordinates;
+    if (!coords.length) return;
+    const lat = coords[0][1], lon = coords[0][0];
+
+    if (!map) {
+      map = new TMap.Map('map', { center: new TMap.LatLng(lat, lon), zoom: 14 });
+    }
+
+    if (polyline) { map.removeLayer(polyline); polyline = null; }
+    markers.forEach(m => map.removeLayer(m));
+    markers = [];
+
+    const path = coords.map(c => new TMap.LatLng(c[1], c[0]));
+    polyline = new TMap.MultiPolyline({
+      map,
+      styles: {
+        trail: new TMap.PolylineStyle({
+          color: '#534ab7', width: 5, borderWidth: 2, borderColor: '#ffffff', lineCap: 'round',
+        }),
+      },
+      geometries: [{ id: 'trail', styleId: 'trail', paths: path }],
+    });
+
+    const start = new TMap.MultiMarker({
+      map,
+      styles: { s: new TMap.MarkerStyle({ width: 24, height: 24, anchor: { x: 12, y: 12 },
+        color: '#0f6e56', borderWidth: 3, borderColor: '#ffffff' }) },
+      geometries: [{ id: 's', styleId: 's', position: new TMap.LatLng(path[0].lat, path[0].lng) }],
+    });
+    const end = new TMap.MultiMarker({
+      map,
+      styles: { e: new TMap.MarkerStyle({ width: 24, height: 24, anchor: { x: 12, y: 12 },
+        color: '#d54941', borderWidth: 3, borderColor: '#ffffff' }) },
+      geometries: [{ id: 'e', styleId: 'e',
+        position: new TMap.LatLng(path[path.length - 1].lat, path[path.length - 1].lng) }],
+    });
+    markers.push(start, end);
+
+    const bounds = new TMap.LatLngBounds();
+    path.forEach(p => bounds.extend(p));
+    map.fitBounds(bounds, { padding: 40 });
+
+    // 纠正模式：点击地图选点
+    if (!map.__clickBound) {
+      map.__clickBound = true;
+      map.on('click', (evt) => {
+        if (!correcting) return;
+        const latLng = evt.latLng;
+        submitCorrection(latLng.lng, latLng.lat);
+      });
+    }
+  }
+
+  // ---------- 原图叠加 ----------
+  function drawPreview(d) {
+    const img = $('prevImg');
+    img.onload = () => {
+      const c = $('prevCanvas');
+      const W = img.clientWidth, H = img.naturalHeight * (W / img.naturalWidth);
+      c.width = W * devicePixelRatio; c.height = H * devicePixelRatio;
+      c.style.height = H + 'px';
+      const ctx = c.getContext('2d');
+      ctx.scale(devicePixelRatio, devicePixelRatio);
+      ctx.clearRect(0, 0, W, H);
+
+      const sx = W / d.image_size[0];
+      const sy = H / d.image_size[1];
+
+      // 轨迹
+      const pts = d.track_polyline_px || [];
+      if (pts.length > 1) {
+        ctx.strokeStyle = '#00e05a';
+        ctx.lineWidth = 3;
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        pts.forEach((p, i) => {
+          const x = p[0] * sx, y = p[1] * sy;
+          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        });
+        ctx.stroke();
+      }
+
+      // 锚点
+      const put = (a, color) => {
+        const x = a.px * sx, y = a.py * sy;
+        ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2);
+        ctx.fillStyle = color; ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = '#111';
+        ctx.font = '12px sans-serif';
+        ctx.fillText(a.name, x + 10, y + 4);
+      };
+      (d.anchors_used || []).forEach(a => put(a, '#ffd400'));
+      (d.anchors_rejected || []).forEach(a => put(a, 'rgba(255,255,255,.55)'));
+    };
+    img.src = d.shot_url;
+    $('preview').style.display = 'block';
+  }
+
+  // ---------- 标签页 ----------
+  document.querySelectorAll('.tab').forEach(t => {
+    t.onclick = () => {
+      document.querySelectorAll('.tab').forEach(x => x.classList.remove('on'));
+      t.classList.add('on');
+      const v = t.dataset.v;
+      $('map').style.display = v === 'map' ? 'block' : 'none';
+      $('preview').style.display = v === 'preview' ? 'block' : 'none';
+      if (v === 'map' && map) map.resize();
+    };
+  });
+
+  // ---------- 锚点纠正（数据飞轮的入口） ----------
+  let correcting = null;
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, c => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
+    ));
+  }
+
+  function startCorrect(name) {
+    correcting = name;
+    $('correctName').textContent = name;
+    $('correctBox').style.display = 'block';
+    // 切到地图标签页
+    document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.dataset.v === 'map'));
+    $('map').style.display = 'block';
+    $('preview').style.display = 'none';
+    if (map) map.resize();
+    showStatus('请在地图上点击「' + name + '」的正确位置。', 'info');
+  }
+
+  $('cancelCorrect').onclick = () => {
+    correcting = null;
+    $('correctBox').style.display = 'none';
+    hideStatus();
+  };
+
+  async function submitCorrection(lon, lat) {
+    if (!correcting) return;
+    const name = correcting;
+    correcting = null;
+    $('correctBox').style.display = 'none';
+    try {
+      const r = await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name, lon: lon, lat: lat,
+          crs: 'GCJ-02', city: $('city').value.trim(),
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || '提交失败');
+      showStatus('已记录「' + name + '」的纠正，词典条目 ' +
+        d.lexicon.entries + ' 个。重新识别同一区域可获得更准的结果。', 'info');
+    } catch (e) {
+      showStatus('纠正提交失败：' + (e.message || e), 'err');
+    }
+  }
+})();
+</script>
+</body>
+</html>

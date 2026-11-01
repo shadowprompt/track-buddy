@@ -1,0 +1,9 @@
+# 统一用 LF 存储，检出时按平台转换
+* text=auto eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.zip binary
+*.onnx binary

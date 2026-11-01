@@ -1,0 +1,467 @@
+{
+ "上海动物园": [
+  {
+   "lon": 121.3625135,
+   "lat": 31.1932296,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  },
+  {
+   "lon": 121.35791,
+   "lat": 31.19512,
+   "weight": 14.0,
+   "count": 7,
+   "city": "上海",
+   "source": "user",
+   "address": ""
+  }
+ ],
+ "西郊宾馆": [
+  {
+   "lon": 121.3807426,
+   "lat": 31.2016178,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "近铁城市广场": [
+  {
+   "lon": 121.3808954,
+   "lat": 31.2317021,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "百佛园": [
+  {
+   "lon": 121.3573491,
+   "lat": 31.2563906,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "临空音乐公园": [
+  {
+   "lon": 121.3510846,
+   "lat": 31.2372712,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "红星美凯龙": [
+  {
+   "lon": 121.3857715,
+   "lat": 31.2398305,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "申纪港公园": [
+  {
+   "lon": 121.3491716,
+   "lat": 31.248913,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "万佛讲寺": [
+  {
+   "lon": 121.3439198,
+   "lat": 31.2447215,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "长风公园": [
+  {
+   "lon": 121.3993998,
+   "lat": 31.2253021,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "上海虹桥万豪酒店": [
+  {
+   "lon": 121.3765462,
+   "lat": 31.1914181,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "阿拉城": [
+  {
+   "lon": 121.373791,
+   "lat": 31.1771576,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "上海万象城": [
+  {
+   "lon": 121.3692934,
+   "lat": 31.1702381,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "外环沪青平立交": [
+  {
+   "lon": 121.3577938,
+   "lat": 31.1851279,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "上海虹桥花卉市场": [
+  {
+   "lon": 121.3713179,
+   "lat": 31.1844981,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "静安雕塑公园": [
+  {
+   "lon": 121.464037,
+   "lat": 31.2347969,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "周家浜": [
+  {
+   "lon": 121.3544697,
+   "lat": 31.2141564,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "百联中环购物广场": [
+  {
+   "lon": 121.3837699,
+   "lat": 31.2455713,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "老外街": [
+  {
+   "lon": 121.387559,
+   "lat": 31.191309,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "上海荟聚": [
+  {
+   "lon": 121.3565745,
+   "lat": 31.2216135,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "上海西站": [
+  {
+   "lon": 121.4007135,
+   "lat": 31.2627492,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "旭辉世纪广场": [
+  {
+   "lon": 121.3811949,
+   "lat": 31.2219379,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "天山大厦": [
+  {
+   "lon": 121.3792119,
+   "lat": 31.2163432,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "新泾公园": [
+  {
+   "lon": 121.3620347,
+   "lat": 31.2170503,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "淞虹公寓": [
+  {
+   "lon": 121.358237,
+   "lat": 31.212542,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "协和小区": [
+  {
+   "lon": 121.3554217,
+   "lat": 31.2152886,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "广顺小区": [
+  {
+   "lon": 121.3530068,
+   "lat": 31.2152744,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "淞虹苑": [
+  {
+   "lon": 121.3628658,
+   "lat": 31.2127796,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "河滨香景园": [
+  {
+   "lon": 121.3607234,
+   "lat": 31.2303444,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "临空经济园区": [
+  {
+   "lon": 121.3495811,
+   "lat": 31.2331066,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "长风公": [
+  {
+   "lon": 121.3993998,
+   "lat": 31.2253021,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "周家渡": [
+  {
+   "lon": 121.3544697,
+   "lat": 31.2141564,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "花卉市场": [
+  {
+   "lon": 121.3713179,
+   "lat": 31.1844981,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "百联中环": [
+  {
+   "lon": 121.3837699,
+   "lat": 31.2455713,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "购物广场河": [
+  {
+   "lon": 121.3837699,
+   "lat": 31.2455713,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "每万佛讲寺": [
+  {
+   "lon": 121.3439198,
+   "lat": 31.2447215,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "上海会聚": [
+  {
+   "lon": 121.3565745,
+   "lat": 31.2216135,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "上海世": [
+  {
+   "lon": 121.4007135,
+   "lat": 31.2627492,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ],
+ "上海虹桥": [
+  {
+   "lon": 121.3713179,
+   "lat": 31.1844981,
+   "weight": 1.0,
+   "count": 1,
+   "city": "上海",
+   "source": "verified",
+   "address": "",
+   "kind": "poi"
+  }
+ ]
+}

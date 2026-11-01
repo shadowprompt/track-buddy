@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# 运行时产出
+out/
+dist/*.tmp
+
+# 服务运行时缓存与用户上传的原图（含个人位置信息，绝不入库）
+data/uploads/
+data/cache/
+data/last_result.json
+data/feedback.json
+data/lexicon.json.bak
+
+# 仓库内技能安装不需要 vendor 的内核副本：仓库根目录本身就是 app/ 所在，
+# scripts/recognize.py 的相对候选会优先命中它。完整自包含的版本在 dist/*.zip。
+.workbuddy/skills/*/assets/ride_core/
+
+# 真实骑行数据：原始截图 / GPS 轨迹 / 轨迹可视化 —— 含个人位置信息，默认不入库。
+# 克隆后把自己的截图放进 samples/ 即可运行测试；详见 samples/README.md
+samples/*.jpg
+samples/*.jpeg
+samples/*.png
+docs/*.png
+docs/*.geojson
+trajectory*.geojson
