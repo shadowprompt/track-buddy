@@ -135,28 +135,66 @@ def resample_polyline(points: np.ndarray, step_px: float) -> np.ndarray:
 
 
 def simplify_polyline(points: np.ndarray, eps: float) -> np.ndarray:
-    """Douglas-Peucker 简化。"""
+    """折线简化：弧长保真优先的 Douglas-Peucker 变体。
+
+    为什么不用纯 Douglas-Peucker
+    --------------------------
+    经典 DP 用「点到端点连线的垂距」作为误差判据。这对一般折线没问题，
+    但对**骑行轨迹这种近直线**有个致命缺陷：垂距是相对于「当前子段的
+    直线」算的，而一条南北向长直线上任何微小的横向抖动都会被这段长直线
+    放大成很大的垂距。结果整条轨迹被压成极少数点——实测长宁剑河路
+    截图（轨迹总长 2043 像素、端到端直线 1954 像素，仅 4.5% 蛇形）
+    简化后只剩 32 个点，弯道全部消失，输出轨迹与实际骑行路线严重不符。
+
+    判据的选择
+    ----------
+    - **主判据：弧长偏差**——子段折线比其弦长多走了多少路。
+      量纲是像素，与「直线很长」无关，因此不会被放大。
+    - **辅助：垂距**——只用来决定「在哪个位置分裂」，不用来判定是否简化。
+      之所以仍需要它：一条整体平移的折线弧长不变、但形状确实变了，
+      单看弧长会漏掉；垂距能定位到偏离最大的点。
+
+    早期版本要求两个判据**同时**超阈值才保留，结果过于保守
+    （实测只留下 20 个点，形状虽在但密度过低）。
+    正确做法是：弧长偏差超阈值就一定保留（这是「真实弯道」的证据），
+    垂距只用于选分裂点。
+    """
     if len(points) < 3:
         return points
-    keep = np.zeros(len(points), dtype=bool)
+    pts = np.asarray(points, dtype=float)
+    keep = np.zeros(len(pts), dtype=bool)
     keep[0] = keep[-1] = True
-    stack = [(0, len(points) - 1)]
+
+    def arc_len(arr: np.ndarray) -> float:
+        if len(arr) < 2:
+            return 0.0
+        return float(np.linalg.norm(np.diff(arr, axis=0), axis=1).sum())
+
+    stack = [(0, len(pts) - 1)]
     while stack:
         i, j = stack.pop()
         if j <= i + 1:
             continue
-        seg = points[j] - points[i]
-        norm = np.hypot(*seg)
-        if norm < 1e-9:
-            d = np.hypot(*(points[i + 1 : j] - points[i]).T)
+        sub = pts[i : j + 1]
+        seg_vec = pts[j] - pts[i]
+        chord = float(np.linalg.norm(seg_vec))
+
+        # 主判据：弧长偏差
+        excess = arc_len(sub) - chord
+        if excess <= eps:
+            continue
+
+        # 辅助：垂距仅用于定位分裂点
+        if chord < 1e-9:
+            dist = np.linalg.norm(sub - sub[0], axis=1)
         else:
-            # np.cross 对 2D 向量在 NumPy 2.x 已移除，手工计算叉积
-            rel = points[i + 1 : j] - points[i]
-            cross = seg[0] * rel[:, 1] - seg[1] * rel[:, 0]
-            d = np.abs(cross) / norm
-        k = int(np.argmax(d))
-        if d[k] > eps:
-            keep[i + 1 + k] = True
-            stack.append((i, i + 1 + k))
-            stack.append((i + 1 + k, j))
-    return points[keep]
+            rel = sub - pts[i]
+            cross = seg_vec[0] * rel[:, 1] - seg_vec[1] * rel[:, 0]
+            dist = np.abs(cross) / chord
+        k = int(np.argmax(dist))
+        if k <= 0 or k >= len(sub) - 1:
+            k = len(sub) // 2
+        keep[i + k] = True
+        stack.append((i, i + k))
+        stack.append((i + k, j))
+    return pts[keep]

@@ -269,44 +269,71 @@
   };
 
   // ---------- 渲染结果 ----------
+
+  // 安全数值格式化：任何字段缺失都不能让整页崩掉。
+  // 早期实现直接写 (d.confidence * 100).toFixed(0)，而配准失败时后端
+  // 返回的 diagnostics 里没有这些键，于是 undefined.toFixed 抛 TypeError，
+  // 把「识别失败」的真正原因（warnings 里的说明）整个吞掉——
+  // 用户只看到一句无意义的 "Cannot read properties of undefined"。
+  function num(v, digits, fallback) {
+    if (v === null || v === undefined || typeof v !== 'number' || !isFinite(v)) {
+      return fallback === undefined ? '—' : fallback;
+    }
+    return v.toFixed(digits);
+  }
+  function int(v, fallback) {
+    if (v === null || v === undefined || typeof v !== 'number' || !isFinite(v)) {
+      return fallback === undefined ? '—' : fallback;
+    }
+    return String(Math.round(v));
+  }
+  function text(v, fallback) {
+    if (v === null || v === undefined || v === '') {
+      return fallback === undefined ? '—' : fallback;
+    }
+    return String(v);
+  }
+
   function render(d) {
     $('resultCard').style.display = 'block';
     $('anchorCard').style.display = 'block';
 
-    const dist = d.distance_m > 1000
-      ? (d.distance_m / 1000).toFixed(2) + ' km'
-      : Math.round(d.distance_m) + ' m';
+    const dm = typeof d.distance_m === 'number' && isFinite(d.distance_m) ? d.distance_m : 0;
+    const dist = dm > 1000
+      ? (dm / 1000).toFixed(2) + ' km'
+      : Math.round(dm) + ' m';
+
+    const dg = d.diagnostics || {};
 
     $('stats').innerHTML = [
-      ['置信度', (d.confidence * 100).toFixed(0) + '%'],
-      ['轨迹点', d.track_points],
+      ['置信度', (typeof d.confidence === 'number' ? d.confidence * 100 : 0).toFixed(0) + '%'],
+      ['轨迹点', int(d.track_points, 0)],
       ['里程', dist],
-      ['坐标系', d.crs],
-      ['配准残差', (d.diagnostics.rmse_m || 0).toFixed(0) + ' m'],
-      ['内点/离群', d.diagnostics.inliers + '/' + d.diagnostics.outliers],
+      ['坐标系', text(d.crs, '—')],
+      ['配准残差', num(dg.rmse_m, 0, '—') + (dg.rmse_m !== undefined ? ' m' : '')],
+      ['内点/离群', int(dg.inliers, 0) + '/' + int(dg.outliers, 0)],
     ].map(([k, v]) =>
       '<div class="stat"><div class="k">' + k + '</div><div class="v">' + v + '</div></div>'
     ).join('');
 
     // 诊断信息
-    const dg = d.diagnostics;
     const chk = dg.anchor_backproj_px;
     $('diag').innerHTML =
-      '<div class="kv"><span>模型</span><span>' + dg.model + '</span></div>' +
-      '<div class="kv"><span>比例尺（地面）</span><span>' + (dg.scale_ground_m_per_px || 0).toFixed(3) + ' m/px</span></div>' +
-      '<div class="kv"><span>旋转角</span><span>' + dg.rotation_deg.toFixed(2) + '°</span></div>' +
-      '<div class="kv"><span>锚点反投影偏移</span><span>' + (chk >= 0 ? chk.toFixed(0) + ' px' : '—') + '</span></div>' +
-      '<div class="kv"><span>OCR 文本框</span><span>' + dg.ocr_texts + '</span></div>' +
-      '<div class="kv"><span>耗时</span><span>' + d.elapsed_ms + ' ms</span></div>' +
+      '<div class="kv"><span>模型</span><span>' + text(dg.model) + '</span></div>' +
+      '<div class="kv"><span>比例尺（地面）</span><span>' + num(dg.scale_ground_m_per_px, 3, '—') + (dg.scale_ground_m_per_px !== undefined ? ' m/px' : '') + '</span></div>' +
+      '<div class="kv"><span>旋转角</span><span>' + num(dg.rotation_deg, 2, '—') + (dg.rotation_deg !== undefined ? '°' : '') + '</span></div>' +
+      '<div class="kv"><span>锚点反投影偏移</span><span>' + (typeof chk === 'number' && isFinite(chk) && chk >= 0 ? chk.toFixed(0) + ' px' : '—') + '</span></div>' +
+      '<div class="kv"><span>OCR 文本框</span><span>' + int(dg.ocr_texts, 0) + '</span></div>' +
+      '<div class="kv"><span>耗时</span><span>' + int(d.elapsed_ms, 0) + ' ms</span></div>' +
       (d.warnings && d.warnings.length
-        ? '<ul class="warnlist">' + d.warnings.map(w => '<li>' + w + '</li>').join('') + '</ul>'
+        ? '<ul class="warnlist">' + d.warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>'
         : '');
 
     // 路名归属
-    const ra = d.road_attribution;
+    const ra = d.road_attribution || {};
     if (ra && ra.segments && ra.segments.length) {
       $('roadCard').style.display = 'block';
-      const total = ra.segments.reduce((s, x) => s + x.length_m, 0) || 1;
+      const total = ra.segments.reduce((s, x) => s + (x.length_m || 0), 0) || 1;
       const rf = d.road_fit || {};
       let src = '截图自带标注';
       if (ra.source === 'amap') src = '高德路径规划（与美团底图同源）';
@@ -324,7 +351,7 @@
       $('roadRows').innerHTML = ra.segments.map(x =>
         '<tr><td>' + esc(x.road) + '</td><td class="num">' +
         Math.round(x.length_m) + ' m</td><td class="num">' +
-        (x.length_m / total * 100).toFixed(0) + '%</td></tr>').join('');
+        ((x.length_m || 0) / total * 100).toFixed(0) + '%</td></tr>').join('');
       $('roadNote').innerHTML = esc(ra.note || '');
     } else if (ra && ra.note) {
       $('roadCard').style.display = 'block';
@@ -349,10 +376,13 @@
     });
 
     // GeoJSON 下载：默认给 GCJ-02（中文底图能直接对上），WGS-84 作为次选
-    const blob = new Blob([JSON.stringify(d.geojson_gcj02 || d.geojson, null, 2)],
+    // 识别失败时后端返回的是空几何，这里必须容错——
+    // 否则 blob 内容是 undefined，下载下来是个坏文件。
+    const gjGeo = (d.geojson_gcj02 && d.geojson_gcj02.features) ? d.geojson_gcj02 : d.geojson;
+    const blob = new Blob([JSON.stringify(gjGeo || {}, null, 2)],
                           { type: 'application/geo+json' });
     $('dl').href = URL.createObjectURL(blob);
-    const blobG = new Blob([JSON.stringify(d.geojson, null, 2)], { type: 'application/geo+json' });
+    const blobG = new Blob([JSON.stringify(d.geojson || {}, null, 2)], { type: 'application/geo+json' });
     $('dlG').href = URL.createObjectURL(blobG);
     $('dlG').style.display = 'inline-block';
 
@@ -364,7 +394,11 @@
       showStatus('识别完成。置信度 ' + (d.confidence * 100).toFixed(0) +
         '%，输出 ' + d.track_points + ' 个轨迹点。', 'info');
     } else {
-      showStatus('未能得到坐标结果，请查看下方诊断信息。', 'err');
+      // 失败时把后端给的 warnings 直接摆出来——它们才是可操作的诊断
+      const why = (d.warnings && d.warnings.length)
+        ? '<br><ul class="warnlist">' + d.warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>'
+        : '';
+      showStatus('未能得到坐标结果，请查看下方诊断信息。' + why, 'err');
     }
   }
 
@@ -372,10 +406,13 @@
   function drawMap(d) {
     // 关键：腾讯底图是 GCJ-02 坐标。若直接用 WGS-84 坐标绘制，
     // 轨迹会整体偏移约 350 米。必须选用 GCJ-02 版本。
-    const gj = d.geojson_gcj02 || d.geojson;
-    const coords = gj.features[0].geometry.coordinates;
-    if (!coords.length) return;
+    const gj = (d.geojson_gcj02 && d.geojson_gcj02.features) ? d.geojson_gcj02 : d.geojson;
+    if (!gj || !gj.features || !gj.features.length) return;
+    const geom = gj.features[0].geometry;
+    if (!geom || !geom.coordinates || !geom.coordinates.length) return;
+    const coords = geom.coordinates;
     const lat = coords[0][1], lon = coords[0][0];
+    if (typeof lat !== 'number' || typeof lon !== 'number' || !isFinite(lat) || !isFinite(lon)) return;
 
     if (!map) {
       map = new TMap.Map('map', { center: new TMap.LatLng(lat, lon), zoom: 14 });
@@ -438,8 +475,12 @@
       ctx.scale(devicePixelRatio, devicePixelRatio);
       ctx.clearRect(0, 0, W, H);
 
-      const sx = W / d.image_size[0];
-      const sy = H / d.image_size[1];
+      // 识别失败时 image_size 是 [0,0]，除零会得到 NaN 并让整张图消失
+      const iw = (d.image_size && d.image_size[0]) || img.naturalWidth;
+      const ih = (d.image_size && d.image_size[1]) || img.naturalHeight;
+      if (!iw || !ih) { $('preview').style.display = 'block'; return; }
+      const sx = W / iw;
+      const sy = H / ih;
 
       // 轨迹
       const pts = d.track_polyline_px || [];

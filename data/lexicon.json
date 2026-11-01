@@ -13,8 +13,8 @@
   {
    "lon": 121.35791,
    "lat": 31.19512,
-   "weight": 14.0,
-   "count": 7,
+   "weight": 24.0,
+   "count": 12,
    "city": "上海",
    "source": "user",
    "address": ""
@@ -462,6 +462,70 @@
    "source": "verified",
    "address": "",
    "kind": "poi"
+  }
+ ],
+ "长宁实验小学": [
+  {
+   "lon": 121.38809792055545,
+   "lat": 31.209543919014987,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "osm",
+   "address": "osm/way/907593457"
+  }
+ ],
+ "安龙小区": [
+  {
+   "lon": 121.38623546124346,
+   "lat": 31.211964557374692,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "osm",
+   "address": "osm/way/1433299150"
+  }
+ ],
+ "珍宝公寓": [
+  {
+   "lon": 121.38859505112968,
+   "lat": 31.21166521530175,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "osm",
+   "address": "osm/way/1433299147"
+  }
+ ],
+ "新安小区": [
+  {
+   "lon": 121.38673729149599,
+   "lat": 31.21125474054008,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "osm",
+   "address": "osm/way/915355657"
+  }
+ ],
+ "联华超市": [
+  {
+   "lon": 121.60112031373185,
+   "lat": 31.27301121946658,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "osm",
+   "address": "osm/node/12816296342"
+  },
+  {
+   "lon": 121.39242893504525,
+   "lat": 31.152047595169915,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "osm",
+   "address": "osm/way/838391933"
   }
  ]
 }

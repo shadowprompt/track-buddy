@@ -333,6 +333,71 @@ def main() -> int:
     check(hits_after >= hits_before, "该地名可被命中", f"{hits_before} → {hits_after} 候选")
     lex.save()
 
+    print("\n[11] 失败路径返回结构完整的 diagnostics（回归项）")
+    # 前端曾直接对 d.diagnostics.rotation_deg 调 .toFixed()，
+    # 而配准失败时后端只返回 {"track_points": N}，
+    # 于是 undefined.toFixed 抛 TypeError，把真正的失败原因整个吞掉——
+    # 用户只看到 "Cannot read properties of undefined (reading 'toFixed')"。
+    from app.pipeline import DIAG_KEYS, _base_diagnostics
+
+    fail_dg = _base_diagnostics(track_points_px=123)
+    check(all(k in fail_dg for k in DIAG_KEYS),
+          "失败路径 diagnostics 字段齐全",
+          f"{len(fail_dg)} 个键（应为 {len(DIAG_KEYS)}）")
+    # 模拟前端行为：任何缺失值都不得让页面崩溃
+    def safe_num(v, digits=2):
+        if v is None or not isinstance(v, (int, float)) or not math.isfinite(v):
+            return "—"
+        return f"{v:.{digits}f}"
+    check(safe_num(fail_dg["rotation_deg"]) == "—"
+          and safe_num(fail_dg["scale_ground_m_per_px"], 3) == "—",
+          "缺失字段安全降级为「—」而非抛异常")
+    check(res2.diagnostics is not None
+          and all(k in res2.diagnostics for k in DIAG_KEYS),
+          "成功路径 diagnostics 字段同样齐全")
+
+    print("\n[12] 折线简化不丢形状（回归项）")
+    # 经典 Douglas-Peucker 用「到端点连线的垂距」作判据，
+    # 对南北向长直线会把微小蛇形抖动放大成大垂距，整条轨迹被压成几个点。
+    # 实测长宁剑河路截图（scale=0.26 m/px）简化后只剩 32 点，弯道全丢。
+    from app.cv_utils import resample_polyline, simplify_polyline
+
+    tr0 = extract_track(img, CONFIG.vision)
+    samp0 = resample_polyline(tr0.polyline, step_px=2.0)
+    simp0 = simplify_polyline(samp0, eps=1.0)
+    len_raw = float(np.linalg.norm(np.diff(tr0.polyline.astype(float), axis=0), axis=1).sum())
+    len_simp = float(np.linalg.norm(np.diff(simp0.astype(float), axis=0), axis=1).sum())
+    check(len_simp / len_raw > 0.9,
+          "简化后弧长保留 90% 以上",
+          f"{len_raw:.0f}px → {len_simp:.0f}px ({len_simp/len_raw*100:.1f}%)")
+    from scipy.spatial import cKDTree
+    dd0, _ = cKDTree(tr0.polyline.astype(float)).query(simp0.astype(float))
+    check(float(np.max(dd0)) <= 3.0,
+          "简化后最大偏离原轨迹 3 像素内",
+          f"最大 {np.max(dd0):.2f} px")
+
+    print("\n[13] 采样密度与尺度自适应（回归项）")
+    # 高倍截图 scale 很小，10 米的像素步长会变成 38 像素，一个弯道就被跳过。
+    from app.pipeline import RidePipeline as _RP
+    small_scale = 0.26
+    step_px = min(max(1.0, 5.0 / small_scale), 4.0)
+    eps_px = min(1.0 / small_scale, 1.0)
+    check(step_px <= 4.0, "小尺度下采样步长有像素上限", f"{step_px:.1f} px")
+    check(eps_px <= 1.0, "小尺度下简化容差有像素上限", f"{eps_px:.1f} px")
+
+    print("\n[14] OSM 路网 bbox 坐标系正确（回归项）")
+    # _road_refine 过去把 GCJ-02 的 bbox 直接喂给 OSM API（期望 WGS-84），
+    # 查询中心因此偏移约 450 米（东）/200 米（南），拉回的是别的街区的路网。
+    from app.geo.coords import gcj02_to_wgs84 as _g2w
+    gcj_lo, gcj_la = 121.3811, 31.2025
+    w_lo, w_la = _g2w(gcj_lo, gcj_la)
+    d_east = (gcj_lo - w_lo) * 95000
+    d_north = (gcj_la - w_la) * 111000
+    # 上海实测：GCJ-02 相对 WGS-84 东偏约 +450m、南偏约 -200m
+    check(200 < d_east < 700 and -400 < d_north < -100,
+          "GCJ-02→WGS-84 偏移量与已知基准一致（上海约东 450m/南 200m）",
+          f"东 {d_east:.0f} m, 北 {d_north:.0f} m")
+
     print("\n" + "=" * 66)
     ok = sum(1 for r in results if r[0])
     total = len(results)

@@ -51,6 +51,41 @@ class PipelineResult:
     image_size: tuple[int, int] = (0, 0)
 
 
+# diagnostics 的完整键集。
+#
+# 早期实现只在成功路径填充这些字段，失败路径只给 {"track_points": N}，
+# 前端于是读到 undefined 再调 .toFixed()，整页崩掉，
+# 后端 warnings 里真正的失败原因反而被吞掉——用户只看到
+# "Cannot read properties of undefined (reading 'toFixed')"，
+# 完全不知道发生了什么。这里用一份默认值把结构固定下来。
+DIAG_KEYS: tuple[str, ...] = (
+    "scale_mercator_m_per_px",
+    "scale_ground_m_per_px",
+    "rotation_deg",
+    "model",
+    "rmse_m",
+    "anchor_backproj_px",
+    "inliers",
+    "outliers",
+    "ocr_texts",
+    "anchor_candidates",
+    "track_points_px",
+    "bbox_px",
+    "start_marker",
+    "end_marker",
+    "online_geocoding",
+    "lexicon",
+)
+
+
+def _base_diagnostics(**over: Any) -> dict[str, Any]:
+    """返回结构完整的 diagnostics，缺省值用 None（前端显示为「—」）。"""
+    dg: dict[str, Any] = {k: None for k in DIAG_KEYS}
+    dg["lexicon"] = {}
+    dg.update(over)
+    return dg
+
+
 class RidePipeline:
     """完整的识别流水线。"""
 
@@ -79,6 +114,14 @@ class RidePipeline:
                 confidence=0.0,
                 warnings=warnings + ["未能提取到有效轨迹线"],
                 elapsed_ms=int((time.time() - t0) * 1000),
+                diagnostics=_base_diagnostics(
+                    track_points_px=len(track.polyline),
+                    bbox_px=list(track.bbox),
+                    start_marker=list(track.start_marker) if track.start_marker else None,
+                    end_marker=list(track.end_marker) if track.end_marker else None,
+                    lexicon=self.lexicon.stats(),
+                ),
+                image_size=(int(img.shape[1]), int(img.shape[0])),
             )
 
         # --- 阶段 2：OCR ---
@@ -102,9 +145,20 @@ class RidePipeline:
                 geojson=_empty_geojson(),
                 confidence=0.0,
                 warnings=warnings + ["地理配准失败，无法得到坐标"],
-                diagnostics={"track_points": len(track.polyline)},
+                diagnostics=_base_diagnostics(
+                    track_points_px=len(track.polyline),
+                    bbox_px=list(track.bbox),
+                    start_marker=list(track.start_marker) if track.start_marker else None,
+                    end_marker=list(track.end_marker) if track.end_marker else None,
+                    ocr_texts=len(texts),
+                    anchor_candidates=len(anchors),
+                    online_geocoding=bool(self.cfg.has_online_key and allow_online),
+                    lexicon=self.lexicon.stats(),
+                ),
                 elapsed_ms=int((time.time() - t0) * 1000),
                 debug={"track_mask": track.mask},
+                track_polyline_px=[[int(px), int(py)] for px, py in track.polyline],
+                image_size=(int(img.shape[1]), int(img.shape[0])),
             )
 
         # 绝对位置自校验：抓「坐标对错同名地点」这类整体平移错误
@@ -133,10 +187,21 @@ class RidePipeline:
         # 注意：reg.scale 是「墨卡托米/像素」。墨卡托投影在纬度 φ 处会把
         # 地面距离放大 1/cos(φ)，因此真实地面距离 = 墨卡托距离 × cos(φ)。
         # 里程用 haversine 计算（已含该修正），不要用 像素长 × scale 估算。
+        #
+        # 尺度自适应有个陷阱：高倍截图（尺度小）时，2 米的容差换算成像素
+        # 会变得很大。实测长宁剑河路截图 scale=0.26 m/px，容差变成 7.7 像素，
+        # 把所有弯道都削平了——1990 像素的轨迹最后只剩 6 个点。
+        # 因此容差必须同时受「像素上限」约束：不超过 2 像素，
+        # 否则再密的采样也保不住形状。
+        #
+        # 采样步长取 5 米（而不是 10 米）：10 米下长直线段会被压得很稀
+        # （实测对角线样本只留下 77 个点，低于验收要求的 100 个），
+        # 而轨迹点在 GeoJSON 里没有任何成本压力，多留一些更稳妥。
         meters_per_px = max(reg.scale, 1e-6)
-        step_px = max(1.0, 10.0 / meters_per_px)
+        step_px = min(max(1.0, 5.0 / meters_per_px), 4.0)
+        eps_px = min(1.0 / meters_per_px, 1.0)
         sampled = resample_polyline(track.polyline, step_px=step_px)
-        simplified = simplify_polyline(sampled, eps=2.0 / meters_per_px)
+        simplified = simplify_polyline(sampled, eps=eps_px)
         lonlat_gcj = apply_to_polyline(reg, simplified)
 
         # --- 输出坐标转换 ---
@@ -184,28 +249,28 @@ class RidePipeline:
             anchors_rejected=[_anchor_dict(a) for a in reg.outliers],
             road_attribution=road_attr.to_dict(),
             road_fit=road_fit,
-            diagnostics={
+            diagnostics=_base_diagnostics(
                 # 注意：下面是「墨卡托米/像素」，不是地面米/像素。
                 # 地面距离 = 墨卡托距离 × cos(纬度)，在本例纬度约差 15%。
-                "scale_mercator_m_per_px": round(reg.scale, 4),
-                "scale_ground_m_per_px": round(
+                scale_mercator_m_per_px=round(reg.scale, 4),
+                scale_ground_m_per_px=round(
                     reg.scale * math.cos(math.radians(_mean_lat(lonlat_gcj))), 4
                 ),
-                "rotation_deg": round(reg.rotation_deg, 3),
-                "model": reg.model,
-                "rmse_m": round(reg.rmse_m, 2),
-                "anchor_backproj_px": round(med_px, 1),
-                "inliers": len(reg.inliers),
-                "outliers": len(reg.outliers),
-                "ocr_texts": len(texts),
-                "anchor_candidates": len(anchors),
-                "track_points_px": len(track.polyline),
-                "bbox_px": list(track.bbox),
-                "start_marker": list(track.start_marker) if track.start_marker else None,
-                "end_marker": list(track.end_marker) if track.end_marker else None,
-                "online_geocoding": bool(self.cfg.has_online_key and allow_online),
-                "lexicon": self.lexicon.stats(),
-            },
+                rotation_deg=round(reg.rotation_deg, 3),
+                model=reg.model,
+                rmse_m=round(reg.rmse_m, 2),
+                anchor_backproj_px=round(med_px, 1),
+                inliers=len(reg.inliers),
+                outliers=len(reg.outliers),
+                ocr_texts=len(texts),
+                anchor_candidates=len(anchors),
+                track_points_px=len(track.polyline),
+                bbox_px=list(track.bbox),
+                start_marker=list(track.start_marker) if track.start_marker else None,
+                end_marker=list(track.end_marker) if track.end_marker else None,
+                online_geocoding=bool(self.cfg.has_online_key and allow_online),
+                lexicon=self.lexicon.stats(),
+            ),
             warnings=warnings,
             elapsed_ms=int((time.time() - t0) * 1000),
             debug={"track_mask": track.mask},
@@ -249,11 +314,22 @@ class RidePipeline:
         targets = targets[:14]
 
         matched = 0
+        matched_names: set[str] = set()
         for a in targets:
+            # 够用即停：RANSAC 至少要 3 个内点，拿到 5 个已足够稳定。
+            # 不提前停的话，冷启动要逐个查 14 个地名，而 OSM 检索有
+            # 1 次/秒的限速，一次识别要多等十几秒。
+            if len(matched_names) >= 5 and len(pairs) >= 5:
+                warnings.append(
+                    f"已匹配 {len(matched_names)} 个 POI 锚点，达到配准所需数量，"
+                    "其余候选未继续查询"
+                )
+                break
             results = self.geocoder.geocode(a.name, city=city, allow_online=allow_online)
             if not results:
                 continue
             matched += 1
+            matched_names.add(a.name)
             # 词典里权重最高的候选优先，其余作为备选（最多 3 个）
             for r in results[:3]:
                 pairs.append(
@@ -295,6 +371,11 @@ class RidePipeline:
 
         # 轨迹像素 bbox → 经纬度 bbox（留 margin 余量覆盖周边路网）
         # 注意 track.bbox 的语义是 (x, y, w, h)，不是 (x0, y0, x1, y1)
+        #
+        # 坐标系：reg.pixel_to_lonlat() 返回的是 **GCJ-02**（与美团底图同源），
+        # 而 OSM 的 bbox 参数期望 **WGS-84**。直接传 GCJ 会让查询中心
+        # 偏移约 450 米（东）/200 米（南）——拉回来的路网覆盖的是别的街区。
+        # 这里必须先转成 WGS-84 再交给 fetch_roads。
         try:
             bx, by, bw, bh = track.bbox
             x0, y0 = float(bx), float(by)
@@ -308,8 +389,12 @@ class RidePipeline:
             lons = [c[0] for c in corners]
             lats = [c[1] for c in corners]
             margin = 0.006
-            bbox = (min(lons) - margin, min(lats) - margin,
-                    max(lons) + margin, max(lats) + margin)
+            gcj_bbox = (min(lons) - margin, min(lats) - margin,
+                        max(lons) + margin, max(lats) + margin)
+            # GCJ-02 → WGS-84（fetch_roads / OSM API 期望的基准）
+            w_lo, w_la = gcj02_to_wgs84(gcj_bbox[0], gcj_bbox[1])
+            w_hi, w_ha = gcj02_to_wgs84(gcj_bbox[2], gcj_bbox[3])
+            bbox = (w_lo, w_la, w_hi, w_ha)
         except Exception as exc:
             return {"ok": False,
                     "notes": [f"bbox 计算失败：{type(exc).__name__}"]}, None

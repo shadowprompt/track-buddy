@@ -32,3 +32,6 @@ samples/*.png
 docs/*.png
 docs/*.geojson
 trajectory*.geojson
+
+# 临时调试目录：诊断脚本、裁剪图、原始截图 —— 一律不入库
+tmp_debug/

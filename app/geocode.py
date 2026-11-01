@@ -349,6 +349,11 @@ class Geocoder:
 
         修正后：配了 AMAP_KEY 时锚点直接来自与底图同源的高德，偏差消失；
         未配密钥时仍可用本地词典离线跑通，只是绝对精度受限。
+
+        **追加（2026-11-01）**：词典未命中时走 OSM 冷启动检索。
+        换区域（词典没覆盖的地方）时，此前是「0 个锚点 → 配准失败」，
+        而截图上其实印着「安龙小区」「长宁实验小学」这类真实地名，
+        OCR 已经读出来了，只是无处可查。冷启动让新区域也能识别。
         """
         # 1) 用户确认过的坐标永远优先
         user = self.lexicon.lookup_by_source(name, city, ("user",))
@@ -374,7 +379,53 @@ class Geocoder:
                 return online
 
         # 3) 本地词典兜底（离线可用，精度受限）
-        return self.lexicon.lookup(name, city)
+        local = self.lexicon.lookup(name, city)
+        if local:
+            return local
+
+        # 4) OSM 冷启动：词典与在线服务都没命中时的最后一道网。
+        #    仅在明确允许联网时使用（allow_online=False 表示纯离线模式）。
+        if allow_online and self.cfg.allow_online and city:
+            cold = self._cold_start(name, city)
+            if cold:
+                return cold
+        return []
+
+    # ---------- 冷启动（OSM） ----------
+
+    def _cold_start(self, name: str, city: str) -> list[GeocodeResult]:
+        """OSM 冷启动检索，并写回词典。
+
+        写回词典有两个作用：
+        1. 同名地点下次直接命中，不必再走网络；
+        2. 用户在网页上「纠正」该锚点后，纠正结果权重更高，会顶掉这里的初值。
+
+        来源标记为 ``osm``——它低于用户确认，也低于在线服务，
+        出现基准冲突时优先让位。
+        """
+        try:
+            from .coldstart import get_cold_start
+
+            cold = get_cold_start(str(self.cfg.road_cache_dir / "coldstart.json"))
+            places = cold.lookup(name, city, kinds=("poi", "transit"))
+        except Exception:  # noqa: BLE001 — 冷启动失败不应影响主流程
+            return []
+
+        out: list[GeocodeResult] = []
+        for p in places[:3]:
+            out.append(
+                GeocodeResult(
+                    name=p.name, lon=p.lon, lat=p.lat,
+                    quality=0.6, source="osm",
+                    address=f"osm/{p.osm_type}/{p.osm_id}",
+                )
+            )
+        for r in out:
+            self.lexicon.remember(
+                r.name or name, r.lon, r.lat, city=city, source="osm",
+                address=r.address, boost=0.2,
+            )
+        return out
 
     def geocode_many(
         self, names: list[str], city: str = "", allow_online: bool = True
