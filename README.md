@@ -62,8 +62,16 @@ python -m app.server --reload    # 开发模式（热重载）
 跑验收测试：
 
 ```bash
-python tests/test_e2e.py
+python tests/test_e2e.py       # 后端端到端（64 项）
+python tests/test_frontend.py  # 前端逻辑（11 项，需 Node.js）
 ```
+
+> **为什么要单独测前端**：有些 bug 只发生在浏览器里，后端日志全是 200。
+> 典型例子：腾讯地图 GL JS 在 0 尺寸容器上做 `fitBounds` 会抛
+> `Unhandled error. (undefined)`——识别本身是成功的，但渲染阶段的异常
+> 被 `catch` 捕获，显示成「识别失败」。后端测试永远发现不了这类问题。
+> `tests/test_frontend.py` 把 `index.html` 里的函数抽出来配一个会复现
+> 真实腾讯地图行为的桩，逐场景断言。
 
 ---
 
@@ -216,6 +224,49 @@ OSM API（它期望 **WGS-84**），查询中心因此偏移约 450 米（东）
 > **教训**：这三个 bug 有同一个共同特征——**只在旧样本上看不出来**。
 > 旧样本尺度大（4.5 m/px）、区域在词典内、且必然成功。
 > 换一张截图就同时踩中三个。**必须用不同区域、不同缩放级别的多张图来验证。**
+
+## 只在浏览器里才会犯的两个 bug
+
+这两个问题的服务端日志**全是 200**——识别本身是成功的，错误发生在
+识别完成之后的渲染阶段。所以跑后端测试永远发现不了。
+
+### 连续识别报「Unhandled error. (undefined)」
+
+腾讯地图 GL JS 在 **0 尺寸容器**（`display:none`）上做 `fitBounds` 会抛
+`Unhandled error. (undefined)`——它内部算缩放级别时拿到 undefined，
+错误信息里没有任何细节。
+
+触发路径：用户停在「原图叠加」标签页 → 直接点第二次「开始识别」→
+识别成功 → 渲染阶段 `map.fitBounds()` 在隐藏容器上执行 → 抛错 →
+被 `catch` 捕获 → 显示成「识别失败」。
+
+修法三处：
+
+1. `drawMap()` 在容器隐藏时**不创建、不操作**地图
+2. `fitMapToTrack()` 抽出 `fitBounds` 并加容器尺寸检查与 try-catch
+3. 识别成功后**自动切回地图标签页**——连续识别时地图始终可见可用；
+   切回时会补建地图实例并把视野对准轨迹
+
+> **教训**：第三方地图 SDK 的错误信息可能完全没有上下文。
+> 遇到 `Unhandled error. (undefined)` 这类消息，
+> 先确认异常来自哪一层——我们的 `catch` 把它包装成了「识别失败」，
+> 看起来像后端挂了，实际后端返回的是 200。
+
+### 原图预览下半部分显示不全
+
+`#preview` 原本和 `#map` 共用 `height:480px; overflow:hidden`。
+而截图是 **1260×2720 的竖长图**，按宽度缩放后高度远超 480px，
+下半部分被直接裁掉。
+
+修法：`#preview` 拆出来单独设样式，高度由图片本身撑开。
+顺带修了画布尺寸——原先只设了 `style.height` 而 CSS 里是 `height:100%`，
+两者打架导致叠加的轨迹与原图错位。
+
+> **教训**：这类纯前端的 bug 必须单独测。
+> `tests/test_frontend.py` 把 `index.html` 的函数抽出来，
+> 配一个会复现真实腾讯地图行为的桩，逐场景断言（11 项）。
+> 它验证过「还原成有 bug 的版本 → 测试确实会失败」，
+> 避免写出永远通过的空断言。
 
 ## 效果
 
@@ -580,7 +631,8 @@ web/
   index.html     网页界面（腾讯地图 GL JS + 原图叠加）
   verify.html    轨迹验证页（GCJ-02，腾讯底图直接可用）
   verify_wgs.html 同一数据的 WGS-84 版本（对比基准差）
-tests/test_e2e.py 端到端验收测试（35 项）
+tests/test_e2e.py 端到端验收测试（64 项）
+tests/test_frontend.py 前端逻辑测试（11 项，Node.js）
 data/lexicon.json 本地地名词典
 ```
 

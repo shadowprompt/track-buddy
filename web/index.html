@@ -75,8 +75,12 @@
   .tag.in { background:#e1f5ee; color:#0f6e56; }
   .tag.out { background:#f1efe8; color:#5f5e5a; }
   .tag.icon { background:#eeedfe; color:#534ab7; }
-  #map, #preview { width:100%; height:480px; border-radius:var(--radius); overflow:hidden; }
-  #preview { position:relative; background:#eee; display:none; }
+  #map { width:100%; height:480px; border-radius:var(--radius); overflow:hidden; }
+  /* 预览容器不能有固定高度：截图是 1260x2720 的竖长图，
+     按宽度缩放后高度远超 480px，固定高度 + overflow:hidden 会把
+     下半部分直接裁掉（用户反馈"原始图的下部分总是显示不全"）。
+     改为高度自适应，由图片本身撑开。 */
+  #preview { position:relative; background:#eee; display:none; width:100%; }
   #preview img { width:100%; display:block; }
   #preview canvas { position:absolute; inset:0; width:100%; height:100%; }
   .tabs { display:flex; gap:6px; margin-bottom:12px; }
@@ -217,6 +221,8 @@
   const drop = $('drop'), fileInput = $('file'), go = $('go'), status = $('status');
   let picked = null, lastResult = null;
   let map = null, polyline = null, markers = [];
+  // 当前轨迹的 LatLng 数组，供 fitMapToTrack 缩放视野用
+  let lastPath = [];
 
   // ---------- 上传交互 ----------
   drop.onclick = () => fileInput.click();
@@ -390,6 +396,19 @@
     drawMap(d);
     drawPreview(d);
 
+    // 识别成功后自动切回「地图」标签页。
+    //
+    // 为什么必须切：腾讯地图 GL JS 在 0 尺寸容器（display:none）上
+    // 做 fitBounds 会抛 "Unhandled error. (undefined)"。
+    // 用户若停在「原图叠加」页直接点第二次「开始识别」，
+    // 识别本身是成功的（后端返回 200），但渲染阶段的这个异常
+    // 被 catch 捕获，显示成「识别失败」——非常误导。
+    //
+    // 切回地图页同时保证「连续识别」时地图始终可见可用。
+    if (d.ok && $('map').style.display === 'none') {
+      switchTab('map');
+    }
+
     if (d.ok) {
       showStatus('识别完成。置信度 ' + (d.confidence * 100).toFixed(0) +
         '%，输出 ' + d.track_points + ' 个轨迹点。', 'info');
@@ -414,7 +433,16 @@
     const lat = coords[0][1], lon = coords[0][0];
     if (typeof lat !== 'number' || typeof lon !== 'number' || !isFinite(lat) || !isFinite(lon)) return;
 
+    // 地图容器隐藏时（用户停在「原图叠加」标签页）不能创建/操作地图。
+    // 腾讯地图 GL JS 在 0 尺寸容器上做 fitBounds 会抛
+    // "Unhandled error. (undefined)"——它内部算缩放级别时拿到 undefined，
+    // 错误信息里没有细节，排查很费劲（后端日志全是 200，
+    // 因为异常发生在识别成功之后的渲染阶段）。
+    const mapEl = $('map');
+    const mapHidden = mapEl.style.display === 'none';
+
     if (!map) {
+      if (mapHidden) return;          // 容器不可见，等切回来再画
       map = new TMap.Map('map', { center: new TMap.LatLng(lat, lon), zoom: 14 });
     }
 
@@ -423,6 +451,7 @@
     markers = [];
 
     const path = coords.map(c => new TMap.LatLng(c[1], c[0]));
+    lastPath = path;
     polyline = new TMap.MultiPolyline({
       map,
       styles: {
@@ -448,10 +477,6 @@
     });
     markers.push(start, end);
 
-    const bounds = new TMap.LatLngBounds();
-    path.forEach(p => bounds.extend(p));
-    map.fitBounds(bounds, { padding: 40 });
-
     // 纠正模式：点击地图选点
     if (!map.__clickBound) {
       map.__clickBound = true;
@@ -461,6 +486,10 @@
         submitCorrection(latLng.lng, latLng.lat);
       });
     }
+
+    // fitBounds 放在最后，用带保护的版本。
+    // 容器不可见时跳过——切回「地图」标签页时会补上。
+    fitMapToTrack();
   }
 
   // ---------- 原图叠加 ----------
@@ -468,11 +497,17 @@
     const img = $('prevImg');
     img.onload = () => {
       const c = $('prevCanvas');
-      const W = img.clientWidth, H = img.naturalHeight * (W / img.naturalWidth);
-      c.width = W * devicePixelRatio; c.height = H * devicePixelRatio;
+      const W = img.clientWidth;
+      const H = img.naturalHeight * (W / img.naturalWidth);
+      // 画布的 CSS 尺寸必须与图片完全一致，否则叠加的轨迹会与原图错位。
+      // 之前只设了 style.height，而 CSS 里 canvas 是 height:100%，
+      // 两者会打架——容器高度变了、画布没跟上，轨迹就画偏了。
+      c.style.width = W + 'px';
       c.style.height = H + 'px';
+      c.width = Math.round(W * devicePixelRatio);
+      c.height = Math.round(H * devicePixelRatio);
       const ctx = c.getContext('2d');
-      ctx.scale(devicePixelRatio, devicePixelRatio);
+      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
       ctx.clearRect(0, 0, W, H);
 
       // 识别失败时 image_size 是 [0,0]，除零会得到 NaN 并让整张图消失
@@ -514,16 +549,50 @@
   }
 
   // ---------- 标签页 ----------
+  // 切换到指定标签页（'map' / 'preview'）。
+  function switchTab(v) {
+    document.querySelectorAll('.tab').forEach(x => {
+      x.classList.toggle('on', x.dataset.v === v);
+    });
+    $('map').style.display = v === 'map' ? 'block' : 'none';
+    $('preview').style.display = v === 'preview' ? 'block' : 'none';
+    if (v !== 'map') return;
+
+    // 地图还没初始化过（首次识别时容器是隐藏的），现在才创建。
+    // 同时把当前结果画上去——否则切回来是一片空白。
+    if (!map) {
+      if (lastResult) drawMap(lastResult);
+      return;
+    }
+    map.resize();
+    // 之前在容器隐藏时跳过了 fitBounds，这里补上——
+    // 否则用户切回地图看到的还是上一张的视野范围。
+    fitMapToTrack();
+  }
+
   document.querySelectorAll('.tab').forEach(t => {
-    t.onclick = () => {
-      document.querySelectorAll('.tab').forEach(x => x.classList.remove('on'));
-      t.classList.add('on');
-      const v = t.dataset.v;
-      $('map').style.display = v === 'map' ? 'block' : 'none';
-      $('preview').style.display = v === 'preview' ? 'block' : 'none';
-      if (v === 'map' && map) map.resize();
-    };
+    t.onclick = () => switchTab(t.dataset.v);
   });
+
+  // 把轨迹缩放到视野。容器不可见时跳过（腾讯地图在 0 尺寸容器上
+  // 做 fitBounds 会抛 "Unhandled error. (undefined)"）。
+  //
+  // 用 lastPath（drawMap 里已构造好的 LatLng 数组）而不是重新解析
+  // GeoJSON：少一层依赖，也不会因为 lastResult 与当前图层不同步而画错范围。
+  function fitMapToTrack() {
+    if (!map || !lastPath || !lastPath.length) return;
+    const mapEl = $('map');
+    if (mapEl.style.display === 'none') return;
+    if (mapEl.clientWidth === 0 || mapEl.clientHeight === 0) return;
+    try {
+      const bounds = new TMap.LatLngBounds();
+      lastPath.forEach(p => bounds.extend(p));
+      map.fitBounds(bounds, { padding: 40 });
+    } catch (e) {
+      // 地图渲染失败不应影响识别结果的展示
+      console.warn('fitBounds 失败:', e);
+    }
+  }
 
   // ---------- 锚点纠正（数据飞轮的入口） ----------
   let correcting = null;
@@ -538,11 +607,8 @@
     correcting = name;
     $('correctName').textContent = name;
     $('correctBox').style.display = 'block';
-    // 切到地图标签页
-    document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.dataset.v === 'map'));
-    $('map').style.display = 'block';
-    $('preview').style.display = 'none';
-    if (map) map.resize();
+    // 切到地图标签页（复用 switchTab，顺带补上 fitBounds）
+    switchTab('map');
     showStatus('请在地图上点击「' + name + '」的正确位置。', 'info');
   }
 
