@@ -8,6 +8,18 @@ GPS 坐标不在图片里——截图只是一张渲染好的地图。本项目�
 
 ---
 
+## 📘 交接文档
+
+**接手本项目请先读 [`docs/HANDOVER.md`](docs/HANDOVER.md)** ——
+完整的项目设计、模块职责、坐标系约定、算法细节、API 契约、
+已知坑与排障手册、决策记录。
+
+一句话概括本项目：**这不是图像识别，是图像配准**。
+GPS 坐标不在图片里，要用图上印的 POI 标注当锚点做像素→经纬度映射，
+再用真实路网约束校正。
+
+---
+
 ## 作为 WorkBuddy 技能使用
 
 本项目已封装成用户级技能 **`ride-screenshot-georeference`**
@@ -62,7 +74,7 @@ python -m app.server --reload    # 开发模式（热重载）
 跑验收测试：
 
 ```bash
-python tests/test_e2e.py       # 后端端到端（64 项）
+python tests/test_e2e.py       # 后端端到端（66 项）
 python tests/test_frontend.py  # 前端逻辑 + 地图代理（29 项，需 Node.js）
 ```
 
@@ -749,7 +761,7 @@ web/
   index.html     网页界面（腾讯地图 GL JS + 原图叠加）
   verify.html    轨迹验证页（GCJ-02，腾讯底图直接可用）
   verify_wgs.html 同一数据的 WGS-84 版本（对比基准差）
-tests/test_e2e.py 端到端验收测试（64 项）
+tests/test_e2e.py 端到端验收测试（66 项）
 tests/test_frontend.py 前端逻辑与地图代理测试（29 项，Node.js）
 tools/verify_browser.py 真实浏览器端到端验证（Playwright，连续识别三张）
 data/lexicon.json 本地地名词典

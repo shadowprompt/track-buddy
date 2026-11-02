@@ -29,7 +29,15 @@ from .pipeline import RidePipeline
 
 def _summary(res, out_dir: str, files: dict[str, str], elapsed: float) -> dict:
     dg = res.diagnostics
-    gcj = res.geojson_gcj02["features"][0]["geometry"]["coordinates"]
+    # 识别失败时 geojson_gcj02 是空字典（PipelineResult 的默认值为 {}），
+    # 没有 "features" 键。早期实现直接 res.geojson_gcj02["features"][0]，
+    # 失败路径上会抛 KeyError: 'features' —— CLI 崩溃而不是输出 JSON 摘要，
+    # 上层脚本拿不到任何可解析的结果。这里做防御性读取。
+    gcj: list = []
+    feats = (res.geojson_gcj02 or {}).get("features") or []
+    if feats:
+        coords = (feats[0].get("geometry") or {}).get("coordinates") or []
+        gcj = coords
     return {
         "ok": res.track_points > 0,
         "confidence": res.confidence,

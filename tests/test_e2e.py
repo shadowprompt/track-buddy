@@ -452,6 +452,49 @@ def main() -> int:
         check(d_a < 800 and d_b < 800,
               "簇心紧邻两个真锚点", f"距两锚点 {d_a:.0f} m / {d_b:.0f} m")
 
+    print("\n[16] CLI 失败路径也必须输出可解析 JSON（回归项）")
+    # 真实事故：cli._summary() 直接 res.geojson_gcj02["features"][0]，
+    # 而识别失败时 geojson_gcj02 是空字典（PipelineResult 的默认值 {}），
+    # 于是抛 KeyError: 'features' —— CLI 崩溃而不是输出 JSON 摘要，
+    # 上层批量脚本拿不到任何可解析的结果。
+    from app.cli import _summary as _cli_summary
+    from app.pipeline import PipelineResult as _PR
+
+    _empty_res = _PR(
+        geojson={"type": "FeatureCollection", "features": []},
+        confidence=0.0,
+        geojson_gcj02={},          # 失败路径：没有 features 键
+        track_points=0,
+        distance_m=0.0,
+        warnings=["配准失败"],
+    )
+    try:
+        _s = _cli_summary(_empty_res, ".", {}, 0.1)
+        _ok = (_s.get("ok") is False
+               and _s.get("start_gcj02") is None
+               and _s.get("end_gcj02") is None)
+        check(_ok, "识别失败时 CLI 摘要仍可生成，且起终点为 None",
+              f"ok={_s.get('ok')}, start={_s.get('start_gcj02')}")
+    except Exception as exc:  # noqa: BLE001
+        check(False, "识别失败时 CLI 摘要仍可生成",
+              f"{type(exc).__name__}: {exc}")
+
+    # 有轨迹时摘要里的起终点应取自 geojson_gcj02
+    _ok_res = _PR(
+        geojson={"type": "FeatureCollection", "features": []},
+        confidence=0.9,
+        geojson_gcj02={"type": "FeatureCollection", "features": [
+            {"geometry": {"type": "LineString",
+                          "coordinates": [[121.5, 31.2], [121.6, 31.3]]}}]},
+        track_points=2,
+        distance_m=1234.5,
+    )
+    _s2 = _cli_summary(_ok_res, ".", {}, 0.1)
+    check(_s2.get("start_gcj02") == [121.5, 31.2]
+          and _s2.get("end_gcj02") == [121.6, 31.3],
+          "识别成功时 CLI 摘要含正确的起终点",
+          f"start={_s2.get('start_gcj02')}")
+
     print("\n" + "=" * 66)
     ok = sum(1 for r in results if r[0])
     total = len(results)
