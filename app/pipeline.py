@@ -317,6 +317,17 @@ class RidePipeline:
         matched_names: set[str] = set()
         # 未命中词典/在线服务的地名，交给冷启动批量处理
         pending: list[Anchor] = []
+        # 词典已命中、但仍要额外查冷启动的地名。
+        #
+        # 为什么不能「词典命中就直接返回」：词典里的短条目可能是
+        # OCR 截断产生的残片（实测「上海世」来自「上海西站」），
+        # 其坐标属于另一个地点，偏离可达 6.8 公里。
+        # 冷启动往往能查到正确坐标（上海世贸商城 → 121.40087,31.20189），
+        # 但被「词典已命中」挡在门外。
+        #
+        # 正确做法：两边的候选**都**交给 RANSAC，由几何一致性挑选。
+        # RANSAC 本来就是干这个的——它能识别出哪一组候选在像素上自洽。
+        pending_extra: list[Anchor] = []
         for a in targets:
             # 够用即停：RANSAC 至少要 3 个内点，拿到 5 个已足够稳定。
             # 不提前停的话，冷启动要逐个查 14 个地名，而 OSM 检索有
@@ -350,6 +361,11 @@ class RidePipeline:
                         match_quality=r.quality,
                     )
                 )
+            # 词典命中不代表坐标一定对——也让冷启动查一遍，两边候选一起
+            # 交给 RANSAC。只有「精确命中」才跳过（那基本不会错）。
+            if len(a.name) >= 4 and self.lexicon.lookup_exact(a.name):
+                continue
+            pending_extra.append(a)
 
         # --- 冷启动：批量检索未命中的地名 ---
         #
@@ -362,6 +378,14 @@ class RidePipeline:
             pairs.extend(cold_pairs)
             matched_names.update({p.name for p in cold_pairs})
             matched += len({p.name for p in cold_pairs})
+
+        # --- 冷启动（补充）：为词典已命中的锚点也提供候选 ---
+        #
+        # 词典命中时冷启动查到的可能是**正确**坐标，而词典给的是残片坐标。
+        # 两边一起交给 RANSAC，几何一致性会挑出自洽的那一组。
+        if pending_extra and allow_online and self.cfg.allow_online and city:
+            extra_pairs = self._cold_start_pairs(pending_extra, city, warnings)
+            pairs.extend(extra_pairs)
 
         if not pairs:
             warnings.append(
@@ -380,7 +404,12 @@ class RidePipeline:
             from .coldstart import get_cold_start
 
             cold = get_cold_start(str(self.cfg.road_cache_dir / "coldstart.json"))
-            found = cold.lookup_many([a.name for a in anchors], city)
+            # 把像素位置一起传过去：冷启动会用它做「位置一致性校验」，
+            # 剔除地理上装得下、但图上装不下的候选组合。
+            # 实测上海古北一例：仅按地理距离互证会选错簇心，
+            # 把两个正确候选过滤掉；加入像素方位校验后即可纠正。
+            pixels = {a.name: (a.px, a.py) for a in anchors}
+            found = cold.lookup_many([a.name for a in anchors], city, pixels=pixels)
         except Exception as exc:  # noqa: BLE001 — 冷启动失败不应影响主流程
             warnings.append(f"冷启动地理编码失败：{type(exc).__name__}")
             return []
@@ -396,7 +425,10 @@ class RidePipeline:
         pairs: list[AnchorPair] = []
         for a in anchors:
             places = found.get(a.name) or []
-            for p in places[:3]:
+            # 候选多留一些（早期只取 3 个）：正确性由 RANSAC 的几何一致性
+            # 决定，候选越全，RANSAC 越有机会挑出自洽的那一组。
+            # 实测上海古北一例，截断过早会让唯一正确的两个候选进不来。
+            for p in places[:5]:
                 pairs.append(
                     AnchorPair(
                         name=a.name,
@@ -597,8 +629,23 @@ class RidePipeline:
             fit = 0.35
 
         # 内点占比
-        total = len(reg.inliers) + len(reg.outliers)
-        ratio = len(reg.inliers) / total if total else 0.0
+        #
+        # ⚠️ 分母不能简单用「内点 + 离群」：
+        # 离群候选是**我们主动提供给 RANSAC 的备选项**（同名的多个地点、
+        # 冷启动查到的多个候选），RANSAC 挑出自洽的那一组后，
+        # 剩下的自然都是离群。备选越多，占比越低，置信度越低——
+        # 但结果完全正确。
+        #
+        # 实测浦东：候选放宽后内点仍是正确的 2 个、RMSE 0.6m、贴路 3.3m，
+        # 但离群候选从 0 涨到 3，内点占比从 1.0 掉到 0.4，
+        # 置信度被无端压低了 0.11。
+        #
+        # 正确做法：按**每个地名的候选组**算占比——
+        # 一个地名若至少有一个候选进了内点，这个地名就算「命中」。
+        # 这样离群的是候选，而不是「配错的地名」。
+        hit_names = {a.name for a in reg.inliers}
+        all_names = {a.name for a in reg.inliers} | {a.name for a in reg.outliers}
+        ratio = len(hit_names) / len(all_names) if all_names else 0.0
 
         # 锚点数量（越多越稳，但收益递减）
         n = len(reg.inliers)

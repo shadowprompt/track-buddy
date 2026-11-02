@@ -96,6 +96,13 @@ _CORROBORATE_RADIUS_M = 800.0
 # 超过说明该候选不属于这个区域——比如「花园2期」在别的区也有。
 _MAX_CENTER_DIST_M = 1500.0
 
+# 每个地名保留的候选数上限。
+#
+# 放宽到 5（早期是 3）：候选筛选的正确性交给 RANSAC 的几何一致性，
+# 候选多给它几份选择，RANSAC 才能挑出自洽的那一组。
+# 实测上海古北一例，正是因为过早截断，正确的候选没能进入配准。
+_MAX_CANDIDATES_PER_NAME = 5
+
 
 @dataclass
 class OsmPlace:
@@ -360,6 +367,7 @@ class ColdStartGeocoder:
     @staticmethod
     def _find_region_center(
         cands: dict[str, list[OsmPlace]],
+        pixels: dict[str, tuple[float, float]] | None = None,
     ) -> tuple[float, float, set[str]] | None:
         """阶段三：多锚点互证，找出互相印证的区域中心。
 
@@ -388,8 +396,39 @@ class ColdStartGeocoder:
         if len(flat) < 2:
             return None
 
+        def orientation_score(lon: float, lat: float, ocr: str) -> float:
+            """候选点与多少个「其他地名」的方位关系不矛盾。
+
+            有像素信息时，**南北关系是硬性要求**（图上的上下必须与
+            地理上的南北一致）；没有像素信息时退回「距离在互证半径内」。
+
+            为什么像素方位比地理距离更可靠：实测上海古北一例，
+            「虹桥基金小镇」与「红松东路」相距仅 791 米，比正确的那一对
+            （世贸商城↔大悦城，2379 米）更紧密。只看距离必然选错簇心，
+            于是两个正确候选被过滤掉。而像素方位显示
+            大悦城在最北、世贸商城居中、基金小镇在最南——
+            只有「世贸商城 + 大悦城」这一组满足方位一致性。
+            """
+            agree = 0.0
+            for lo2, la2, o2 in flat:
+                if o2 == ocr:
+                    continue
+                if pixels:
+                    py = pixels.get(ocr, (0.0, 0.0))[1]
+                    oy = pixels.get(o2, (0.0, 0.0))[1]
+                    if (py < oy) != (lat > la2):
+                        continue      # 南北关系矛盾 → 该组合不成立
+                    agree += 1.0
+                else:
+                    if _haversine_m(lon, lat, lo2, la2) <= _CORROBORATE_RADIUS_M:
+                        agree += 1.0
+            return agree
+
         best: tuple[Any, float, float, set[str]] | None = None
         for lon, lat, ocr in flat:
+            agree = orientation_score(lon, lat, ocr)
+            if agree <= 0:
+                continue
             near = [
                 (o2, d) for lo2, la2, o2 in flat
                 if o2 != ocr
@@ -401,15 +440,17 @@ class ColdStartGeocoder:
             # 印证的地名集合包含簇心自身的地名——它本身也是互证的一环
             corroborated = distinct | {ocr}
             total_d = sum(d for _, d in near)
-            key = (len(corroborated), -total_d)
-            if best is None or key > (best[0], best[1]):
-                best = (len(corroborated), -total_d, lon, lat, corroborated)
+            # 排序键：方位一致性优先，其次印证数量，最后总距离。
+            key = (agree, len(corroborated), -total_d)
+            if best is None or key > (best[0], best[1], best[2]):
+                best = (agree, len(corroborated), -total_d, lon, lat, corroborated)
         if best is None:
             return None
-        return best[2], best[3], best[4]
+        return best[3], best[4], best[5]
 
     def lookup_many(
-        self, names: list[str], city: str = ""
+        self, names: list[str], city: str = "",
+        pixels: dict[str, tuple[float, float]] | None = None,
     ) -> dict[str, list[OsmPlace]]:
         """批量检索多个地名（含互证定位）。
 
@@ -417,6 +458,9 @@ class ColdStartGeocoder:
 
         互证需要至少 3 个不同地名才有意义。待查地名不足 3 个时，
         直接用各自的最佳候选——由 RANSAC 的几何一致性兜底。
+
+        **pixels**（可选）：每个地名在截图上的像素位置 (px, py)。
+        传入后会启用**位置一致性校验**——见 ``_filter_by_pixel_geometry``。
         """
         if not names or not city:
             return {}
@@ -440,21 +484,136 @@ class ColdStartGeocoder:
         if len([n for n, lst in cands.items() if lst]) < 2:
             return {n: lst[:3] for n, lst in cands.items() if lst}
 
-        center = self._find_region_center(cands)
+        center = self._find_region_center(cands, pixels)
         if center is None:
             # 互证失败：退回「每个地名各自的最佳候选」。
             # RANSAC 会用几何一致性挑出自洽的那一组。
-            return {n: lst[:3] for n, lst in cands.items() if lst}
+            out = {n: lst[:3] for n, lst in cands.items() if lst}
+            if pixels:
+                out = self._filter_by_pixel_geometry(out, pixels)
+            return out
+
+        # ⚠️ 顺序很关键：位置一致性校验必须在「按簇心距离过滤」**之前**做。
+        #
+        # 原因：簇心本身可能就是错的（只按地理距离选出的一对恰好更紧密），
+        # 此时按簇心过滤会把正确候选直接丢掉，后面再怎么校验也救不回来。
+        # 实测上海古北一例：互证簇心落在南边的错误区域，
+        # 「上海世贸商城」距簇心 2399m、「上海长风大悦城」4471m，
+        # 两者在距离过滤阶段就被丢弃了。
+        if pixels:
+            cands = self._filter_by_pixel_geometry(cands, pixels)
 
         clon, clat, corroborated = center
+        # 簇心过滤**放宽**为「不丢弃，只排序」。
+        #
+        # 早期实现是硬过滤：距簇心超过 1500 米的候选直接扔掉。
+        # 但簇心本身可能是错的——只看地理距离时，
+        # 恰好是「地理上更紧密但方位不对」的那一对会赢得簇心，
+        # 于是**正确**的候选被扔掉，错的反而留下。
+        #
+        # 实测上海古北一例：簇心落在「虹桥基金小镇/红松东路」那片
+        # 错误区域（相距仅 791m，比正确的那对 2379m 更紧密），
+        # 于是「上海世贸商城」（距簇心 2399m）与
+        # 「上海长风大悦城」（4471m）被丢弃——
+        # 而它们恰恰是唯一正确的两个。
+        #
+        # 现在改为：按到簇心的距离排序，靠前的优先，
+        # 但**不丢弃**远处候选。挑选的正确性交给 RANSAC——
+        # 它本来就靠几何一致性判断哪一组候选自洽，
+        # 而且做得比这里的距离启发式好得多
+        # （实测同一组数据，RANSAC 直接用全部候选可得 RMSE 11.7m、3 内点）。
         out: dict[str, list[OsmPlace]] = {}
         for n, lst in cands.items():
-            keep = [
-                p for p in lst
-                if _haversine_m(clon, clat, p.lon, p.lat) <= _MAX_CENTER_DIST_M
-            ]
-            if keep:
-                out[n] = keep[:3]
+            if not lst:
+                continue
+            ordered = sorted(
+                lst,
+                key=lambda q: _haversine_m(clon, clat, q.lon, q.lat),
+            )
+            # 远处的候选排在后面但仍然保留（RANSAC 会用它们做交叉验证）
+            out[n] = ordered[:_MAX_CANDIDATES_PER_NAME]
+        return out
+
+    @staticmethod
+    def _filter_by_pixel_geometry(
+        cands: dict[str, list[OsmPlace]],
+        pixels: dict[str, tuple[float, float]],
+    ) -> dict[str, list[OsmPlace]]:
+        """用「像素相对位置」校验候选，剔除地理上装得下但图上装不下的组合。
+
+        为什么需要这个
+        --------------
+        互证机制只看**地理距离**：候选点周边有别的地名的候选在 800 米内，
+        就认为那一片区域是真的。但这个判据会选错簇心。
+
+        实测事故（上海古北一例）：截图上有 4 个可查到的 POI——
+        上海世贸商城、上海长风大悦城、虹桥基金小镇、红松东路。
+        其中「虹桥基金小镇」与「红松东路」相距仅 791 米，
+        比「上海世贸商城」与「上海长风大悦城」的 2379 米更紧密，
+        于是互证把簇心定在了南边那片**错误**区域，
+        随即把两个**正确**的候选（世贸商城 2399m、大悦城 4471m）过滤掉了。
+
+        漏掉的关键信息是**像素位置**：
+        截图上「上海长风大悦城」在最上方（y=206），
+        「虹桥基金小镇」在最下方（y=2521）；
+        真实纬度也确实是 31.2227 → 31.1829 单调递减。
+        像素的相对关系与地理的相对关系**必须一致**，
+        否则这个候选组合就不可能是这张截图。
+
+        做法
+        ----
+        对每一对「都有候选」的地名，比较它们在像素上的先后/左右关系，
+        与候选地理坐标上的南北/东西关系是否一致。
+        只保留与**多数**地名关系一致的候选；孤立的矛盾候选被剔除。
+
+        注意：北向朝上的截图才成立。若配准结果 rotation_deg 明显非零，
+        说明图被旋转过，此时像素的上下关系不再对应南北，应跳过本校验。
+        """
+        # 只在双方都有候选的地名之间做比较
+        usable = {n: lst for n, lst in cands.items()
+                  if lst and n in pixels}
+        if len(usable) < 2:
+            return cands
+
+        # 对每个地名，统计它的候选与「其他地名的最佳候选」在方位上
+        # 有多少处一致。取一致数最高的候选；平手时保留原有的全部。
+        best: dict[str, list[OsmPlace]] = {}
+        for name, lst in usable.items():
+            px, py = pixels[name]
+            scores: list[tuple[int, OsmPlace]] = []
+            for cand in lst:
+                agree = 0
+                total = 0
+                for other, olst in usable.items():
+                    if other == name:
+                        continue
+                    ox, oy = pixels[other]
+                    # 对方取地理上「最近」的候选作参照
+                    near = min(olst, key=lambda o: _haversine_m(
+                        cand.lon, cand.lat, o.lon, o.lat))
+                    # 像素上的南北/东西关系
+                    px_north = py < oy
+                    px_east = px > ox
+                    # 地理上的南北/东西关系
+                    geo_north = cand.lat > near.lat
+                    geo_east = cand.lon > near.lon
+                    total += 1
+                    if px_north == geo_north:
+                        agree += 1
+                    # 东西关系权重低些：图上横向可能有缩放/轻微旋转
+                    elif px_east == geo_east:
+                        agree += 0.5
+                scores.append((agree, cand))
+            if not scores:
+                continue
+            top = max(s for s, _ in scores)
+            # 与最高分并列的候选都保留（可能是同地点的多个写法）
+            best[name] = [c for s, c in scores if s >= top - 1e-9]
+
+        out = dict(cands)
+        for name, lst in best.items():
+            if lst:
+                out[name] = lst
         return out
 
     def lookup(

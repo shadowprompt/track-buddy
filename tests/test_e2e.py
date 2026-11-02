@@ -32,6 +32,12 @@ FAIL = "✗"
 results: list[tuple[bool, str, str]] = []
 
 
+
+class _TrackStub:
+    """轨迹提取结果的最小桩（只提供 confidence，置信度评分用）。"""
+    def __init__(self, conf: float = 0.9):
+        self.confidence = conf
+
 def check(cond: bool, name: str, detail: str = "") -> None:
     results.append((bool(cond), name, detail))
     print(f"  {PASS if cond else FAIL} {name}" + (f"  — {detail}" if detail else ""))
@@ -451,6 +457,128 @@ def main() -> int:
         d_b = _haversine_m(clon, clat, good_b.lon, good_b.lat)
         check(d_a < 800 and d_b < 800,
               "簇心紧邻两个真锚点", f"距两锚点 {d_a:.0f} m / {d_b:.0f} m")
+
+    print("\n[15b] 词典子串匹配方向（回归项）")
+    # 真实事故：词典里有 OCR 截断产生的残片「上海世」（来自「上海西站」），
+    # 坐标 121.40071,31.26275（上海西站）。查「上海世贸商城」时，
+    # 「上海世」是它的子串 → 命中 → 返回了**上海西站**的坐标，
+    # 偏离真实位置（121.40087,31.20189）6.8 公里。
+    # 而冷启动已经查到了正确坐标，却因「词典已命中」被丢弃。
+    from app.geocode import Lexicon
+    _lex = Lexicon(CONFIG.lexicon_path)
+    _res = _lex.lookup("上海世贸商城", "上海")
+    _wrong = [r for r in _res if abs(r.lat - 31.26275) < 1e-4]
+    check(not _wrong,
+          "短残片条目不再劫持长查询名（上海世 ≠ 上海世贸商城）",
+          f"查到 {len(_res)} 候选")
+    # 安全方向必须仍然可用：查「百联中环购物广场」应命中词典里的「百联中环」
+    _safe = _lex.lookup("百联中环购物广场", "上海")
+    check(len(_safe) >= 1,
+          "安全方向的包含匹配仍然有效（长 key 命中短查询）",
+          f"{len(_safe)} 候选")
+    # 精确命中不受影响
+    check(len(_lex.lookup_exact("安龙小区")) >= 1,
+          "精确命中不受子串规则影响")
+
+    print("\n[15c] 冷启动簇心过滤不得丢弃正确候选（回归项）")
+    # 真实事故（上海古北一例）：簇心按地理距离选出，
+    # 恰好是「地理上更紧密但方位不对」的那一对赢得簇心，
+    # 于是**正确**的候选被硬过滤丢弃：
+    #   「虹桥基金小镇」↔「红松东路」相距仅 791m（赢得簇心）
+    #   「上海世贸商城」↔「上海长风大悦城」相距 2379m（正确但被丢）
+    # 结果：正确候选 2399m / 4471m 超出 1500m 阈值 → 被扔。
+    #
+    # 修法：簇心过滤放宽为「只排序、不丢弃」，
+    # 挑选的正确性交给 RANSAC 的几何一致性。
+    from app.coldstart import ColdStartGeocoder as _CS
+    _cs2 = _CS.__new__(_CS)
+    _cs2._lock = __import__("threading").Lock()
+    _cs2._mem = {
+        "上海市|上海世贸商城": [OsmPlace(name="上海世贸商城", lon=121.40087,
+                                          lat=31.20189, kind="poi", score=1.0)],
+        "上海市|上海长风大悦城": [OsmPlace(name="长风大悦城", lon=121.39528,
+                                            lat=31.22274, kind="poi", score=0.9)],
+        "上海市|虹桥基金小镇": [OsmPlace(name="虹桥基金小镇", lon=121.38890,
+                                          lat=31.18290, kind="poi", score=1.0)],
+        "上海市|红松东": [OsmPlace(name="红松东路", lon=121.39527, lat=31.18747,
+                                    kind="poi", score=0.94)],
+    }
+    _cs2._save_disk = lambda: None
+    _found = _cs2.lookup_many(
+        ["上海世贸商城", "上海长风大悦城", "虹桥基金小镇", "红松东"], "上海")
+    _kept = [n for n in _found if _found[n]]
+    check("上海世贸商城" in _kept,
+          "距簇心较远但正确的候选不被丢弃（交给 RANSAC 判断）",
+          f"保留 {len(_kept)} 个地名")
+    check("上海长风大悦城" in _kept,
+          "第二个正确候选同样保留",
+          f"保留 {len(_kept)} 个地名")
+    # 每个地名保留的候选数上限应 >= 4，给 RANSAC 足够选择
+    _maxc = 0
+    for lst in _found.values():
+        _maxc = max(_maxc, len(lst))
+    from app.coldstart import _MAX_CANDIDATES_PER_NAME
+    check(_MAX_CANDIDATES_PER_NAME >= 4,
+          "每个地名保留的候选数 >= 4（截断过早会让正确候选进不来）",
+          f"上限 {_MAX_CANDIDATES_PER_NAME}")
+
+    print("\n[15d] 全部候选交给 RANSAC 时的几何一致性（回归项）")
+    # 实测：同一组候选，直接交给 RANSAC 可得 RMSE 11.7m、3 个内点，
+    # 且三个内点都在正确区域。说明「候选筛选」这一步不该替 RANSAC 做决定。
+    from app.register import AnchorPair as _AP, register as _register
+    _pix = {"上海世贸商城": (982, 1416), "上海长风大悦城": (698, 206),
+            "虹桥基金小镇": (374, 2521), "红松东": (1207, 2122)}
+    _pairs = []
+    for _n, _lst in _found.items():
+        for _q in _lst:
+            _px, _py = _pix[_n]
+            _pairs.append(_AP(name=_n, px=_px, py=_py, weight=0.85, kind="poi",
+                               lon=_q.lon, lat=_q.lat, match_quality=0.6))
+    _reg = _register(_pairs, inlier_m=200.0, min_inliers=3)
+    check(_reg.ok and len(_reg.inliers) >= 3,
+          "RANSAC 能从全部候选中挑出 >=3 个自洽内点",
+          f"内点 {len(_reg.inliers)} / 离群 {len(_reg.outliers)}, "
+          f"RMSE {_reg.rmse_m:.1f}m")
+    check(_reg.rmse_m < 50,
+          "自洽内点的 RMSE < 50m（说明选对了区域）",
+          f"RMSE {_reg.rmse_m:.1f}m")
+
+    print("\n[15e] 置信度：离群候选不应惩罚（回归项）")
+    # 离群候选是**主动提供给 RANSAC 的备选项**（同名的多个地点、
+    # 冷启动查到的多个候选）。RANSAC 挑出自洽的那一组后，
+    # 剩下的自然都是离群——备选越多占比越低，但结果完全正确。
+    #
+    # 实测浦东：候选放宽后内点仍是正确的 2 个、RMSE 0.6m、贴路 3.3m，
+    # 但离群候选从 0 涨到 3，按「内点/(内点+离群)」算占比
+    # 从 1.0 掉到 0.4，置信度被无端压低 0.11。
+    #
+    # 正确做法：按**每个地名的候选组**算占比——
+    # 一个地名若至少有一个候选进了内点，这个地名就算「命中」。
+    from app.register import Registration as _Reg, AnchorPair as _AP2
+    import numpy as _np
+    _mk = lambda nm, lon, lat: _AP2(name=nm, px=100, py=100, weight=0.85,
+                                   kind="poi", lon=lon, lat=lat, match_quality=0.9)
+    # 桩需要一个可逆的变换矩阵——_self_check 会求逆做反投影校验
+    _mat = _np.array([[1.0, 0.0], [0.0, -1.0]])
+    # 情况A：2 个地名命中，其中一个地名有 3 个离群候选
+    _reg_a = _Reg(
+        ok=True, inliers=[_mk("A", 121.4, 31.2), _mk("B", 121.41, 31.21)],
+        outliers=[_mk("B", 121.5, 31.3), _mk("B", 121.6, 31.4),
+                  _mk("B", 121.7, 31.5)],
+        rmse_m=0.6, model="north_up", matrix=_mat,
+    )
+    # 情况B：2 个地名命中，各 1 个离群候选
+    _reg_b = _Reg(
+        ok=True, inliers=[_mk("A", 121.4, 31.2), _mk("B", 121.41, 31.21)],
+        outliers=[_mk("A", 121.5, 31.3), _mk("B", 121.6, 31.4)],
+        rmse_m=0.6, model="north_up", matrix=_mat,
+    )
+    _pipe = RidePipeline(CONFIG)
+    _ca = _pipe._score_confidence(_reg_a, _TrackStub(0.9), [], [], None)
+    _cb = _pipe._score_confidence(_reg_b, _TrackStub(0.9), [], [], None)
+    check(abs(_ca - _cb) < 0.001,
+          "同一组内点下，离群候选数量不影响置信度",
+          f"A={_ca}  B={_cb}")
 
     print("\n[16] CLI 失败路径也必须输出可解析 JSON（回归项）")
     # 真实事故：cli._summary() 直接 res.geojson_gcj02["features"][0]，

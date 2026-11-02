@@ -4,11 +4,18 @@
 不使用 OpenStreetMap / Mapbox / Google Maps 等境外或未备案数据源。
 
 优先级：
-1. 本地词典（data/lexicon.json）—— 零延迟、零配额，且随使用积累变准
-2. 在线服务（按已配置的 key 自动选择）
+1. 用户确认过的坐标（source="user"）—— 永远第一
+2. 在线服务（按已配置的 key 自动选择；与美团底图同源，精度最高）
+3. 本地词典（data/lexicon.json）—— 零延迟、零配额，且随使用积累变准
+4. OSM 冷启动（app/coldstart.py）—— 词典未覆盖区域的兜底
 
 本地词典是「越用越准」的核心资产：每次用户确认/纠正都会写入，
 形成该城市独有的「地名 → 精确坐标」映射，其精度远超任何公共 API。
+
+**重要**：词典优先级高不代表它给的坐标一定对。
+词典里的短条目可能是 OCR 截断产生的残片（如「上海世」来自「上海西站」），
+其坐标属于另一个地点。因此词典命中时仍应让冷启动/在线候选一起参与，
+由 RANSAC 的几何一致性挑选真正自洽的那一组。
 """
 
 from __future__ import annotations
@@ -24,6 +31,14 @@ import requests
 
 from .config import AppConfig
 from .geo.coords import wgs84_to_gcj02
+
+# 反向子串匹配的长度比下限。
+#
+# 词典 key 是查询名的子串时（`key in name`），只有 key 足够长
+# 才可能是同一个地点的截断写法，否则它多半是别的地点的残片。
+# 实测：「上海世」(3字) 命中「上海世贸商城」(6字)，比例 0.5，
+# 属于残片，必须拦下。
+_PARTIAL_MIN_RATIO = 0.6
 
 
 @dataclass
@@ -84,6 +99,25 @@ class Lexicon:
         除精确匹配外，还做「包含匹配」：地图标注常把 POI 名拆开或与
         相邻文字粘连（如「百联中环」+「购物广场河」），OCR 结果可能是
         完整名的一部分。包含匹配能把这类情况救回来。
+
+        **但包含匹配有方向性，不能只看子串关系**：
+
+        - 查询名是词典 key 的子串（`key in name`）：安全。
+          例：查「百联中环购物广场」能命中词典里的「百联中环」。
+
+        - 词典 key 是查询名的子串（`key in name` 的反向）：**危险**。
+          词典里的短 key 多半是 OCR 截断产生的**残片**，
+          它的坐标属于它真正代表的另一个地点。
+
+        实测事故：词典里有残片「上海世」（来自「上海西站」被截断），
+        坐标 121.40071,31.26275（上海西站）。查「上海世贸商城」时，
+        「上海世」是它的子串 → 命中 → 返回了**上海西站**的坐标，
+        偏离真实位置 6.8 公里。而冷启动其实已经查到了正确坐标
+        121.40087,31.20189，却因为「词典已命中」被丢弃，
+        正确候选根本没机会参与配准。
+
+        因此反向匹配必须加**长度比**约束：短 key 至少要占查询名的
+        60%（且不少于 3 个字），否则它就是残片而非同一地点。
         """
         key = self.normalize(name)
         with self._lock:
@@ -93,10 +127,15 @@ class Lexicon:
                 for k, entries in self._data.items():
                     if k == key:
                         continue
-                    # 一方是另一方的子串，且较短一方至少有 3 个字
-                    if (key in k and len(key) >= 3) or (k in key and len(k) >= 3):
+                    # 查询名包含词典 key：安全方向。
+                    if key in k and len(key) >= 3:
                         for e in entries:
                             partial.append((k, e))
+                    # 词典 key 包含查询名：反向，需长度比约束防残片劫持。
+                    elif k in key and len(k) >= 3:
+                        if len(k) / len(key) >= _PARTIAL_MIN_RATIO:
+                            for e in entries:
+                                partial.append((k, e))
 
         merged: list[dict] = []
         seen: set[tuple[float, float]] = set()
@@ -125,6 +164,19 @@ class Lexicon:
                 )
             )
         return results
+
+    def lookup_exact(self, name: str) -> list[dict[str, Any]]:
+        """只做**精确**匹配（不做子串扩展）。
+
+        用于判断「词典里是否有这个完整地名」——
+        精确命中时坐标基本不会错，可以跳过冷启动的额外查询；
+        而子串命中可能只是残片巧合，需要更多候选来交叉验证。
+        """
+        key = self.normalize(name)
+        if not key:
+            return []
+        with self._lock:
+            return list(self._data.get(key, []))
 
     def remember(
         self,
