@@ -143,6 +143,25 @@ async def recognize(
         "image_size": list(result.image_size),
     }
 
+    # 落盘给「轨迹地图对照页」用：低缩放截图的定位结果光看坐标
+    # 看不出对错，必须落到真实底图上才知道落在哪个街区。
+    try:
+        import json as _json
+        _map_payload = dict(payload)
+        _map_payload["coords"] = [
+            [round(float(lo), 6), round(float(la), 6)]
+            for lo, la in (
+                (result.geojson_gcj02 or result.geojson)["features"][0]
+                ["geometry"]["coordinates"]
+            )
+        ] if (result.geojson_gcj02 or result.geojson).get("features") else []
+        _map_payload["coords_a"] = list(_map_payload["coords"])
+        _map_payload["coords_b"] = list(_map_payload["coords"])
+        (DATA_DIR / "last_result.json").write_text(
+            _json.dumps(_map_payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
     # 需要后台精修吗？
     #
     # 判据：尺度大（低缩放）且路网精修还没跑过。低缩放下路网精修的价值
@@ -323,6 +342,21 @@ def _server_port(request: Request | None = None) -> int:
     except Exception:  # noqa: BLE001 — 读不到就用默认值
         pass
     return 8000
+
+
+@app.get("/traj-map")
+async def traj_map(request: Request, shot: str = "") -> Response:
+    """把识别结果画到真实腾讯地图上（可选对比「有/无路名约束」两条轨迹）。
+
+    低缩放截图的定位结果光看坐标看不出对错——必须落到真实底图上
+    才能一眼看出「落在哪个街区」。
+    """
+    from .trajmap import render_traj_map, load_result
+
+    result = load_result(shot or None)
+    html = render_traj_map(result)
+    html = render_page(html, _server_port(request), _TMAP_SECRET)
+    return Response(content=html, media_type="text/html")
 
 
 @app.get("/")
