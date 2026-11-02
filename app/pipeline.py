@@ -58,6 +58,12 @@ class PipelineResult:
     # 像素空间的轨迹折线，供前端在原图上叠加
     track_polyline_px: list[list[int]] = field(default_factory=list)
     image_size: tuple[int, int] = (0, 0)
+    # 备选位置（低置信度时给用户「换个位置」）
+    #
+    # 低缩放截图的定位信号本质上是**多峰**的：底图匹配实测前 12 个候选
+    # 的分数差只有 0.1%，但地理位置分散在 900-1600 米范围内。
+    # 只给一个答案等于替用户乱猜，不如把几个候选摆出来。
+    alternatives: list[dict[str, Any]] = field(default_factory=list)
 
 
 # diagnostics 的完整键集。
@@ -84,6 +90,7 @@ DIAG_KEYS: tuple[str, ...] = (
     "end_marker",
     "online_geocoding",
     "lexicon",
+    "alternatives",
 )
 
 
@@ -175,6 +182,11 @@ class RidePipeline:
         med_px, check_notes = self._self_check(reg, pairs)
         warnings.extend(check_notes)
 
+        # --- 备选位置 ---
+        # 收集与最优解地理上分离（>300 米）的其他自洽解。
+        # 低置信度时前端会把它们列出来，让用户一键切换。
+        alternatives = self._collect_alternatives(reg, track, output_crs)
+
         # --- 阶段 4.5：路网约束精修 ---
         # 用「轨迹必须走在真实道路上」纠正绝对位置。锚点是 POI 文字标注，
         # 标注点位与真实 POI 存在 100-300m 系统偏差（不同 POI 数据库之间），
@@ -262,6 +274,7 @@ class RidePipeline:
             anchors_rejected=[_anchor_dict(a) for a in reg.outliers],
             road_attribution=road_attr.to_dict(),
             road_fit=road_fit,
+            alternatives=alternatives,
             diagnostics=_base_diagnostics(
                 # 注意：下面是「墨卡托米/像素」，不是地面米/像素。
                 # 地面距离 = 墨卡托距离 × cos(纬度)，在本例纬度约差 15%。
@@ -283,6 +296,7 @@ class RidePipeline:
                 end_marker=list(track.end_marker) if track.end_marker else None,
                 online_geocoding=bool(self.cfg.has_online_key and allow_online),
                 lexicon=self.lexicon.stats(),
+                alternatives=len(alternatives),
             ),
             warnings=warnings,
             elapsed_ms=int((time.time() - t0) * 1000),
@@ -469,6 +483,51 @@ class RidePipeline:
                     )
                 )
         return pairs
+
+    def _collect_alternatives(
+        self, reg: Registration, track: TrackResult,
+        output_crs: str = "WGS-84",
+    ) -> list[dict[str, Any]]:
+        """收集备选位置（低置信度时给用户「换个位置」）。
+
+        为什么要有这个：低缩放截图（一张图覆盖 20 公里）下，几何信号
+        本质上是多峰的——底图匹配实测前 12 个候选的 Chamfer 分数差
+        只有 0.1%（3.52 vs 3.52 米），但地理位置分散在 900-1600 米。
+        只输出最优解等于**替用户乱猜**。
+
+        产出格式与 anchors_used 一致，方便前端复用渲染逻辑。
+        """
+        out: list[dict[str, Any]] = []
+        for i, alt in enumerate(getattr(reg, "alternatives", []) or []):
+            try:
+                pts = apply_to_polyline(alt, track.polyline)
+                if not pts:
+                    continue
+                # ⚠️ 备选坐标用 **GCJ-02**：前端地图底图是腾讯地图（GCJ-02），
+                # 主绘制路径也优先用 geojson_gcj02。若这里输出 WGS-84，
+                # 切换候选后轨迹会整体偏移约 290 米。
+                start = pts[0]
+                end = pts[-1]
+                out.append({
+                    "index": i + 1,
+                    "lon": round(float(start[0]), 6),
+                    "lat": round(float(start[1]), 6),
+                    "end_lon": round(float(end[0]), 6),
+                    "end_lat": round(float(end[1]), 6),
+                    "model": alt.model,
+                    "inliers": len(alt.inliers),
+                    "rmse_m": round(float(alt.rmse_m), 1),
+                    "scale_m_per_px": round(float(alt.scale), 3),
+                    "anchor_names": [a.name for a in alt.inliers][:8],
+                    # 完整轨迹（GCJ-02）：前端切换时直接用它重画，
+                    # 不用回服务端重算
+                    "coords": [[round(float(x), 6), round(float(y), 6)]
+                               for x, y in pts],
+                    "crs": "GCJ-02",
+                })
+            except Exception:
+                continue
+        return out
 
     def _road_refine(self, reg: Registration, track: TrackResult):
         """路网约束精修：用「轨迹必须走在真实道路上」纠正配准的绝对位置。

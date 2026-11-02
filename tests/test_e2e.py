@@ -752,6 +752,76 @@ def main() -> int:
           "识别成功时 CLI 摘要含正确的起终点",
           f"start={_s2.get('start_gcj02')}")
 
+    print("\n[18] 低置信度时的备选位置（数据飞轮的入口）")
+    # 场景：低缩放截图的定位信号是**多峰**的——实测前 12 个候选的
+    # 匹配分数差只有 0.1%，但地理位置分散在 900-1600 米。
+    # 只给一个答案等于替用户乱猜，必须把候选摆出来让用户选。
+    # 每个锚点配 3 个候选：正确的一个 + 两个相距 2 公里的同名地点。
+    # 这正是 Nominatim 对「上海站」「外环高速」等返回的样子——
+    # 选了哪个候选，就决定了落点在哪。
+    _S = 15.7
+    _DL = 700.0 * _S / 111320.0
+    _DA = 700.0 * _S / 130100.0
+    _TRUTH = [
+        ("A", (100.0, 100.0), 121.4000, 31.2000),
+        ("B", (800.0, 100.0), 121.4000 + _DL, 31.2000),
+        ("C", (100.0, 800.0), 121.4000, 31.2000 - _DA),
+    ]
+    _pairs = []
+    for _n, (_px, _py), _lo, _la in _TRUTH:
+        for _off in (0.0, 0.02, -0.02):
+            _pairs.append(_AP3(
+                name=_n, px=_px, py=_py, weight=0.9, kind="poi",
+                lon=_lo + _off, lat=_la, match_quality=0.9))
+    _reg = register(_pairs, inlier_m=200.0, min_inliers=3)
+    check(_reg.ok, "备选功能的前提：配准本身成立")
+
+    # 备选解字段存在且是列表
+    check(isinstance(getattr(_reg, "alternatives", None), list),
+          "Registration 暴露 alternatives 列表",
+          f"type={type(getattr(_reg, 'alternatives', None)).__name__}")
+
+    # 备选解与最优解地理上分离（>300 米）——这是筛掉「同一解的抖动」的判据
+    if _reg.ok and _reg.alternatives:
+        _alt = _reg.alternatives[0]
+        _probe = _np.array([300.0, 300.0])
+        _c_best = _reg.matrix @ _probe + _reg.translation
+        _c_alt = _alt.matrix @ _probe + _alt.translation
+        _sep = float(_np.linalg.norm(_c_alt - _c_best))
+        check(_sep > 300.0,
+              "备选解与最优解地理上分离（>300 米）",
+              f"分离 { _sep:.0f} 米")
+        check(_alt.ok and len(_alt.inliers) >= 2,
+              "备选解本身是有效的自洽解",
+              f"内点 {len(_alt.inliers)}")
+    else:
+        check(False, "备选解与最优解地理上分离（>300 米）",
+              "该构造未产生备选解（少于 3 个锚点时正常）")
+
+    # Pipeline 层：备选携带完整轨迹坐标，且坐标系是 GCJ-02
+    from app.pipeline import RidePipeline as _RP
+    _pipe = _RP.__new__(_RP)          # 绕过 __init__（需要词典与网络）
+    _fake_track = type("T", (), {"polyline": _np.array([[100.0, 100.0],
+                                                         [800.0, 100.0],
+                                                         [100.0, 800.0]])})()
+    _alts_out = _pipe._collect_alternatives(_reg, _fake_track, "WGS-84")
+    check(isinstance(_alts_out, list),
+          "pipeline._collect_alternatives 返回列表")
+    if _alts_out:
+        _a0 = _alts_out[0]
+        check(_a0.get("crs") == "GCJ-02",
+              "备选坐标基准是 GCJ-02（与腾讯底图一致）",
+              f"crs={_a0.get('crs')}")
+        check(len(_a0.get("coords") or []) == 3,
+              "备选携带完整轨迹坐标（前端可直接重画）",
+              f"点数 {len(_a0.get('coords') or [])}")
+        check(isinstance(_a0.get("lon"), float)
+              and isinstance(_a0.get("lat"), float),
+              "备选带有起终点坐标")
+    else:
+        check(False, "备选坐标基准是 GCJ-02（与腾讯底图一致）",
+              "未产生备选（构造数据下正常）")
+
     print("\n" + "=" * 66)
     ok = sum(1 for r in results if r[0])
     total = len(results)

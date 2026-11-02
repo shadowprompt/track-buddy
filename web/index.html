@@ -170,6 +170,12 @@
         <div class="note" id="diag"></div>
       </div>
 
+      <div class="card" id="altCard" style="margin-top:16px; display:none;">
+        <h2>位置存疑？试试其他候选</h2>
+        <div class="note" id="altNote"></div>
+        <div id="altList" style="margin-top:10px;"></div>
+      </div>
+
       <div class="card" id="roadCard" style="margin-top:16px; display:none;">
         <h2>经过的道路</h2>
         <div id="roadSummary"></div>
@@ -391,7 +397,11 @@
     return String(v);
   }
 
+  // 当前识别结果（供「换个位置」切换用）
+  let currentResult = null;
+
   function render(d) {
+    currentResult = d;
     $('resultCard').style.display = 'block';
     $('anchorCard').style.display = 'block';
 
@@ -425,6 +435,29 @@
       (d.warnings && d.warnings.length
         ? '<ul class="warnlist">' + d.warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>'
         : '');
+
+    // 备选位置（低置信度时给用户选择）
+    //
+    // 为什么需要：低缩放截图（一张图覆盖 20 公里）的定位信号本质上是
+    // **多峰**的——实测前 12 个候选的匹配分数差只有 0.1%，但地理位置
+    // 分散在 900-1600 米。只给一个答案等于替用户乱猜。
+    const alts = d.alternatives || [];
+    if (alts.length) {
+      $('altCard').style.display = 'block';
+      const conf = typeof d.confidence === 'number' ? d.confidence : 0;
+      $('altNote').innerHTML = conf < 0.6
+        ? '当前置信度较低（' + Math.round(conf * 100) + '%）。下面是其它同样自洽的位置，' +
+          '点一下就能切换；选中后可以用「锚点明细 → 纠正」把正确位置固化到词典。'
+        : '下面是其它同样自洽的位置。如果当前位置明显不对，可以点一下切换。';
+      $('altList').innerHTML = alts.map(a =>
+        '<div class="kv" style="align-items:center;">' +
+        '<span>候选 ' + a.index + ' · ' + esc(a.model || '') + ' · 内点 ' +
+        int(a.inliers, 0) + ' · 残差 ' + num(a.rmse_m, 0, '—') + ' m</span>' +
+        '<span><button class="ghost" data-alt="' + a.index + '" style="padding:3px 10px;">用这个</button></span>' +
+        '</div>').join('');
+    } else {
+      $('altCard').style.display = 'none';
+    }
 
     // 路名归属
     const ra = d.road_attribution || {};
@@ -729,6 +762,52 @@
     } catch (e) {
       // 地图渲染失败不应影响识别结果的展示
       console.warn('fitBounds 失败:', e);
+    }
+  }
+
+  // ---------- 切换到备选位置 ----------
+
+  // 低缩放截图的定位信号是**多峰**的：实测前 12 个候选的匹配分数差
+  // 只有 0.1%，但地理位置分散在 900-1600 米。把候选摆出来让用户点，
+  // 比替用户乱猜要诚实得多——而且用户的每一次选择都是数据。
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest ? e.target.closest('[data-alt]') : null;
+    if (!btn) return;
+    const idx = parseInt(btn.getAttribute('data-alt'), 10);
+    applyAlternative(idx);
+  });
+
+  function applyAlternative(index) {
+    const d = currentResult;
+    if (!d) return;
+    const alts = d.alternatives || [];
+    const chosen = alts.find(a => a.index === index);
+    if (!chosen || !chosen.coords || !chosen.coords.length) {
+      showStatus('该候选缺少轨迹数据，无法切换', 'err');
+      return;
+    }
+    // 用候选的轨迹重画地图
+    const gj = {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        properties: { label: '轨迹', crs: d.crs, source: 'alternative_' + index },
+        geometry: { type: 'LineString', coordinates: chosen.coords },
+      }],
+    };
+    try {
+      drawMapInner(gj);
+      ensureMapReady();
+      fitMapToTrack();
+      showStatus(
+        '已切换到候选 ' + index + '（' + text(chosen.model, '') +
+        '，内点 ' + int(chosen.inliers, 0) + '）。' +
+        '如果这个位置是对的，请到「锚点明细」纠正几个关键锚点，把正确位置固化进词典。',
+        'info'
+      );
+    } catch (err) {
+      console.error('切换候选失败:', err);
+      showStatus('切换失败：' + (err && err.message ? err.message : '未知错误'), 'err');
     }
   }
 

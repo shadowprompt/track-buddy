@@ -74,6 +74,14 @@ class Registration:
     # 而其中三个 POI 锚点的残差只有 100-300 米）。
     rmse_reliable_m: float = 0.0
     n_reliable: int = 0
+    # 备选解：低置信度时交给用户选。
+    #
+    # ⚠️ 为什么需要它：低缩放截图（一张图覆盖 20 公里）下，
+    # 几何信号本质上是**多峰**的——底图匹配实测前 12 个候选的
+    # Chamfer 分数差只有 0.1%（3.52 vs 3.52 米），但地理位置
+    # 分散在 900-1600 米范围内。只输出最优解等于**替用户乱猜**，
+    # 不如把几个候选摆出来让他点。
+    alternatives: list["Registration"] = field(default_factory=list)
 
     @property
     def scale(self) -> float:
@@ -434,6 +442,99 @@ def _fit_from_scale_prior(
     return m, np.array([tx, ty])
 
 
+def _combination_alternatives(
+    src: np.ndarray,
+    dst: np.ndarray,
+    groups: list[list[int]],
+    gid: list[int],
+    kinds: list[str],
+    scale_prior: float | None,
+    flat: list[AnchorPair],
+    min_points: int = 3,
+) -> list[Registration]:
+    """生成「同一批锚点的不同候选组合」备选解。
+
+    动机：低缩放下真正的分歧不是「用什么模型」，而是
+    **「这个地名指的是哪个地方」**。Nominatim 对「上海站」返回 5 个、
+    对「外环高速」返回 5 个，彼此相距几公里。选了哪个就决定了落点在哪。
+
+    做法：固定物理模型（north_up），让**每个多候选的锚点组都选它的
+    第 k 个候选**（k = 1, 2, ...），重新拟合，检查是否仍然自洽。
+    仍然自洽 → 这是一个真实存在的备选位置。
+
+    这样得到的备选与「同名地点的其它候选」直接对应，
+    用户看到「候选 2」时能立刻判断它对应的是哪个同名地点。
+    """
+    out: list[Registration] = []
+    if len(groups) < min_points:
+        return out
+
+    # 只用有多候选的组——单候选的组换不了
+    multi = {gi for gi, g in enumerate(groups) if len(g) >= 2}
+    if len(multi) < min_points:
+        return out
+
+    max_k = max(len(groups[gi]) for gi in multi)
+    for k in range(1, max_k):
+        # 每个多候选组都取第 k 个候选；单候选组保持不变
+        idxs: list[int] = []
+        ok = True
+        for gi, g in enumerate(groups):
+            if gi in multi:
+                if k >= len(g):
+                    ok = False
+                    break
+                idxs.append(g[k])
+            else:
+                idxs.append(g[0])
+        if not ok or len(idxs) < min_points:
+            continue
+
+        sub_src = src[idxs]
+        sub_dst = dst[idxs]
+        if np.linalg.matrix_rank(sub_src - sub_src.mean(axis=0)) < 2:
+            continue
+        try:
+            m, t = _fit_north_up(sub_src, sub_dst)
+        except (ValueError, np.linalg.LinAlgError):
+            continue
+
+        sc = _model_scale(m)
+        tol = _tolerance_vec(kinds, sc)
+        res = _residuals(_apply(m, t, src), dst)
+        inl = [j for j in range(len(src)) if res[j] <= tol[j]]
+        reps = _anchor_representatives(gid, inl, res)
+        if len(reps) < min_points:
+            continue
+        consistent, _med_loo = _loo_score(
+            src, dst, gid, reps, res, _fit_north_up, tol,
+            fixed_scale=(scale_prior if scale_prior else sc),
+            kinds=kinds,
+        )
+        if consistent < min_points:
+            continue
+
+        inl_res = res[inl]
+        rel = [j for j in inl if kinds[j] in _RELIABLE_KINDS]
+        inl_set = set(inl)
+        out.append(Registration(
+            ok=True,
+            matrix=m,
+            translation=t,
+            inliers=[flat[j] for j in inl],
+            outliers=[flat[j] for j in range(len(flat)) if j not in inl_set],
+            residuals=[float(r) for r in inl_res],
+            rmse_m=(float(np.sqrt((inl_res ** 2).mean()))
+                    if len(inl_res) else 0.0),
+            rmse_reliable_m=(
+                float(np.sqrt((res[rel] ** 2).mean()))
+                if len(rel) else 0.0),
+            n_reliable=len(rel),
+            model="north_up",
+        ))
+    return out
+
+
 def _anchor_representatives(
     gid: list[int], inliers: list[int], res: np.ndarray
 ) -> dict[int, int]:
@@ -779,6 +880,8 @@ def register(
     best_reg: Registration | None = None
     best_key: tuple = ()
     best_n_anchor = 0
+    # 所有达到门槛的候选，按评分排序。用于给用户「换个位置」的选项。
+    alternatives: list[Registration] = []
     if scale_prior:
         m0, t0 = _fit_from_scale_prior(src, dst, kinds, scale_prior, prior_groups)
         tol0 = _tolerance_vec(kinds, scale_prior)
@@ -805,6 +908,7 @@ def register(
             )
             best_key = key0
             best_n_anchor = len(reps0)
+            alternatives.append(best_reg)
 
     for model_name, fitter, min_pts, required in models:
         if len(groups) < min_pts:
@@ -822,8 +926,6 @@ def register(
         # 评分口径必须与「尺度先验」路径一致：都用
         # (留一自洽锚点数, -留一残差中位数)，否则两条路径无法比较。
         key = (consistent, -med_loo, -required)
-        if best_reg is not None and key <= best_key:
-            continue
         inlier_res = res[inliers]
         inlier_set = set(inliers)
         # 可靠类型内点（车站 / POI / 道路）——排除行政区这类
@@ -832,7 +934,7 @@ def register(
         rmse_rel = (
             float(np.sqrt((res[rel] ** 2).mean())) if rel else 0.0
         )
-        best_reg = Registration(
+        cand_reg = Registration(
             ok=True,
             matrix=m,
             translation=t,
@@ -844,11 +946,19 @@ def register(
             n_reliable=len(rel),
             model=model_name,
         )
-        best_key = key
-        best_n_anchor = n_anchor
-        # 物理优先级：north_up 成立时不再用高自由度模型覆盖它
-        if model_name == "north_up":
-            break
+        alternatives.append(cand_reg)
+        # 物理优先级：**列表里第一个成立且达标的模型就是最优解**。
+        # 美团地图默认正北朝上，north_up 是物理真值；高自由度模型
+        # 拟合出的轻微旋转与更小残差都是过参数化的产物（实测旋转角
+        # 被伪造成 -1.67°），不能因为分数好看就顶掉它。
+        #
+        # ⚠️ 早期版本在这里直接 break（后面的模型完全不看），那是对的；
+        # 但这样就收集不到备选解。现在改成「继续跑完收集备选，
+        # 但最优解仍取第一个达标者」。
+        if best_reg is None:
+            best_reg = cand_reg
+            best_key = key
+            best_n_anchor = n_anchor
 
     if best_reg is None:
         return Registration(
@@ -863,6 +973,73 @@ def register(
         f"RMSE {reg.rmse_m:.1f}m"
     )
     reg.notes = notes
+
+    # --- 备选解 ---
+    #
+    # ⚠️ **备选不能只来自「不同模型层」**：north_up / similarity / affine
+    # 往往给出相近的解（实测街道级样本上三者相差不到 200 米），
+    # 真正的分歧来自「同一批锚点的不同地理候选组合」——
+    # 比如「上海站」匹配到 5 个同名地点，选了哪个就决定了落点在哪。
+    #
+    # 所以备选的两个来源：
+    #   1. **模型层备选**（已有）：不同模型给出的解；
+    #   2. **候选组合备选**（新增）：固定物理模型（north_up），
+    #      强制用「每个锚点的第 k 个候选」重新拟合，
+    #      得到「如果这个地名指的是另一个地方，轨迹会落在哪」。
+    #
+    # 判据（都要满足）：
+    #   * 评分没有明显更差（留一自洽锚点数相当）；
+    #   * 地理上离最优解足够远（> 300 米），否则是同一个解的抖动；
+    #   * 与已收集的候选不重复。
+    #
+    # 为什么这是必要的：低置信度时前端要显示「换个位置」，
+    # 但展示一堆相距 50 米的候选毫无意义——用户要选的是
+    # **不同的街区**，不是同一个街区的微调。
+    scored = sorted(
+        alternatives,
+        key=lambda r: (
+            len(r.inliers),
+            -float(np.median(r.residuals)) if r.residuals else 0.0,
+        ),
+        reverse=True,
+    )
+    scored.extend(_combination_alternatives(
+        src, dst, groups, gid, kinds, scale_prior, flat))
+    # 用「全部锚点像素的质心」作为比较基准点——它与具体图片无关，
+    # 不需要给 register 传轨迹参数。
+    _anchor_cx = float(src[:, 0].mean())
+    _anchor_cy = float(src[:, 1].mean())
+    _probe = np.array([_anchor_cx, _anchor_cy], dtype=float)
+
+    def _center_of(r: Registration) -> np.ndarray:
+        return r.matrix @ _probe + r.translation
+
+    _reg_center = _center_of(reg)
+    picked: list[Registration] = []
+    for alt in scored:
+        if alt is reg:
+            continue
+        try:
+            sep_m = float(np.linalg.norm(_center_of(alt) - _reg_center))
+        except Exception:
+            sep_m = 0.0
+        if sep_m < 300.0:
+            continue
+        # 与已收集的候选也保持 300 米以上间隔
+        if any(
+            float(np.linalg.norm(_center_of(alt) - _center_of(p))) < 300.0
+            for p in picked
+        ):
+            continue
+        picked.append(alt)
+        if len(picked) >= 4:
+            break
+    reg.alternatives = picked
+    if picked:
+        notes.append(
+            f"另有 {len(picked)} 个地理上分离的备选位置（相距 >300 米），"
+            "可在前端「换个位置」中切换"
+        )
     return reg
 
 def apply_to_polyline(
