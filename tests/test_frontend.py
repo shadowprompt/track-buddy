@@ -56,6 +56,7 @@ function extract(name) {
 
 let mapElDisplay = 'block';
 let mapElW = 800, mapElH = 480;
+let previewDisplay = 'none';
 const tabEls = [
   { dataset: { v: 'map' }, classList: { toggle(){}, add(){}, remove(){} } },
   { dataset: { v: 'preview' }, classList: { toggle(){}, add(){}, remove(){} } },
@@ -66,7 +67,9 @@ const els = {
     get clientWidth() { return mapElDisplay === 'none' ? 0 : mapElW; },
     get clientHeight() { return mapElDisplay === 'none' ? 0 : mapElH; },
   },
-  preview: { style: { display: 'none' } },
+  preview: {
+    get style() { return { set display(v) { previewDisplay = v; }, get display() { return previewDisplay; } }; },
+  },
   prevImg: { clientWidth: 800, naturalWidth: 1260, naturalHeight: 2720, onload: null, src: '' },
   prevCanvas: { style: {}, width: 0, height: 0, getContext: () => ({
     setTransform(){}, clearRect(){}, beginPath(){}, moveTo(){}, lineTo(){}, stroke(){},
@@ -85,16 +88,47 @@ const $ = (id) => els[id] || { style: {}, innerHTML: '', textContent: '' };
 const docStub = { querySelectorAll: (sel) => (sel === '.tab' ? tabEls : []) };
 
 const calls = [];
+// 图层 id → 是否还在地图上（复现真实 SDK 的 _layers 表）
+const layerRegistry = new Map();
+let layerSeq = 0;
+
 class TMapStub {
   static LatLng = class { constructor(lat, lng) { this.lat = lat; this.lng = lng; } };
   static LatLngBounds = class { constructor() { this.n = 0; } extend() { this.n++; } };
   static PolylineStyle = class { constructor(o) { Object.assign(this, o); } };
   static MarkerStyle = class { constructor(o) { Object.assign(this, o); } };
-  static MultiPolyline = class { constructor() { calls.push('polyline'); } };
-  static MultiMarker = class { constructor() { calls.push('marker'); } };
+  static MultiPolyline = class {
+    constructor() {
+      calls.push('polyline');
+      // 真实 SDK 给每个图层实例分配一个 UUID 作为 id
+      this.id = 'poly-' + (++layerSeq);
+      layerRegistry.set(this.id, this);
+    }
+    getGeometries() { return [{ paths: this._paths || [] }]; }
+  };
+  static MultiMarker = class {
+    constructor() {
+      calls.push('marker');
+      this.id = 'mark-' + (++layerSeq);
+      layerRegistry.set(this.id, this);
+    }
+  };
   static Map = class {
     constructor() { calls.push('newMap'); }
-    removeLayer() { calls.push('removeLayer'); }
+    // 关键：复现真实 SDK 的 removeLayer(t) —— 内部是 this._layers[t]，
+    // **参数必须是图层 id 字符串**。传对象会查不到并抛错：
+    //   Error: The layer '[object Object]' does not exist in map
+    // 这个错误信息就是用户看到的「Unhandled error. (undefined)」
+    removeLayer(t) {
+      calls.push('removeLayer:' + (typeof t === 'string' ? t : '[object Object]'));
+      if (typeof t !== 'string') {
+        throw new Error('The layer \'[object Object]\' does not exist in map');
+      }
+      if (!layerRegistry.has(t)) {
+        throw new Error('The layer \'' + t + '\' does not exist in map');
+      }
+      layerRegistry.delete(t);
+    }
     fitBounds() {
       // 复现真实腾讯地图 GL JS：容器 0 尺寸时抛这个错
       calls.push('fitBounds');
@@ -108,16 +142,20 @@ class TMapStub {
 const factory = new Function('TMap', '$', 'document', `
   let map = null, polyline = null, markers = [];
   let lastResult = null, correcting = null, lastPath = [];
+  let activeTab = 'map';
   ${extract('esc')}
   ${extract('num')}
   ${extract('int')}
   ${extract('text')}
   ${extract('drawMap')}
   ${extract('drawMapInner')}
+  ${extract('drawPreview')}
+  ${extract('applyPreviewVisibility')}
   ${extract('fitMapToTrack')}
   ${extract('switchTab')}
-  return { drawMap, fitMapToTrack, switchTab,
-    setResult(d) { lastResult = d; }, getMap() { return map; } };
+  return { drawMap, fitMapToTrack, switchTab, drawPreview,
+    setResult(d) { lastResult = d; }, getMap() { return map; },
+    getPolyline() { return polyline; }, getLastPath() { return lastPath; } };
 `);
 
 const D1 = {
@@ -190,6 +228,79 @@ out.preview_css = (html.match(/#preview\s*\{[^}]*\}/) || [''])[0];
 // 新版把 #preview 拆出来且不再设固定高度。
 out.has_old_fixed = /#map,\s*#preview\s*\{[^}]*height:480px/.test(html);
 out.preview_has_fixed_height = /#preview\s*\{[^}]*height:\s*\d+px/.test(html);
+
+// 场景6：连续识别必须真的换掉上一轮的图层（回归项）
+//
+// 真实事故：map.removeLayer(polyline) 传的是图层对象而不是图层 id，
+// 真实 SDK 内部是 this._layers[t]，查不到就抛
+// "The layer '[object Object]' does not exist in map"。
+// 异常中断 drawMapInner → 新轨迹根本没被绘制，
+// 而 lastPath 也没更新 → fitBounds 仍按旧路径定位视野。
+// 结果：左栏数据是新图的，地图上还是上一张的轨迹与视野。
+//
+// 断言三件事：
+//   (a) removeLayer 收到的参数必须是字符串 id
+//   (b) 旧图层必须真的从地图上移除（不能残留）
+//   (c) 第二次识别后 lastPath 必须换成新图的坐标
+{
+  const api = factory(TMapStub, $, docStub);
+  mapElDisplay = 'block'; mapElW = 800; mapElH = 480;
+  layerRegistry.clear();
+  calls.length = 0;
+  let err = null;
+  const D_A = {
+    geojson_gcj02: { features: [{ geometry: { type: 'LineString',
+      coordinates: [[121.3872, 31.2126], [121.3874, 31.2087]] } }] },
+    image_size: [1260, 2720], track_polyline_px: [[100, 200]],
+    anchors_used: [], anchors_rejected: [],
+  };
+  const D_B = {
+    geojson_gcj02: { features: [{ geometry: { type: 'LineString',
+      coordinates: [[121.5520, 31.2198], [121.5541, 31.2242]] } }] },
+    image_size: [1260, 2720], track_polyline_px: [[300, 400]],
+    anchors_used: [], anchors_rejected: [],
+  };
+  try {
+    api.drawMap(D_A);
+    api.drawMap(D_B);
+  } catch (e) { err = e.message; }
+
+  out.s6_error = err;
+  const removeArgs = calls.filter(c => c.startsWith('removeLayer:'))
+                          .map(c => c.substring('removeLayer:'.length));
+  out.s6_removeArgs = removeArgs;
+  out.s6_removeAllStrings = removeArgs.length > 0 && removeArgs.every(a => typeof a === 'string' && a !== '[object Object]');
+  // 第一张建立了 1 条轨迹 + 2 个标记 = 3 个图层，第二次都要移除
+  out.s6_removeCount = removeArgs.length;
+  out.s6_layersLeft = layerRegistry.size;
+  const lp = api.getLastPath();
+  out.s6_lastPathLen = lp.length;
+  out.s6_lastPathLng = lp.length ? lp[0].lng : null;
+  out.s6_newTrailLng = 121.5520;
+}
+
+// 场景7：预览面板显隐必须跟随标签页（回归项）
+//
+// 真实事故：drawPreview 结尾无条件 `$('preview').style.display = 'block'`，
+// 导致识别完成后「地图」与「原图叠加」两个面板同时可见——
+// 上半是腾讯地图、下半是原图（原图很高把页面撑得很长），
+// 用户以为「地图没更新、下面还挂着上一张图」。
+//
+// 注意必须真的调用 drawPreview（而不是只调 drawMap），
+// 因为那行无条件 display:block 就写在 drawPreview 结尾。
+{
+  const api = factory(TMapStub, $, docStub);
+  mapElDisplay = 'block'; mapElW = 800; mapElH = 480;
+  calls.length = 0;
+  let err = null;
+  try {
+    api.switchTab('map');
+    api.drawMap(D1);
+    api.drawPreview(D1);
+  } catch (e) { err = e.message; }
+  out.s7_error = err;
+  out.s7_previewDisplay = previewDisplay;
+}
 
 console.log(JSON.stringify(out));
 """
@@ -310,6 +421,29 @@ def main() -> int:
     check(r["preview_has_fixed_height"] is False,
           "预览容器不再有像素固定高度（否则竖长图会被裁）",
           r["preview_css"].replace("\n", " ")[:90])
+
+    print("\n[2b] 连续识别必须换掉旧图层与旧视野（回归项）")
+    check(r["s6_error"] is None,
+          "连续识别两张不抛异常", r["s6_error"] or "无异常")
+    check(r["s6_removeAllStrings"] is True,
+          "removeLayer 传入的是图层 id 而不是图层对象",
+          f"实参: {r['s6_removeArgs']}")
+    check(r["s6_removeCount"] == 3,
+          "第二次识别移除了上一轮的 1 条轨迹 + 2 个标记",
+          f"实删 {r['s6_removeCount']} 个图层")
+    check(r["s6_layersLeft"] == 3,
+          "地图上只剩新图画的 3 个图层（无残留）",
+          f"剩余 {r['s6_layersLeft']} 个")
+    check(abs((r["s6_lastPathLng"] or 0) - r["s6_newTrailLng"]) < 1e-6,
+          "lastPath 已换成新图坐标（fitBounds 视野随之更新）",
+          f"首点经度 {r['s6_lastPathLng']}")
+
+    print("\n[2c] 预览面板显隐跟随标签页（回归项）")
+    check(r["s7_error"] is None, "切页签并绘制不报错",
+          r["s7_error"] or "无异常")
+    check(r["s7_previewDisplay"] == "none",
+          "停在「地图」页时原图面板不显示（否则两个面板叠在一起）",
+          f"实际 display: {r['s7_previewDisplay']}")
 
     test_proxy()
 

@@ -223,6 +223,21 @@
   let map = null, polyline = null, markers = [];
   // 当前轨迹的 LatLng 数组，供 fitMapToTrack 缩放视野用
   let lastPath = [];
+  // 当前激活的标签页（'map' / 'preview'）。
+  // 必须记住它：drawPreview 不能自己决定显示与否，
+  // 否则识别完成后预览图会盖在地图下面（两个面板同时可见）。
+  let activeTab = 'map';
+
+  // 调试钩子：暴露内部状态供自动化测试观测。
+  // （IIFE 里的变量外部取不到，没有这个钩子就只能靠肉眼截图判断）
+  window.__ride = {
+    getMap: () => map,
+    getPolyline: () => polyline,
+    getMarkers: () => markers.slice(),
+    getLastPath: () => lastPath.slice(),
+    getLastResult: () => lastResult,
+    getActiveTab: () => activeTab,
+  };
 
   // ---------- 上传交互 ----------
   drop.onclick = () => fileInput.click();
@@ -478,9 +493,28 @@
       map = new TMap.Map('map', { center: new TMap.LatLng(lat, lon), zoom: 14 });
     }
 
-    if (polyline) { map.removeLayer(polyline); polyline = null; }
-    markers.forEach(m => map.removeLayer(m));
-    markers = [];
+    // ---- 关键：必须先彻底清掉上一轮的图层，再画新的 ----
+    //
+    // 腾讯地图 GL JS 的 map.removeLayer(t) 内部是 `this._layers[t]`，
+    // **参数必须是图层实例的 id 字符串**，不是图层对象本身。
+    //
+    // 早期实现传的是 MultiPolyline 对象，SDK 查不到、抛
+    // "Unhandled error. (undefined)"，异常直接中断 drawMapInner，
+    // 于是**新轨迹根本没被绘制**——地图上留着上一张的轨迹，
+    // 而左栏数据照常更新（外层 catch 只 console.error）。
+    // 这正是用户看到的「轨迹图没有更新」。
+    //
+    // 正确做法：传 layer.id。
+    if (polyline) {
+      try { map.removeLayer(polyline.id); } catch (e) { /* 图层可能已失效 */ }
+      polyline = null;
+    }
+    if (markers.length) {
+      markers.forEach(m => {
+        try { map.removeLayer(m.id); } catch (e) { /* 同上 */ }
+      });
+      markers = [];
+    }
 
     const path = coords.map(c => new TMap.LatLng(c[1], c[0]));
     lastPath = path;
@@ -545,7 +579,7 @@
       // 识别失败时 image_size 是 [0,0]，除零会得到 NaN 并让整张图消失
       const iw = (d.image_size && d.image_size[0]) || img.naturalWidth;
       const ih = (d.image_size && d.image_size[1]) || img.naturalHeight;
-      if (!iw || !ih) { $('preview').style.display = 'block'; return; }
+      if (!iw || !ih) { applyPreviewVisibility(); return; }
       const sx = W / iw;
       const sy = H / ih;
 
@@ -576,13 +610,31 @@
       (d.anchors_used || []).forEach(a => put(a, '#ffd400'));
       (d.anchors_rejected || []).forEach(a => put(a, 'rgba(255,255,255,.55)'));
     };
+    // 换图时必须清掉上一张的叠加层，否则新旧轨迹会叠在一起。
+    // 同一个 src 不会重新触发 onload，所以这里先主动清空画布。
+    const c = $('prevCanvas');
+    if (c) {
+      const ctx = c.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+    }
     img.src = d.shot_url;
-    $('preview').style.display = 'block';
+    applyPreviewVisibility();
+  }
+
+  // 预览容器的显隐由「当前标签页」决定。
+  //
+  // 早期实现里 drawPreview 结尾直接 `$('preview').style.display = 'block'`，
+  // 无条件显示。结果识别完成后两个面板同时可见：
+  // 上半是腾讯地图（480px），下半是原图（原图很高会把页面撑得很长），
+  // 看起来像「地图没更新、下面还挂着上一张图」。
+  function applyPreviewVisibility() {
+    $('preview').style.display = activeTab === 'preview' ? 'block' : 'none';
   }
 
   // ---------- 标签页 ----------
   // 切换到指定标签页（'map' / 'preview'）。
   function switchTab(v) {
+    activeTab = v;
     document.querySelectorAll('.tab').forEach(x => {
       x.classList.toggle('on', x.dataset.v === v);
     });

@@ -63,7 +63,7 @@ python -m app.server --reload    # 开发模式（热重载）
 
 ```bash
 python tests/test_e2e.py       # 后端端到端（64 项）
-python tests/test_frontend.py  # 前端逻辑 + 地图代理（18 项，需 Node.js）
+python tests/test_frontend.py  # 前端逻辑 + 地图代理（25 项，需 Node.js）
 ```
 
 > **为什么要单独测前端**：有些 bug 只发生在浏览器里，后端日志全是 200。
@@ -292,9 +292,68 @@ serviceHost: 'http://127.0.0.1:__WB_HTTP_PORT__/_TMapService/_wbt/__WB_TMAP_SECR
 
 > **教训**：这类纯前端的 bug 必须单独测。
 > `tests/test_frontend.py` 把 `index.html` 的函数抽出来，
-> 配一个会复现真实腾讯地图行为的桩，逐场景断言（11 项）。
+> 配一个会复现真实腾讯地图行为的桩，逐场景断言（25 项）。
 > 它验证过「还原成有 bug 的版本 → 测试确实会失败」，
 > 避免写出永远通过的空断言。
+
+### 识别成功了，但地图上的轨迹还是上一张的
+
+这个坑比前面两个更隐蔽：**左栏数据全部是新图的**（置信度、轨迹点、里程、
+路名都对），**只有地图是旧的**——轨迹线还在上一张截图的位置，
+视野也停在上一片区域。
+
+根因在腾讯地图 GL JS 的 `removeLayer`：
+
+```js
+// SDK 源码（压缩后）
+i.removeLayer = function (t) {
+  var e = this._layers[t];            // ← t 是图层 id 字符串
+  e ? (e._setEventedParent(null), delete this._layers[t])
+    : this._fire("error", { error: new Error("The layer '" + t + "' does not exist in map") });
+}
+```
+
+而我们的代码传的是**图层对象**：
+
+```js
+map.removeLayer(polyline);   // ✗ polyline 是 MultiPolyline 实例
+map.removeLayer(polyline.id) // ✓ 传 id
+```
+
+传对象 → 查不到 → 抛 `The layer '[object Object]' does not exist in map`
+→ **异常中断 `drawMapInner`** → 后面 `lastPath = path` 没执行、
+新轨迹也没画 → `fitBounds` 仍按旧路径定位视野。
+
+外层 `drawMap` 的 catch 只 `console.error`，于是完全静默：
+左栏照常更新（那部分在 `drawMap` 之前就渲染完了），地图却停在上一张。
+
+实测证据（浏览器 console）：
+
+```
+Error: The layer '[object Object]' does not exist in map
+    at i.removeLayer (gljs.js:69:395974)
+    at drawMapInner (http://127.0.0.1:8848/:498:17)
+```
+
+修法：`removeLayer(layer.id)`。同时把图层清理包进 try/catch，
+避免 SDK 行为变化时再次静默中断整段绘制。
+
+> **教训**：这次的定位路径值得记住——
+> ① 浏览器 console 里的报错指向 SDK 内部，就去翻 SDK 源码；
+> ② 压缩代码里 `this._layers[t]` 这种形式直接说明了参数的语义；
+> ③ 用一个只接受 id 的桩复现真实行为，测试就能抓住它
+> （`tests/test_frontend.py` 的场景 6 就是这么写的）。
+
+### 原图面板与地图面板同时显示
+
+`drawPreview` 结尾有一行 `$('preview').style.display = 'block'`，
+无条件显示。结果识别完成后两个面板同时可见：上半是腾讯地图，
+下半是原图（原图 1606px 高，把页面撑得很长）。
+
+看起来像「地图没更新、下面还挂着上一张图」。
+
+修法：预览容器的显隐由**当前标签页**决定（`activeTab`），
+`drawPreview` 只负责画内容，不决定自己显不显示。
 
 ## 效果
 
@@ -669,8 +728,8 @@ web/
   verify.html    轨迹验证页（GCJ-02，腾讯底图直接可用）
   verify_wgs.html 同一数据的 WGS-84 版本（对比基准差）
 tests/test_e2e.py 端到端验收测试（64 项）
-tests/test_frontend.py 前端逻辑与地图代理测试（18 项，Node.js）
-tools/verify_browser.py 真实浏览器端到端验证（Playwright）
+tests/test_frontend.py 前端逻辑与地图代理测试（25 项，Node.js）
+tools/verify_browser.py 真实浏览器端到端验证（Playwright，连续识别三张）
 data/lexicon.json 本地地名词典
 ```
 
