@@ -822,6 +822,53 @@ def main() -> int:
         check(False, "备选坐标基准是 GCJ-02（与腾讯底图一致）",
               "未产生备选（构造数据下正常）")
 
+    print("\n[19] 用户路名约束（线约束）")
+    # 场景：低缩放截图的定位信号是多峰的，用户记得走过哪条路，
+    # 这是最强的约束。实测轨迹到真实路网的偏差可从 191 米降到 98 米。
+    from app.roadname_constraint import (
+        RoadNameConstraint, refine_by_road_names, _dist_to_segments,
+    )
+
+    # 造一条「水平的路」（墨卡托米），轨迹从它旁边经过
+    _road_y = 0.0
+    _road = [[(-5000.0, _road_y), (5000.0, _road_y)]]
+    _con = RoadNameConstraint(name="测试路", ok=True, segments=_road,
+                              n_segments=1, total_len_m=10000.0)
+    check(_con.uniqueness > 0.9,
+          "单段路名的唯一性接近 1",
+          f"uniqueness={_con.uniqueness:.3f}")
+
+    # 多段路名唯一性更低
+    _con2 = RoadNameConstraint(
+        name="测试路2", ok=True,
+        segments=[[(-5000.0, i * 1000.0), (5000.0, i * 1000.0)]
+                  for i in range(10)],
+        n_segments=10, total_len_m=100000.0)
+    check(_con2.uniqueness < _con.uniqueness,
+          "多段路名的唯一性更低",
+          f"{_con2.uniqueness:.3f} < {_con.uniqueness:.3f}")
+
+    # 轨迹在路的北侧 300 米处 → 约束应把它拉回来
+    _traj = np.array([[float(x), 300.0] for x in range(-400, 400, 20)])
+    _shift, _val, _notes = refine_by_road_names(
+        _traj, [_con], max_shift_m=1000.0, coarse_step_m=50.0)
+    check(abs(_val) < 50.0,
+          "路名约束把轨迹拉回路面（目标值 < 50 米）",
+          f"目标值 {_val:.1f} 米")
+    check(abs(_shift[1]) > 100.0,
+          "路名约束产生了实质平移（>100 米）",
+          f"平移北 {_shift[1]:+.0f} 米")
+    check(abs(_shift[0]) < 60.0,
+          "路名约束不产生虚假的东西向平移",
+          f"平移东 {_shift[0]:+.0f} 米")
+
+    # 距离函数本身：点在线上距离为 0
+    _d = _dist_to_segments(np.array([[0.0, 0.0]]), _road)
+    check(float(_d[0]) < 1.0, "点在线上时距离为 0", f"{float(_d[0]):.3f}")
+    _d2 = _dist_to_segments(np.array([[0.0, 250.0]]), _road)
+    check(abs(float(_d2[0]) - 250.0) < 1.0,
+          "点离线 250 米时距离为 250", f"{float(_d2[0]):.1f}")
+
     print("\n" + "=" * 66)
     ok = sum(1 for r in results if r[0])
     total = len(results)

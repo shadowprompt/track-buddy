@@ -68,6 +68,7 @@ async def recognize(
     output_crs: str = Form("WGS-84"),
     allow_online: bool = Form(True),
     refine: str = Form("auto"),
+    road_names: str = Form(""),
 ) -> JSONResponse:
     """上传截图，识别轨迹并返回 GeoJSON。"""
     data = await file.read()
@@ -97,6 +98,15 @@ async def recognize(
     want_refine = refine.strip().lower() in ("1", "true", "yes", "on", "auto")
     do_sync_refine = want_refine and refine.strip().lower() in ("1", "true", "yes", "on")
 
+    # 用户提供的路名（逗号/顿号/换行分隔）
+    # 这些是**线约束**——让轨迹贴着用户说的那条路走。
+    # 实测城市级样本上精度几乎翻倍（详见 docs/HANDOVER.md 21.9）。
+    _names: list[str] = []
+    for _part in road_names.replace("\n", ",").replace("、", ",").split(","):
+        _p = _part.strip()
+        if _p and _p not in _names:
+            _names.append(_p)
+
     try:
         result = _pipeline.run(
             img,
@@ -104,6 +114,7 @@ async def recognize(
             allow_online=allow_online,
             output_crs=output_crs,
             refine=do_sync_refine,
+            road_names=_names or None,
         )
     except Exception as exc:  # noqa: BLE001 — 兜底，避免单次请求打挂服务
         raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc
@@ -122,6 +133,8 @@ async def recognize(
         "anchors_rejected": result.anchors_rejected,
         "road_attribution": result.road_attribution,
         "road_fit": result.road_fit,
+        "road_name_constraints": result.road_name_constraints,
+        "road_name_fit": result.road_name_fit,
         "alternatives": result.alternatives,
         "diagnostics": result.diagnostics,
         "warnings": result.warnings,
@@ -170,6 +183,8 @@ def _build_payload(result: Any, shot_id: str, shot_path: Path) -> dict[str, Any]
         "anchors_rejected": result.anchors_rejected,
         "road_attribution": result.road_attribution,
         "road_fit": result.road_fit,
+        "road_name_constraints": result.road_name_constraints,
+        "road_name_fit": result.road_name_fit,
         "alternatives": result.alternatives,
         "diagnostics": result.diagnostics,
         "warnings": result.warnings,

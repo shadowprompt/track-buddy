@@ -154,6 +154,18 @@
           </div>
         </div>
 
+        <div style="margin-top:12px;">
+          <label for="roadNames">你记得走过的路（可选，逗号分隔）</label>
+          <input id="roadNames" type="text" placeholder="例如：打浦路隧道, 世博大道, 古北路"
+                 style="width:100%;">
+          <div class="note" style="margin-top:6px;">
+            骑行距离越长、地图缩放越低，图上能读出的地名就越粗（只有区名和地铁线号），
+            单靠它们很难定位到具体街区。<b>填上你记得的路名</b>能把这个位置钉死——
+            实测轨迹到真实路网的偏差可从 191 米降到 98 米。
+            路名越具体越好（写「打浦路隧道」比写「世纪大道」有用得多）。
+          </div>
+        </div>
+
         <div class="status" id="status"></div>
       </div>
 
@@ -285,6 +297,8 @@
     fd.append('city', $('city').value.trim());
     fd.append('output_crs', $('crs').value);
     fd.append('online', $('online').value);
+    const rn = $('roadNames').value.trim();
+    if (rn) fd.append('road_names', rn);
 
     let data;
     try {
@@ -435,6 +449,34 @@
       (d.warnings && d.warnings.length
         ? '<ul class="warnlist">' + d.warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>'
         : '');
+
+    // 用户提供的路名约束
+    const rnc = d.road_name_constraints || [];
+    const rnf = d.road_name_fit || {};
+    if (rnc.length) {
+      $('altCard').style.display = 'block';
+      let html = '';
+      html += rnc.map(c => {
+        const detail = c.ok
+          ? (int(c.n_segments, 0) + ' 段 / ' + num(c.total_len_km, 1, '—') +
+             ' km，唯一性 ' + num(c.uniqueness, 2, '—'))
+          : esc((c.notes && c.notes[0]) || '未找到');
+        return '<div class="kv"><span>「' + esc(c.name) + '」</span><span>' +
+               detail + '</span></div>';
+      }).join('');
+      if (rnf.ok) {
+        html += '<div class="kv"><span>路名约束效果</span><span>轨迹到该路 ' +
+          Math.round(rnf.before_m) + ' m → <b>' + Math.round(rnf.after_m) +
+          ' m</b>，整体平移 东' + Math.round(rnf.shift_e_m) +
+          ' / 北' + Math.round(rnf.shift_n_m) + ' 米</span></div>';
+      } else if (rnf.notes && rnf.notes.length) {
+        html += '<div class="kv"><span>路名约束</span><span>' +
+          esc(rnf.notes[rnf.notes.length - 1]) + '</span></div>';
+      }
+      $('altNote').innerHTML = html;
+      $('altList').innerHTML = '';
+      $('altCard').style.display = 'block';
+    }
 
     // 备选位置（低置信度时给用户选择）
     //
