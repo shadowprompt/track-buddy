@@ -9,13 +9,14 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .config import CONFIG, DATA_DIR, ROOT, load_dotenv
 from .cv_utils import imread_unicode
 from .pipeline import RidePipeline
+from .tmap_proxy import create_proxy_router, make_secret, render_page
 
 load_dotenv()
 
@@ -28,6 +29,18 @@ app = FastAPI(
 _pipeline = RidePipeline(CONFIG)
 UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# 腾讯地图 GL JS 的本地代理。
+#
+# SDK 加载时必须完成鉴权（checkKey），浏览器直接请求会把 key 暴露出去，
+# 因此由本地服务代为转发。代理标记是随机串，浏览器拿不到真正的 key。
+_TMAP_SECRET = make_secret()
+app.include_router(
+    create_proxy_router(CONFIG.tmap_gl_key, http_timeout=CONFIG.http_timeout)
+)
+
+# 实际监听端口（main() 启动时写入），供页面渲染代理地址用
+_SERVER_PORT: int = 0
 
 
 @app.get("/api/health")
@@ -166,12 +179,47 @@ if WEB_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
 
+def _server_port(request: Request | None = None) -> int:
+    """取本服务实际监听的端口。
+
+    页面里的腾讯地图代理需要知道往哪个端口发请求。
+    端口在 ``main()`` 启动时记录（命令行可能用 --port 改过）；
+    读不到时从当前请求的 Host 头反推——这最可靠，
+    因为它就是浏览器实际连上来的地址。
+    """
+    if _SERVER_PORT:
+        return _SERVER_PORT
+    if request is not None:
+        host = request.headers.get("host", "")
+        if ":" in host:
+            try:
+                return int(host.rsplit(":", 1)[1])
+            except ValueError:
+                pass
+    try:
+        for server in getattr(app, "servers", []) or []:
+            for sock in getattr(server, "sockets", []) or []:
+                try:
+                    return int(sock.getsockname()[1])
+                except (OSError, IndexError, TypeError):
+                    continue
+    except Exception:  # noqa: BLE001 — 读不到就用默认值
+        pass
+    return 8000
+
+
 @app.get("/")
-def index() -> FileResponse:
+def index(request: Request) -> Response:
     page = WEB_DIR / "index.html"
     if not page.exists():
         raise HTTPException(status_code=404, detail="前端页面缺失")
-    return FileResponse(page, media_type="text/html")
+    # 渲染占位符：腾讯地图 SDK 需要知道本地代理的端口与标记。
+    # 这些值原本是硬编码在页面里的 __WB_HTTP_PORT__ / __WB_TMAP_SECRET__，
+    # 从未被替换过——SDK 因此去请求一个非法地址，鉴权失败，
+    # 最终抛出没有上下文的 "Unhandled error. (undefined)"。
+    html = page.read_text(encoding="utf-8")
+    html = render_page(html, _server_port(request), _TMAP_SECRET)
+    return Response(content=html, media_type="text/html")
 
 
 def main() -> None:
@@ -185,6 +233,9 @@ def main() -> None:
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--reload", action="store_true")
     args = p.parse_args()
+
+    global _SERVER_PORT
+    _SERVER_PORT = args.port
 
     print(f"服务启动中… http://{args.host}:{args.port}")
     uvicorn.run(

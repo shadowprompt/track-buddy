@@ -23,6 +23,19 @@ TMAP_GEOCODER = "https://apis.map.qq.com/ws/geocoder/v1/"
 # 高德 WebService 端点
 AMAP_PLACE_SEARCH = "https://restapi.amap.com/v3/place/text"
 
+# 腾讯地图 GL JS 的官方公开示例 key。
+#
+# 用途只有一个：**渲染网页底图**。它被局限在本地代理内部使用，
+# 浏览器永远拿不到它（页面里只有随机生成的代理标记）。
+#
+# 为什么需要它：GL JS 加载时必须完成鉴权（checkKey），
+# 鉴权失败会触发 EventEmitter 的 'error' 事件而无监听器，
+# 于是抛出没有任何上下文的 "Unhandled error. (undefined)"——
+# 表现为「识别失败」，但实际上识别是成功的（服务端返回 200）。
+#
+# 用户配置了自己的 TMAP_KEY 时优先用用户的；没配就用这个。
+TMAP_PUBLIC_KEY = "OB4BZ-D4W3U-B7VVO-4PJWW-6TKDJ-WPB77"
+
 
 @dataclass
 class VisionConfig:
@@ -106,6 +119,19 @@ class AppConfig:
         return bool(
             self.amap_key or self.tmap_key or self.baidu_key or self.tianditu_key
         )
+
+    @property
+    def tmap_gl_key(self) -> str:
+        """网页底图用的腾讯地图 GL JS key。
+
+        优先用用户自己配置的 ``TMAP_KEY``；没配则回退到官方公开示例 key。
+
+        这个 key **只用于渲染底图**，且只存在于本地代理内部——
+        浏览器拿不到它（页面里只有随机生成的代理标记）。
+        它与地理编码用的 ``TMAP_KEY`` 是两回事：
+        地理编码仍需用户自己申请，否则没有配额。
+        """
+        return self.tmap_key or TMAP_PUBLIC_KEY
 
 
 def load_dotenv(path: Path | None = None) -> None:

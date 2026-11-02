@@ -259,19 +259,40 @@
     fd.append('file', picked);
     fd.append('city', $('city').value.trim());
     fd.append('output_crs', $('crs').value);
-    fd.append('allow_online', $('online').value);
+    fd.append('online', $('online').value);
 
+    let data;
     try {
       const r = await fetch('/api/recognize', { method: 'POST', body: fd });
-      const data = await r.json();
+      data = await r.json();
       if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
       lastResult = data;
+    } catch (e) {
+      // 这里只处理「接口本身失败」——网络错误、非 200、后端异常。
+      showStatus('识别失败：' + (e && e.message ? e.message : e), 'err');
+      go.disabled = false;
+      return;
+    }
+
+    // 渲染与识别分开处理。
+    //
+    // 重要：渲染失败**不能**显示成「识别失败」——识别其实已经成功了，
+    // 结果数据也已经拿到手，只是地图或预览画不出来。
+    // 之前两者混在一个 try 里，腾讯地图 SDK 在鉴权失败时抛出的
+    // "Unhandled error. (undefined)" 就被包装成了「识别失败」，
+    // 把一个底图问题说成了识别问题，误导性极强。
+    try {
       render(data);
     } catch (e) {
-      showStatus('识别失败：' + (e.message || e), 'err');
-    } finally {
-      go.disabled = false;
+      console.error('结果渲染失败:', e);
+      showStatus(
+        '识别已完成（置信度 ' + Math.round((data.confidence || 0) * 100) +
+        '%），但地图渲染出错：' + (e && e.message ? e.message : e) +
+        '<br>GeoJSON 已可正常下载。',
+        'err'
+      );
     }
+    go.disabled = false;
   };
 
   // ---------- 渲染结果 ----------
@@ -423,6 +444,17 @@
 
   // ---------- 腾讯地图 ----------
   function drawMap(d) {
+    // 整个地图绘制包在 try 里：腾讯地图 SDK 在鉴权失败、容器尺寸为 0
+    // 等情况下会抛出没有上下文的错误（例如 "Unhandled error. (undefined)"）。
+    // 地图画不出来不该影响识别结果的展示——GeoJSON 已经拿到了。
+    try {
+      drawMapInner(d);
+    } catch (e) {
+      console.error('地图绘制失败:', e);
+    }
+  }
+
+  function drawMapInner(d) {
     // 关键：腾讯底图是 GCJ-02 坐标。若直接用 WGS-84 坐标绘制，
     // 轨迹会整体偏移约 350 米。必须选用 GCJ-02 版本。
     const gj = (d.geojson_gcj02 && d.geojson_gcj02.features) ? d.geojson_gcj02 : d.geojson;

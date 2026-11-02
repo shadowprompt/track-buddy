@@ -113,6 +113,7 @@ const factory = new Function('TMap', '$', 'document', `
   ${extract('int')}
   ${extract('text')}
   ${extract('drawMap')}
+  ${extract('drawMapInner')}
   ${extract('fitMapToTrack')}
   ${extract('switchTab')}
   return { drawMap, fitMapToTrack, switchTab,
@@ -194,6 +195,66 @@ console.log(JSON.stringify(out));
 """
 
 
+
+
+def test_proxy() -> int:
+    """腾讯地图本地代理测试（需要服务在 8848 端口运行）。"""
+    print("\n[3] 腾讯地图本地代理（回归项）")
+    import requests
+
+    s = requests.Session()
+    s.trust_env = False
+    try:
+        html = s.get("http://127.0.0.1:8848/", timeout=10).text
+    except Exception as exc:  # noqa: BLE001
+        print(f"  服务未运行，跳过：{exc}")
+        return 0
+
+    # 占位符必须被替换
+    check("__WB_HTTP_PORT__" not in html,
+          "页面的端口占位符已替换", "")
+    check("__WB_TMAP_SECRET__" not in html,
+          "页面的代理标记占位符已替换", "")
+    check("_TMapService/_wbt/" in html,
+          "serviceHost 指向本地代理")
+
+    # 取出渲染后的 serviceHost
+    host = None
+    for line in html.split("\n"):
+        if "serviceHost" in line and "'" in line:
+            host = line.split("'")[1]
+            break
+    if not host:
+        check(False, "能解析出 serviceHost")
+        return 0
+    check(True, "能解析出 serviceHost", host)
+
+    # checkKey 必须鉴权成功（否则 SDK 会抛 Unhandled error）
+    url = host.rstrip("/") + "/checkKey?callback=mkeycb&platform=JSAPI&appId=jsapi_v3"
+    try:
+        r = s.get(url, timeout=25)
+        body = r.text
+        ok = r.status_code == 200 and '"error":0' in body
+        check(ok, "代理转发 checkKey 且鉴权成功",
+              f"HTTP {r.status_code}, {len(body)} 字节")
+        check(body.startswith("mkeycb&&mkeycb("),
+              "checkKey 响应保持 JSONP 格式（SDK 靠这个识别）",
+              body[:28])
+    except Exception as exc:  # noqa: BLE001
+        check(False, "代理转发 checkKey", str(exc))
+
+    # 不带路径的形式（SDK 的 pingd 会这么请求）
+    try:
+        r = s.get(host.rstrip("/") + "?logid=pv&v=1.8.2.3", timeout=20,
+                  allow_redirects=False)
+        check(r.status_code == 200,
+              "代理支持不带路径的请求（SDK pingd）", f"HTTP {r.status_code}")
+    except Exception as exc:  # noqa: BLE001
+        check(False, "代理支持不带路径的请求", str(exc))
+
+    return 0
+
+
 def main() -> int:
     print("=" * 66)
     print("前端回归测试 · 连续识别与原图预览")
@@ -249,6 +310,8 @@ def main() -> int:
     check(r["preview_has_fixed_height"] is False,
           "预览容器不再有像素固定高度（否则竖长图会被裁）",
           r["preview_css"].replace("\n", " ")[:90])
+
+    test_proxy()
 
     print("\n" + "=" * 66)
     ok = sum(1 for x in results if x[0])

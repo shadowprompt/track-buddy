@@ -63,7 +63,7 @@ python -m app.server --reload    # 开发模式（热重载）
 
 ```bash
 python tests/test_e2e.py       # 后端端到端（64 项）
-python tests/test_frontend.py  # 前端逻辑（11 项，需 Node.js）
+python tests/test_frontend.py  # 前端逻辑 + 地图代理（18 项，需 Node.js）
 ```
 
 > **为什么要单独测前端**：有些 bug 只发生在浏览器里，后端日志全是 200。
@@ -232,25 +232,53 @@ OSM API（它期望 **WGS-84**），查询中心因此偏移约 450 米（东）
 
 ### 连续识别报「Unhandled error. (undefined)」
 
-腾讯地图 GL JS 在 **0 尺寸容器**（`display:none`）上做 `fitBounds` 会抛
-`Unhandled error. (undefined)`——它内部算缩放级别时拿到 undefined，
-错误信息里没有任何细节。
+**真正的根因是腾讯地图鉴权失败，不是「连续识别」本身。**
 
-触发路径：用户停在「原图叠加」标签页 → 直接点第二次「开始识别」→
-识别成功 → 渲染阶段 `map.fitBounds()` 在隐藏容器上执行 → 抛错 →
-被 `catch` 捕获 → 显示成「识别失败」。
+`Unhandled error. (undefined)` 这句话来自 Node.js 的 `EventEmitter` 标准实现：
 
-修法三处：
+```js
+var s = new Error("Unhandled error." + (a ? " (" + a.message + ")" : ""));
+```
 
-1. `drawMap()` 在容器隐藏时**不创建、不操作**地图
-2. `fitMapToTrack()` 抽出 `fitBounds` 并加容器尺寸检查与 try-catch
-3. 识别成功后**自动切回地图标签页**——连续识别时地图始终可见可用；
-   切回时会补建地图实例并把视野对准轨迹
+即某个组件触发了 `'error'` 事件但**没有监听器**，且第一个参数不是 `Error` 实例。
+腾讯地图 GL JS 鉴权失败时走的正是这条路。
 
-> **教训**：第三方地图 SDK 的错误信息可能完全没有上下文。
-> 遇到 `Unhandled error. (undefined)` 这类消息，
-> 先确认异常来自哪一层——我们的 `catch` 把它包装成了「识别失败」，
-> 看起来像后端挂了，实际后端返回的是 200。
+**鉴权为什么会失败**：`web/index.html` 里的
+
+```js
+serviceHost: 'http://127.0.0.1:__WB_HTTP_PORT__/_TMapService/_wbt/__WB_TMAP_SECRET__',
+```
+
+这两个占位符**从来没有被任何代码替换过**——README 承诺的「本地代理」
+根本不存在。SDK 于是去请求一个非法地址（`__WB_HTTP_PORT__` 不是合法端口），
+鉴权必然失败 → SDK 内部 `AUTH_ERROR.netError` → 触发 `'error'` 事件 →
+抛出没有上下文的 `Unhandled error. (undefined)`。
+
+而我们的 `catch` 把它包装成了「识别失败」——**把一个底图问题说成了识别问题**。
+
+**修法**：
+
+1. 实现 `app/tmap_proxy.py`：真实转发 `checkKey` / `oversea` / `pingd` 到腾讯地图上游，
+   在服务端注入 key，浏览器永远拿不到 key
+2. 首页改为动态渲染（`app/server.py` 的 `index()`），把端口与随机代理标记填进页面
+3. 底图 key 用腾讯地图官方公开示例 key（`config.TMAP_PUBLIC_KEY`），
+   用户配了自己的 `TMAP_KEY` 则优先用用户的
+4. **把「识别」与「渲染」彻底分开**：接口失败才显示「识别失败」；
+   渲染失败只提示「识别已完成，但地图渲染出错，GeoJSON 可正常下载」
+5. 附加防护：容器隐藏时不操作地图、`fitBounds` 加尺寸检查与 try-catch、
+   识别成功后自动切回地图标签页
+
+> **教训一**：README 里写了「腾讯地图 GL JS 走本地代理」——但代码里没有。
+> **文档描述了一个不存在的实现，比没有文档更糟**，因为它让人以为底图是正常的。
+>
+> **教训二**：第三方 SDK 的错误信息可能完全没有上下文。
+> 遇到 `Unhandled error. (undefined)` 这类消息，第一反应应该是
+> **「这到底是谁抛的？」**——用 grep 在项目里搜这个字符串，零命中就说明不是我们的代码。
+>
+> **教训三**：真实浏览器测试是唯一可靠的手段。
+> 前两轮修复（容器尺寸检查、隐藏时跳过）方向都对但都不是根因，
+> 只有 Playwright 抓到真实的 `pageerror` 才定位到真相。
+> 见 `tools/verify_browser.py`。
 
 ### 原图预览下半部分显示不全
 
@@ -594,7 +622,15 @@ TIANDITU_KEY=
 
 底图渲染与在线地理编码**仅使用腾讯地图 / 高德 / 百度 / 天地图**四家持牌服务，
 不使用 OpenStreetMap 直连瓦片、Mapbox、Google Maps、Leaflet + OSM 等
-境外或未备案数据源。前端腾讯地图 GL JS 走本地代理，密钥不下发到浏览器。
+境外或未备案数据源。
+
+**密钥不下发到浏览器**：腾讯地图 GL JS 的鉴权请求（`checkKey` 等）由本地服务
+代理转发（`app/tmap_proxy.py`），key 只存在于服务端。
+页面里只有随机生成的代理标记（`_wbt/<随机串>`），拿不到真正的 key。
+
+底图默认用腾讯地图官方公开示例 key（仅用于渲染底图）；用户配置了自己的
+`TMAP_KEY` 则优先用用户的。**地理编码仍需用户自己申请密钥**——
+示例 key 没有 WebService 配额。
 
 **关于 OSM 的使用边界**：OSM 在本项目中**只提供坐标与几何参考**，
 不参与底图渲染，也不作为首选地理编码来源——
@@ -625,14 +661,16 @@ app/
   roadname.py    路名归属
   pipeline.py    流水线编排与 GeoJSON 输出
   geo/coords.py  坐标转换与投影
-  server.py      FastAPI 服务
+  server.py      FastAPI 服务（首页动态渲染，注入地图代理地址）
+  tmap_proxy.py 腾讯地图 GL JS 本地代理（鉴权转发，key 不下发浏览器）
   seed_lexicon.py 词典种子生成
 web/
   index.html     网页界面（腾讯地图 GL JS + 原图叠加）
   verify.html    轨迹验证页（GCJ-02，腾讯底图直接可用）
   verify_wgs.html 同一数据的 WGS-84 版本（对比基准差）
 tests/test_e2e.py 端到端验收测试（64 项）
-tests/test_frontend.py 前端逻辑测试（11 项，Node.js）
+tests/test_frontend.py 前端逻辑与地图代理测试（18 项，Node.js）
+tools/verify_browser.py 真实浏览器端到端验证（Playwright）
 data/lexicon.json 本地地名词典
 ```
 
