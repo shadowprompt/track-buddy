@@ -142,7 +142,6 @@ class TMapStub {
 const factory = new Function('TMap', '$', 'document', `
   let map = null, polyline = null, markers = [];
   let lastResult = null, correcting = null, lastPath = [];
-  let activeTab = 'map';
   ${extract('esc')}
   ${extract('num')}
   ${extract('int')}
@@ -152,8 +151,8 @@ const factory = new Function('TMap', '$', 'document', `
   ${extract('drawPreview')}
   ${extract('applyPreviewVisibility')}
   ${extract('fitMapToTrack')}
-  ${extract('switchTab')}
-  return { drawMap, fitMapToTrack, switchTab, drawPreview,
+  ${extract('ensureMapReady')}
+  return { drawMap, fitMapToTrack, ensureMapReady, drawPreview,
     setResult(d) { lastResult = d; }, getMap() { return map; },
     getPolyline() { return polyline; }, getLastPath() { return lastPath; } };
 `);
@@ -177,14 +176,14 @@ const out = {};
   out.s1_fitBounds = calls.filter(c => c === 'fitBounds').length;
 }
 
-// 场景2：停在原图叠加页时识别（关键场景）
+// 场景2：容器尺寸为 0 时识别（关键场景）
 // 注意：fitMapToTrack 内部有 try-catch，会把腾讯地图的异常吞掉，
 // 所以这里不能只看「有没有抛出来」，要看：
 //   (a) 有没有在 0 尺寸容器上创建/操作地图
 //   (b) fitBounds 有没有被调用（bug 版本会真的调进去）
 {
   const api = factory(TMapStub, $, docStub);
-  mapElDisplay = 'none'; mapElW = 0; mapElH = 0;
+  mapElDisplay = 'block'; mapElW = 0; mapElH = 0;
   calls.length = 0;
   let err = null;
   try { api.drawMap(D1); } catch (e) { err = e.message; }
@@ -193,29 +192,29 @@ const out = {};
   out.s2_fitBoundsCalled = calls.includes('fitBounds');
 }
 
-// 场景3：切回地图页应补 fitBounds
+// 场景3：ensureMapReady 应补 fitBounds
 {
   const api = factory(TMapStub, $, docStub);
   mapElDisplay = 'block'; mapElW = 800; mapElH = 480;
   api.setResult(D1);
   calls.length = 0;
   let err = null;
-  try { api.switchTab('map'); } catch (e) { err = e.message; }
+  try { api.ensureMapReady(); } catch (e) { err = e.message; }
   out.s3_error = err;
   out.s3_fitBounds = calls.includes('fitBounds');
 }
 
-// 场景4：首次识别时容器就隐藏（地图从未初始化）
+// 场景4：首次识别时容器尺寸为 0（地图从未初始化），布局就绪后应补建
 {
   const api = factory(TMapStub, $, docStub);
-  mapElDisplay = 'none'; mapElW = 0; mapElH = 0;
+  mapElDisplay = 'block'; mapElW = 0; mapElH = 0;
   calls.length = 0;
   let err = null;
   try {
     api.drawMap(D1);
     mapElDisplay = 'block'; mapElW = 800; mapElH = 480;
     api.setResult(D1);
-    api.switchTab('map');
+    api.ensureMapReady();
   } catch (e) { err = e.message; }
   out.s4_error = err;
   out.s4_mapCreated = !!api.getMap();
@@ -279,28 +278,36 @@ out.preview_has_fixed_height = /#preview\s*\{[^}]*height:\s*\d+px/.test(html);
   out.s6_newTrailLng = 121.5520;
 }
 
-// 场景7：预览面板显隐必须跟随标签页（回归项）
+// 场景7：地图与原图必须**同时可见**（回归项）
 //
-// 真实事故：drawPreview 结尾无条件 `$('preview').style.display = 'block'`，
-// 导致识别完成后「地图」与「原图叠加」两个面板同时可见——
-// 上半是腾讯地图、下半是原图（原图很高把页面撑得很长），
-// 用户以为「地图没更新、下面还挂着上一张图」。
+// 用户的预期一直是「右侧上方是识别到图片，右侧下方是原始图」。
+// 历史上做成了「地图 / 原图叠加」两个标签页互斥切换，
+// 结果识别完成时停在「地图」页，原图整个消失——
+// 用户反馈「右侧下方原始的怎么都不显示了」，像是功能坏了。
+//
+// 现在改为上下堆叠、同时可见：识别完成后两个面板都在。
 //
 // 注意必须真的调用 drawPreview（而不是只调 drawMap），
-// 因为那行无条件 display:block 就写在 drawPreview 结尾。
+// 因为显隐逻辑就在 drawPreview 调用的 applyPreviewVisibility 里。
 {
   const api = factory(TMapStub, $, docStub);
   mapElDisplay = 'block'; mapElW = 800; mapElH = 480;
   calls.length = 0;
   let err = null;
   try {
-    api.switchTab('map');
     api.drawMap(D1);
     api.drawPreview(D1);
   } catch (e) { err = e.message; }
   out.s7_error = err;
   out.s7_previewDisplay = previewDisplay;
+  out.s7_mapDisplay = mapElDisplay;
 }
+
+// 场景8：页面结构里不应再有互斥切换的标签页（回归项）
+// 标签页已移除，两个面板改为上下堆叠。
+out.has_tab_markup = /class="tab[^"]*"[^>]*data-v=/.test(html);
+out.has_tabs_css = /\.tabs\s*\{/.test(html);
+out.has_vis_block = /class="vis-block"/.test(html);
 
 console.log(JSON.stringify(out));
 """
@@ -405,14 +412,14 @@ def main() -> int:
           "停在「原图叠加」页时识别不报 Unhandled error",
           r["s2_error"] or "无异常")
     check(r["s2_mapCreated"] is False,
-          "容器隐藏时不创建地图实例（0 尺寸容器上操作会抛错）")
+          "容器尺寸为 0 时不创建地图实例（0 尺寸容器上操作会抛错）")
     check(r["s2_fitBoundsCalled"] is False,
-          "容器隐藏时不调用 fitBounds（腾讯地图在此会抛 Unhandled error)")
-    check(r["s3_error"] is None, "切回地图页不报错", r["s3_error"] or "无异常")
-    check(r["s3_fitBounds"] is True, "切回地图页会自动把视野对准轨迹")
-    check(r["s4_error"] is None, "首次识别时容器隐藏也不报错",
+          "容器尺寸为 0 时不调用 fitBounds（腾讯地图在此会抛 Unhandled error)")
+    check(r["s3_error"] is None, "ensureMapReady 不报错", r["s3_error"] or "无异常")
+    check(r["s3_fitBounds"] is True, "ensureMapReady 会把视野对准轨迹")
+    check(r["s4_error"] is None, "首次识别时容器尺寸为 0 也不报错",
           r["s4_error"] or "无异常")
-    check(r["s4_mapCreated"] is True, "切回地图页时补建地图实例")
+    check(r["s4_mapCreated"] is True, "布局就绪后补建地图实例")
     check(r["s4_fitBounds"] is True, "补建后视野对准轨迹")
 
     print("\n[2] 原图预览不再被裁切（回归项）")
@@ -438,12 +445,22 @@ def main() -> int:
           "lastPath 已换成新图坐标（fitBounds 视野随之更新）",
           f"首点经度 {r['s6_lastPathLng']}")
 
-    print("\n[2c] 预览面板显隐跟随标签页（回归项）")
-    check(r["s7_error"] is None, "切页签并绘制不报错",
-          r["s7_error"] or "无异常")
-    check(r["s7_previewDisplay"] == "none",
-          "停在「地图」页时原图面板不显示（否则两个面板叠在一起）",
+    print("\n[2c] 地图与原图同时可见（回归项）")
+    check(r["s7_error"] is None, "绘制不报错", r["s7_error"] or "无异常")
+    check(r["s7_previewDisplay"] == "block",
+          "识别完成后原图面板显示（用户预期下方始终能看到原图）",
           f"实际 display: {r['s7_previewDisplay']}")
+    check(r["s7_mapDisplay"] == "block",
+          "识别完成后地图面板也显示（两个面板并存）",
+          f"实际 display: {r['s7_mapDisplay']}")
+
+    print("\n[2d] 互斥切换的标签页已移除（回归项）")
+    check(r["has_tab_markup"] is False,
+          "页面里不再有 data-v 标签页按钮")
+    check(r["has_tabs_css"] is False,
+          "样式表里不再有 .tabs 规则")
+    check(r["has_vis_block"] is True,
+          "两个面板改为上下堆叠（vis-block 容器）")
 
     test_proxy()
 

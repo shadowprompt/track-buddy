@@ -83,12 +83,19 @@
   #preview { position:relative; background:#eee; display:none; width:100%; }
   #preview img { width:100%; display:block; }
   #preview canvas { position:absolute; inset:0; width:100%; height:100%; }
-  .tabs { display:flex; gap:6px; margin-bottom:12px; }
-  .tab {
-    padding:6px 14px; border-radius:8px; font-size:13px; cursor:pointer;
-    background:var(--bg); color:var(--text-2); border:1px solid transparent;
+  /* 两个可视化面板上下并排显示（而不是互斥切换）。
+     用户预期是「右侧上方是识别到图片，右侧下方是原始图」，
+     两者要同时能看到——早期做成标签页互斥切换，
+     结果「地图」标签激活时原图整个消失，用户以为功能坏了。
+     现在改为上下堆叠，各带一个小标题说明。 */
+  .vis-block { margin-bottom:18px; }
+  .vis-block:last-of-type { margin-bottom:0; }
+  .vis-title {
+    display:flex; align-items:center; gap:8px;
+    font-size:12px; color:var(--text-3); margin:0 0 8px;
   }
-  .tab.on { background:var(--accent-soft); color:var(--accent); border-color:rgba(83,74,183,.25); }
+  .vis-title b { font-weight:500; color:var(--text-2); }
+  .vis-title .hint { color:var(--text-3); }
   .note { font-size:12px; color:var(--text-3); margin-top:10px; line-height:1.7; }
   .kv { display:flex; justify-content:space-between; padding:5px 0; font-size:12px; border-bottom:1px solid var(--border); }
   .kv:last-child { border-bottom:none; }
@@ -193,12 +200,14 @@
 
     <!-- 右：可视化 -->
     <div class="card">
-      <div class="tabs">
-        <div class="tab on" data-v="map">地图</div>
-        <div class="tab" data-v="preview">原图叠加</div>
+      <div class="vis-block">
+        <div class="vis-title"><b>识别结果</b><span class="hint">腾讯底图 · GCJ-02</span></div>
+        <div id="map"></div>
       </div>
-      <div id="map"></div>
-      <div id="preview"><img id="prevImg"><canvas id="prevCanvas"></canvas></div>
+      <div class="vis-block">
+        <div class="vis-title"><b>原始截图</b><span class="hint">绿色为识别出的轨迹，黄色为锚点</span></div>
+        <div id="preview"><img id="prevImg"><canvas id="prevCanvas"></canvas></div>
+      </div>
       <div class="note" id="mapNote">
         底图使用腾讯地图。若轨迹位置明显偏离，可回到左侧查看锚点明细并提交纠正——
         每次纠正都会强化本地词典，同区域后续识别将更准。
@@ -223,10 +232,6 @@
   let map = null, polyline = null, markers = [];
   // 当前轨迹的 LatLng 数组，供 fitMapToTrack 缩放视野用
   let lastPath = [];
-  // 当前激活的标签页（'map' / 'preview'）。
-  // 必须记住它：drawPreview 不能自己决定显示与否，
-  // 否则识别完成后预览图会盖在地图下面（两个面板同时可见）。
-  let activeTab = 'map';
 
   // 调试钩子：暴露内部状态供自动化测试观测。
   // （IIFE 里的变量外部取不到，没有这个钩子就只能靠肉眼截图判断）
@@ -236,7 +241,6 @@
     getMarkers: () => markers.slice(),
     getLastPath: () => lastPath.slice(),
     getLastResult: () => lastResult,
-    getActiveTab: () => activeTab,
   };
 
   // ---------- 上传交互 ----------
@@ -432,17 +436,16 @@
     drawMap(d);
     drawPreview(d);
 
-    // 识别成功后自动切回「地图」标签页。
+    // 识别完成后确保地图就绪（已创建 + 视野对准新轨迹）。
     //
-    // 为什么必须切：腾讯地图 GL JS 在 0 尺寸容器（display:none）上
-    // 做 fitBounds 会抛 "Unhandled error. (undefined)"。
-    // 用户若停在「原图叠加」页直接点第二次「开始识别」，
-    // 识别本身是成功的（后端返回 200），但渲染阶段的这个异常
-    // 被 catch 捕获，显示成「识别失败」——非常误导。
+    // 为什么需要：腾讯地图 GL JS 在 0 尺寸容器上做 fitBounds 会抛
+    // "Unhandled error. (undefined)"。若首次识别时容器尺寸还是 0
+    // （布局未完成），就会抛这个错——识别本身成功（后端返回 200），
+    // 但渲染阶段的异常被 catch 捕获，显示成「识别失败」，非常误导。
     //
-    // 切回地图页同时保证「连续识别」时地图始终可见可用。
-    if (d.ok && $('map').style.display === 'none') {
-      switchTab('map');
+    // 现在两个面板始终可见（不再有标签页切换），所以只需确保就绪。
+    if (d.ok) {
+      ensureMapReady();
     }
 
     if (d.ok) {
@@ -485,11 +488,16 @@
     // "Unhandled error. (undefined)"——它内部算缩放级别时拿到 undefined，
     // 错误信息里没有细节，排查很费劲（后端日志全是 200，
     // 因为异常发生在识别成功之后的渲染阶段）。
+    //
+    // 现在两个面板始终可见（不再互斥切换），但容器尺寸仍可能为 0：
+    // 页面刚加载、布局尚未完成时就是这个状态。
+    // 所以这里依然要防一手——宁可这次不画，等 ensureMapReady() 再补。
     const mapEl = $('map');
-    const mapHidden = mapEl.style.display === 'none';
+    const mapHidden = mapEl.style.display === 'none'
+                   || mapEl.clientWidth === 0 || mapEl.clientHeight === 0;
 
     if (!map) {
-      if (mapHidden) return;          // 容器不可见，等切回来再画
+      if (mapHidden) return;          // 容器还不可用，等布局就绪后再画
       map = new TMap.Map('map', { center: new TMap.LatLng(lat, lon), zoom: 14 });
     }
 
@@ -621,42 +629,37 @@
     applyPreviewVisibility();
   }
 
-  // 预览容器的显隐由「当前标签页」决定。
+  // 预览容器与地图容器**始终同时显示**。
   //
-  // 早期实现里 drawPreview 结尾直接 `$('preview').style.display = 'block'`，
-  // 无条件显示。结果识别完成后两个面板同时可见：
-  // 上半是腾讯地图（480px），下半是原图（原图很高会把页面撑得很长），
-  // 看起来像「地图没更新、下面还挂着上一张图」。
+  // 历史上这里是「标签页互斥切换」：激活「地图」就隐藏原图，
+  // 激活「原图叠加」就隐藏地图。但用户的预期是
+  // 「右侧上方是识别到图片，右侧下方是原始图」——两个都要看得到。
+  // 做成互斥后，识别完成时停在「地图」页，原图整个消失，
+  // 看起来就像功能坏了。
+  //
+  // 现在改为上下堆叠、同时可见。
   function applyPreviewVisibility() {
-    $('preview').style.display = activeTab === 'preview' ? 'block' : 'none';
+    $('preview').style.display = 'block';
   }
 
-  // ---------- 标签页 ----------
-  // 切换到指定标签页（'map' / 'preview'）。
-  function switchTab(v) {
-    activeTab = v;
-    document.querySelectorAll('.tab').forEach(x => {
-      x.classList.toggle('on', x.dataset.v === v);
-    });
-    $('map').style.display = v === 'map' ? 'block' : 'none';
-    $('preview').style.display = v === 'preview' ? 'block' : 'none';
-    if (v !== 'map') return;
-
-    // 地图还没初始化过（首次识别时容器是隐藏的），现在才创建。
-    // 同时把当前结果画上去——否则切回来是一片空白。
+  // ---------- 地图可见性 ----------
+  // 确保地图已创建、尺寸正确、视野对准当前轨迹。
+  //
+  // 早期这里叫 switchTab，用于在「地图 / 原图叠加」两个标签页间互斥切换。
+  // 现在两个面板改为上下堆叠、同时可见，就不需要切换了，
+  // 只在「纠正锚点」和「识别完成」时确保地图就绪。
+  function ensureMapReady() {
+    // 地图还没初始化过（首次识别时容器尺寸为 0），现在才创建。
+    // 同时把当前结果画上去——否则是一��空白。
     if (!map) {
       if (lastResult) drawMap(lastResult);
       return;
     }
     map.resize();
-    // 之前在容器隐藏时跳过了 fitBounds，这里补上——
-    // 否则用户切回地图看到的还是上一张的视野范围。
+    // 之前在容器尺寸为 0 时跳过了 fitBounds，这里补上——
+    // 否则视野还是上一张的范围。
     fitMapToTrack();
   }
-
-  document.querySelectorAll('.tab').forEach(t => {
-    t.onclick = () => switchTab(t.dataset.v);
-  });
 
   // 把轨迹缩放到视野。容器不可见时跳过（腾讯地图在 0 尺寸容器上
   // 做 fitBounds 会抛 "Unhandled error. (undefined)"）。
@@ -691,8 +694,10 @@
     correcting = name;
     $('correctName').textContent = name;
     $('correctBox').style.display = 'block';
-    // 切到地图标签页（复用 switchTab，顺带补上 fitBounds）
-    switchTab('map');
+    // 确保地图就绪（顺带补上 fitBounds），并滚动到地图位置，
+    // 让用户直接看到要点击的地方。
+    ensureMapReady();
+    $('map').scrollIntoView({ behavior: 'smooth', block: 'center' });
     showStatus('请在地图上点击「' + name + '」的正确位置。', 'info');
   }
 

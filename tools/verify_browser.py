@@ -30,7 +30,6 @@ def probe(page, tag):
             const el = document.getElementById('map');
             const pv = document.getElementById('preview');
             return {
-                tab: R.getActiveTab ? R.getActiveTab() : null,
                 previewDisplay: getComputedStyle(pv).display,
                 mapDisplay: getComputedStyle(el).display,
                 center: m ? [Number(m.getCenter().lat.toFixed(5)),
@@ -94,28 +93,47 @@ def main() -> int:
         print(f"    >>> {'每次视野都跟着变 ✓' if unique_centers else '有视野没变 ✗'}")
 
         print("\n===== 标签页切换 =====")
-        page.click(".tab[data-v='preview']")
-        page.wait_for_timeout(1200)
-        pv = page.evaluate(
-            """() => ({
-                preview: getComputedStyle(document.getElementById('preview')).display,
-                map: getComputedStyle(document.getElementById('map')).display,
-                imgH: document.getElementById('prevImg').clientHeight,
-            })"""
+        # 现在没有标签页了——两个面板上下堆叠、同时可见。
+        vis = page.evaluate(
+            """() => {
+                const mapEl = document.getElementById('map');
+                const pv = document.getElementById('preview');
+                const img = document.getElementById('prevImg');
+                const cv = document.getElementById('prevCanvas');
+                return {
+                    mapDisplay: getComputedStyle(mapEl).display,
+                    mapH: mapEl.clientHeight,
+                    previewDisplay: getComputedStyle(pv).display,
+                    imgH: img.clientHeight,
+                    canvasH: cv.clientHeight,
+                    canvasW: cv.clientWidth,
+                    // 原图是否完整显示（不被容器裁切）：
+                    // img 的渲染高度应等于按宽度等比缩放后的高度，
+                    // 而不是被某个固定高度容器截断。
+                    imgNaturalH: img.naturalHeight,
+                    imgNaturalW: img.naturalWidth,
+                    imgRenderedH: img.clientHeight,
+                    imgRenderedW: img.clientWidth,
+                    // 地图与原图在垂直方向上是否真的分开了（不是叠在一起）
+                    mapBottom: mapEl.getBoundingClientRect().bottom,
+                    previewTop: pv.getBoundingClientRect().top,
+                };
+            }"""
         )
-        print(f"    切到原图叠加: {pv}")
-        page.screenshot(path=str(OUT / "e2e_preview.png"))
+        for k, v in vis.items():
+            print(f"    {k}: {v}")
+        expect_h = (vis["imgNaturalH"] * vis["imgRenderedW"] / vis["imgNaturalW"]
+                    if vis["imgNaturalW"] else 0)
+        not_cropped = abs(expect_h - vis["imgRenderedH"]) < 3
+        print(f"    >>> 两个面板同时可见: "
+              f"{'是 ✓' if vis['mapDisplay'] == 'block' and vis['previewDisplay'] == 'block' else '否 ✗'}")
+        print(f"    >>> 原图未被裁切（渲染高 {vis['imgRenderedH']:.0f}px "
+              f"= 等比缩放应为 {expect_h:.0f}px）: "
+              f"{'是 ✓' if not_cropped else '否 ✗'}")
+        print(f"    >>> 地图在原图上方: "
+              f"{'是 ✓' if vis['previewTop'] >= vis['mapBottom'] - 2 else '否 ✗'}")
 
-        page.click(".tab[data-v='map']")
-        page.wait_for_timeout(1500)
-        mv = page.evaluate(
-            """() => ({
-                preview: getComputedStyle(document.getElementById('preview')).display,
-                map: getComputedStyle(document.getElementById('map')).display,
-            })"""
-        )
-        print(f"    切回地图: {mv}")
-        page.screenshot(path=str(OUT / "e2e_map.png"))
+        page.screenshot(path=str(OUT / "e2e_both_panels.png"), full_page=True)
 
         print("\n===== console 错误 =====")
         errs = [c for c in console if c.startswith("error")]

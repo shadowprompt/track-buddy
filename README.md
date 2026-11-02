@@ -63,7 +63,7 @@ python -m app.server --reload    # 开发模式（热重载）
 
 ```bash
 python tests/test_e2e.py       # 后端端到端（64 项）
-python tests/test_frontend.py  # 前端逻辑 + 地图代理（25 项，需 Node.js）
+python tests/test_frontend.py  # 前端逻辑 + 地图代理（29 项，需 Node.js）
 ```
 
 > **为什么要单独测前端**：有些 bug 只发生在浏览器里，后端日志全是 200。
@@ -265,8 +265,8 @@ serviceHost: 'http://127.0.0.1:__WB_HTTP_PORT__/_TMapService/_wbt/__WB_TMAP_SECR
    用户配了自己的 `TMAP_KEY` 则优先用用户的
 4. **把「识别」与「渲染」彻底分开**：接口失败才显示「识别失败」；
    渲染失败只提示「识别已完成，但地图渲染出错，GeoJSON 可正常下载」
-5. 附加防护：容器隐藏时不操作地图、`fitBounds` 加尺寸检查与 try-catch、
-   识别成功后自动切回地图标签页
+5. 附加防护：容器尺寸为 0 时不操作地图、`fitBounds` 加尺寸检查与 try-catch、
+   识别完成后调用 `ensureMapReady()` 确保地图就绪
 
 > **教训一**：README 里写了「腾讯地图 GL JS 走本地代理」——但代码里没有。
 > **文档描述了一个不存在的实现，比没有文档更糟**，因为它让人以为底图是正常的。
@@ -292,7 +292,7 @@ serviceHost: 'http://127.0.0.1:__WB_HTTP_PORT__/_TMapService/_wbt/__WB_TMAP_SECR
 
 > **教训**：这类纯前端的 bug 必须单独测。
 > `tests/test_frontend.py` 把 `index.html` 的函数抽出来，
-> 配一个会复现真实腾讯地图行为的桩，逐场景断言（25 项）。
+> 配一个会复现真实腾讯地图行为的桩，逐场景断言（29 项）。
 > 它验证过「还原成有 bug 的版本 → 测试确实会失败」，
 > 避免写出永远通过的空断言。
 
@@ -346,14 +346,36 @@ Error: The layer '[object Object]' does not exist in map
 
 ### 原图面板与地图面板同时显示
 
-`drawPreview` 结尾有一行 `$('preview').style.display = 'block'`，
-无条件显示。结果识别完成后两个面板同时可见：上半是腾讯地图，
-下半是原图（原图 1606px 高，把页面撑得很长）。
+### 右侧的两个可视化面板：应该同时可见，而不是互斥切换
 
-看起来像「地图没更新、下面还挂着上一张图」。
+用户的预期一直是「**右侧上方是识别到图片，右侧下方是原始图**」——
+两个都要看得到：地图用来确认位置对不对，原图用来确认轨迹有没有抠错。
 
-修法：预览容器的显隐由**当前标签页**决定（`activeTab`），
-`drawPreview` 只负责画内容，不决定自己显不显示。
+历史上这里做成了「地图 / 原图叠加」两个**标签页互斥切换**。
+识别完成后停在「地图」页，原图整个消失，用户反馈
+「右侧下方原始的怎么都不显示了」——看起来像功能坏了。
+
+改成上下堆叠、两个面板同时可见：
+
+```html
+<div class="vis-block">
+  <div class="vis-title"><b>识别结果</b><span class="hint">腾讯底图 · GCJ-02</span></div>
+  <div id="map"></div>
+</div>
+<div class="vis-block">
+  <div class="vis-title"><b>原始截图</b><span class="hint">绿色为识别出的轨迹，黄色为锚点</span></div>
+  <div id="preview"><img id="prevImg"><canvas id="prevCanvas"></canvas></div>
+</div>
+```
+
+`switchTab()` 随之改为 `ensureMapReady()`：只负责「确保地图已创建、
+尺寸正确、视野对准轨迹」，不再管显隐。
+
+> **教训**：互斥切换看起来更"干净"，但它与用户的实际工作流冲突——
+> 校验识别结果时，地图和原图是要**对照着看**的。
+> 把两个东西藏进标签页，用户就得反复来回切。
+> 这类交互设计要问的是「用户想同时看到什么」，
+> 而不是「怎么排版看起来整齐」。
 
 ## 效果
 
@@ -728,7 +750,7 @@ web/
   verify.html    轨迹验证页（GCJ-02，腾讯底图直接可用）
   verify_wgs.html 同一数据的 WGS-84 版本（对比基准差）
 tests/test_e2e.py 端到端验收测试（64 项）
-tests/test_frontend.py 前端逻辑与地图代理测试（25 项，Node.js）
+tests/test_frontend.py 前端逻辑与地图代理测试（29 项，Node.js）
 tools/verify_browser.py 真实浏览器端到端验证（Playwright，连续识别三张）
 data/lexicon.json 本地地名词典
 ```
