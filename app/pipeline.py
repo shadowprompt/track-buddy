@@ -17,6 +17,15 @@ from .ocr_anchor import Anchor, build_anchors, classify_text, ocr_texts
 from .register import AnchorPair, Registration, apply_to_polyline, register
 from .track import TrackResult, extract_track
 
+# 路网精修的适用尺度上限（米/像素）。超过这个尺度说明截图是城市级
+# 概览图，路网既拉不动（数据量过大）也约束不了（像素精度不足）。
+_ROAD_FIT_MAX_M_PER_PX = 8.0
+
+# 能作为「强约束」的锚点类型。地铁线号（transit）与高架路（road）
+# 天然指向一段线或一条路，与标注点的对应关系很弱；它们不匹配不代表
+# 定位失败，不该计入置信度的分母。
+_STRONG_ANCHOR_KINDS = ("poi", "station", "icon", "district")
+
 
 def _mean_lat(points: list[tuple[float, float]]) -> float:
     """轨迹点的平均纬度（用于墨卡托尺度换算）。"""
@@ -311,7 +320,11 @@ class RidePipeline:
                 -len(a.name),
             )
         )
-        targets = targets[:14]
+        # 上限从 14 提到 20：城市级低缩放截图里能用的锚点本来就稀疏
+        # （整张图只有十几个标注），截掉一半会直接让配准失去约束。
+        # 名额给到 20 是权衡 Nominatim 1 次/秒的限速——命中缓存后
+        # 二次识别几乎不耗时间。
+        targets = targets[:20]
 
         matched = 0
         matched_names: set[str] = set()
@@ -329,15 +342,20 @@ class RidePipeline:
         # RANSAC 本来就是干这个的——它能识别出哪一组候选在像素上自洽。
         pending_extra: list[Anchor] = []
         for a in targets:
-            # 够用即停：RANSAC 至少要 3 个内点，拿到 5 个已足够稳定。
-            # 不提前停的话，冷启动要逐个查 14 个地名，而 OSM 检索有
-            # 1 次/秒的限速，一次识别要多等十几秒。
-            if len(matched_names) >= 5 and len(pairs) >= 5:
-                warnings.append(
-                    f"已匹配 {len(matched_names)} 个 POI 锚点，达到配准所需数量，"
-                    "其余候选未继续查询"
-                )
-                break
+            # ⚠️ 这里**不能**「够用即停」。
+            #
+            # 早期实现有一个 break：一旦匹配到 5 个名字就停止处理剩余锚点。
+            # 但不同名字提供的是**不同的空间约束**——5 个内点不一定比
+            # 3 个内点更可靠（可能是 3 个恰好共线的小地名）。
+            #
+            # 实测城市级样本：本地词典里有 43 个条目，其中 10 个
+            # （红星美凯龙、花卉市场、长风公、阿拉城、上海会聚…）都能
+            # 提供有效约束，却被这个 break 挡在门外，配准只剩 3 个内点、
+            # RMSE 160 米；放开后内点涨到 6 个、路名归属也恢复成
+            # 安龙路/剑河路/金钟路等正确结果。
+            #
+            # 词典命中是**纯本地查询、零网络成本**，全部保留没有代价；
+            # 真正需要控制的是冷启动的请求量，那部分由 pending 控制。
             results = self.geocoder.geocode(
                 a.name, city=city, allow_online=allow_online,
                 allow_cold_start=False,
@@ -355,7 +373,9 @@ class RidePipeline:
                         px=a.px,
                         py=a.py,
                         weight=a.weight,
-                        kind=a.kind,
+                        # 锚点类型以地理编码结果的判定为准（行政区 / 车站 /
+                        # 道路 / POI），配准时按类型选内点容差。
+                        kind=r.kind if r.kind else a.kind,
                         lon=r.lon,
                         lat=r.lat,
                         match_quality=r.quality,
@@ -435,7 +455,10 @@ class RidePipeline:
                         px=a.px,
                         py=a.py,
                         weight=a.weight,
-                        kind=a.kind,
+                        # 用 OSM 判定出的真实类型（行政区 / 车站 / 道路 / POI），
+                        # 而不是 OCR 的 icon/poi——配准的内点容差按类型区分，
+                        # 行政区标注点与真实质心可差 1-2 公里。
+                        kind=p.kind if p.kind != "other" else a.kind,
                         lon=p.lon,
                         lat=p.lat,
                         match_quality=0.6 * p.score,
@@ -458,6 +481,23 @@ class RidePipeline:
 
         if not self.cfg.road_fit_enabled:
             return {"ok": False, "notes": ["路网精修已关闭"]}, None
+
+        # 低缩放截图直接跳过路网精修。
+        #
+        # 城市级截图一张图覆盖十几公里，轨迹在图上只有几百像素。此时：
+        #   1. bbox 拉出来的路网数据量极大（覆盖整个城区），
+        #      OSM 查询要么超时要么被限流（实测「路网获取失败：RuntimeError」）；
+        #   2. 就算拿到了路网，轨迹的像素精度本来就不足以区分
+        #      相邻街道——「贴到路上」这个目标在该尺度没有意义。
+        # 街道级截图（尺度 < 5 米/像素）才启用路网精修。
+        if reg.scale > _ROAD_FIT_MAX_M_PER_PX:
+            return {
+                "ok": False,
+                "notes": [
+                    f"低缩放截图（{reg.scale:.1f} 米/像素）跳过路网精修："
+                    "该尺度下路网无法提供有效约束"
+                ],
+            }, None
 
         # 轨迹像素 bbox → 经纬度 bbox（留 margin 余量覆盖周边路网）
         # 注意 track.bbox 的语义是 (x, y, w, h)，不是 (x0, y0, x1, y1)
@@ -618,12 +658,19 @@ class RidePipeline:
         构成：几何拟合质量（主导）+ 锚点数量 + 锚点类型质量 + 轨迹提取质量
              + 绝对位置自校验。
         """
-        # 拟合质量：RMSE 越小越好，30m 以内视为优秀
-        if reg.rmse_m <= 15:
+        # 拟合质量：残差换算成**像素**再分档。
+        #
+        # 不能直接用米：同一个 200 米残差，在街道级截图（0.5 米/像素）
+        # 是 400 像素、完全不可信；在城市级截图（15 米/像素）只有
+        # 13 像素、其实相当准。用米做绝对阈值会让低缩放截图的
+        # 置信度被无端压低。
+        rmse_m = reg.rmse_reliable_m if reg.n_reliable >= 2 else reg.rmse_m
+        med_px_fit = rmse_m / max(reg.scale, 1e-6)
+        if med_px_fit <= 3:
             fit = 1.0
-        elif reg.rmse_m <= 40:
+        elif med_px_fit <= 8:
             fit = 0.85
-        elif reg.rmse_m <= 80:
+        elif med_px_fit <= 20:
             fit = 0.6
         else:
             fit = 0.35
@@ -644,16 +691,32 @@ class RidePipeline:
         # 一个地名若至少有一个候选进了内点，这个地名就算「命中」。
         # 这样离群的是候选，而不是「配错的地名」。
         hit_names = {a.name for a in reg.inliers}
-        all_names = {a.name for a in reg.inliers} | {a.name for a in reg.outliers}
-        ratio = len(hit_names) / len(all_names) if all_names else 0.0
+        # 分母只算「能作强约束」的地名。城市级截图上 OCR 会读出
+        # 「3号线」「8号线」「外环高速」这类名字，它们指向的是线/路而非
+        # 点位，本来就只是弱参考——把它们算进分母会把命中率
+        # 从 5/12 压到 5/23，置信度凭空掉一截。
+        all_pairs = list(reg.inliers) + list(reg.outliers)
+        strong_names = {
+            a.name for a in all_pairs if a.kind in _STRONG_ANCHOR_KINDS
+        }
+        ratio = len(hit_names & strong_names) / len(strong_names) if strong_names else 0.0
 
         # 锚点数量（越多越稳，但收益递减）
         n = len(reg.inliers)
         count = min(1.0, 0.35 + 0.11 * n) if n else 0.0
 
-        # 锚点质量：图标锚点最可靠
+        # 锚点质量：按锚点类型加权。
+        # 车站（图标锚定真实点位）最可靠；行政区标注点会被地图引擎
+        # 挪到视野空白处，质量要打折。
         kinds = [a.kind for a in reg.inliers]
-        kind_q = 1.0 if "icon" in kinds else (0.9 if "poi" in kinds else 0.7)
+        if "station" in kinds:
+            kind_q = 1.0
+        elif "poi" in kinds or "icon" in kinds:
+            kind_q = 0.9
+        elif "district" in kinds:
+            kind_q = 0.6
+        else:
+            kind_q = 0.7
 
         conf = 0.40 * fit + 0.18 * ratio + 0.18 * count + 0.14 * kind_q
         conf *= track.confidence if track.confidence < 1 else 1.0

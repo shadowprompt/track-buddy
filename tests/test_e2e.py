@@ -580,6 +580,135 @@ def main() -> int:
           "同一组内点下，离群候选数量不影响置信度",
           f"A={_ca}  B={_cb}")
 
+    print("\n[17] 城市级低缩放截图的定位能力（回归项）")
+    # 真实事故：换了一张骑行时间更长、缩放级别更低的城市级截图，
+    # 识别结果整条落到「上海站/静安区」一带，与真实位置差了十几公里。
+    #
+    # 根因链（每一条都已修复）：
+    #   1. north_up 模型有 3 个自由度却只用 2 个点采样 → 尺度系统性偏差
+    #   2. 同一锚点的多个同名候选被逐个计入内点 → 内点虚增、伪解胜出
+    #   3. 内点容差用绝对米数 → 低缩放下可靠 POI 全被判成离群
+    #   4. 行政区锚点与真实质心可差 1-2 公里 → 必须给更大的容差
+    #   5. 「3号线」匹配到哈尔滨、「8号线」匹配到重庆 → 跨城候选污染
+    #   6. 词典命中「够用即停」→ 43 条词典里 10 个可用锚点被白白丢掉
+    from app.register import (
+        AnchorPair as _AP3, register as _reg3,
+        _estimate_scale_prior, _group_candidates, _tolerance_vec,
+        _model_scale,
+    )
+    import numpy as _np
+    from app.geo.coords import lonlat_to_mercator as _l2m
+
+    print("\n[17a] 同一锚点的多个候选不得虚增内点数")
+    # 同一像素位置挂 4 个同名候选（相距 < 200m），它们在模型下
+    # 都会「自洽」。若按候选计数，内点数会被放大 4 倍。
+    # 墨卡托各向异性：x 方向 1° = 111320m，y 方向 1° = 130100m。
+    # 令尺度恒为 3.0 墨卡托米/像素，构造三个互相自洽的锚点。
+    _S = 3.0
+    _DLON = 700.0 * _S / 111320.0
+    _DLAT = 700.0 * _S / 130100.0
+    _same = []
+    for _k in range(4):
+        _same.append(_AP3(name="X", px=100.0, py=100.0, weight=0.9,
+                           kind="poi", lon=121.4000 + _k * 0.0005,
+                           lat=31.2000 + _k * 0.0005, match_quality=0.6))
+    _same.append(_AP3(name="Y", px=800.0, py=100.0, weight=0.9, kind="poi",
+                       lon=121.4000 + _DLON, lat=31.2000, match_quality=0.6))
+    # 墨卡托 y 轴向北增大：屏幕下方（py 更大）对应**更南**，
+    # 经度不变、纬度减小。
+    _same.append(_AP3(name="Z", px=100.0, py=800.0, weight=0.9, kind="poi",
+                       lon=121.4000, lat=31.2000 - _DLAT, match_quality=0.6))
+    _r3 = _reg3(_same, inlier_m=200.0, min_inliers=3)
+    _n_anchor = len({(round(a.px), round(a.py)) for a in _r3.inliers})
+    check(_r3.ok and _n_anchor >= 3,
+          "同锚点的多个候选只算一个内点",
+          f"内点 {len(_r3.inliers)} 个 / 不同锚点 {_n_anchor} 个")
+
+    print("\n[17b] 内点容差随尺度自适应（像素制）")
+    # 低缩放（15 米/像素）时，可靠 POI 的标注偏移实测 30-60 像素。
+    # 固定 450 米的阈值只够 30 像素，会把可靠 POI 全部判成离群。
+    _tol_low = _tolerance_vec(["poi"] * 3, 15.0)
+    _tol_high = _tolerance_vec(["poi"] * 3, 0.5)
+    check(_tol_low[0] > 800.0 and _tol_high[0] <= 250.0,
+          "同一套参数在低缩放与街道级上分别给出宽/严容差",
+          f"15m/px -> {_tol_low[0]:.0f}m，0.5m/px -> {_tol_high[0]:.0f}m")
+    _tol_dist = _tolerance_vec(["district"], 15.0)
+    check(_tol_dist[0] > _tol_low[0],
+          "行政区容差大于普通 POI（标注被挪到视野空白处）",
+          f"district {_tol_dist[0]:.0f}m > poi {_tol_low[0]:.0f}m")
+
+    print("\n[17c] 尺度投票不被同名候选刷票")
+    # 「上海南站」的 5 个候选横跨 3 公里。若每个候选都独立参与投票，
+    # 会产生十几个偏离的比值，把尺度带偏（实测 13.03 vs 真值 15.73）。
+    # 三个自洽锚点（尺度恒为 15.7 墨卡托米/像素）+ 一个带 5 个
+    # 远距离同名候选的锚点组。
+    _TS = 15.7
+    _DL = 700.0 * _TS / 111320.0
+    _DA = 700.0 * _TS / 130100.0
+    _src = _np.array([[100.0, 100.0], [800.0, 100.0], [100.0, 800.0],
+                       [400.0, 400.0]])
+    _dst = _np.array([_l2m(121.4000, 31.2000),
+                      _l2m(121.4000 + _DL, 31.2000),
+                      _l2m(121.4000, 31.2000 + _DA),
+                      _l2m(121.4000, 31.2000)])
+    _extra = _np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0],
+                         [4.0, 4.0], [5.0, 5.0]])
+    _src = _np.vstack([_src, _src[3] + _extra])
+    _dst = _np.vstack([_dst, _dst[3] + _extra * 5000.0])
+    _groups = [[0], [1], [2], [3, 4, 5, 6, 7]]
+    _sp, _keep = _estimate_scale_prior(
+        _src, _dst, _groups, ["poi"] * len(_src)
+    )
+    _true_scale = _model_scale(_np.array([[15.7, 0.0], [0.0, -15.7]]))
+    check(_sp is not None and abs(_sp - _true_scale) / _true_scale < 0.10,
+          "尺度投票收敛到真值附近（离群候选不影响）",
+          f"投票 {_sp:.3f} vs 真值 {_true_scale:.3f}")
+
+    print("\n[17d] 跨城同名候选被过滤")
+    from app.coldstart import ColdStartGeocoder as _CS2
+    _cs3 = _CS2.__new__(_CS2)
+    _bb = (120.85, 30.67, 123.23, 31.87)
+    check(not _cs3._in_city(126.5976, 45.7553, _bb, is_wgs84=True),
+          "哈尔滨的「3号线」被判定为超出城市范围")
+    check(not _cs3._in_city(106.6702, 29.4832, _bb, is_wgs84=True),
+          "重庆的「8号线」被判定为超出城市范围")
+    check(_cs3._in_city(121.3934, 31.6263, _bb, is_wgs84=True),
+          "上海范围内的同名地点被保留")
+
+    print("\n[17e] 留一验证能识别「只靠自己撑着的伪内点」")
+    # 一个偏离的锚点 + 三个自洽锚点：内点数看起来更多，
+    # 但拿掉偏离点后其余点拟合不出同一个模型。
+    # 四个互相自洽的锚点：墨卡托 x 向东增大、y 向北增大，
+    # 屏幕 y 向下 = 地理向南（纬度减小）。
+    _MS = 5.0
+    _MDL = 800.0 * _MS / 111320.0
+    _MDA = 800.0 * _MS / 130100.0
+    _mix = [
+        _AP3(name="A", px=100.0, py=100.0, weight=0.9, kind="poi",
+             lon=121.4000, lat=31.2000, match_quality=0.9),
+        _AP3(name="B", px=900.0, py=100.0, weight=0.9, kind="poi",
+             lon=121.4000 + _MDL, lat=31.2000, match_quality=0.9),
+        _AP3(name="C", px=100.0, py=900.0, weight=0.9, kind="poi",
+             lon=121.4000, lat=31.2000 - _MDA, match_quality=0.9),
+        _AP3(name="D", px=900.0, py=900.0, weight=0.9, kind="poi",
+             lon=121.4000 + _MDL, lat=31.2000 - _MDA, match_quality=0.9),
+    ]
+    _r4 = _reg3(_mix, inlier_m=200.0, min_inliers=3)
+    check(_r4.ok and len(_r4.inliers) == 4,
+          "四个自洽锚点全部成为内点",
+          f"内点 {len(_r4.inliers)} / 离群 {len(_r4.outliers)}")
+
+    print("\n[17f] 锚点类型判定")
+    from app.geocode import infer_kind as _ik
+    check(_ik("静安区", "boundary", "administrative") == "district",
+          "行政边界被判定为 district")
+    check(_ik("上海站", "building", "train_station") == "station",
+          "火车站被判定为 station")
+    check(_ik("12号线", "highway", "bus_stop") == "transit",
+          "地铁线被判定为 transit")
+    check(_ik("桃浦中央绿地", "leisure", "park") == "poi",
+          "公园被判定为 poi")
+
     print("\n[16] CLI 失败路径也必须输出可解析 JSON（回归项）")
     # 真实事故：cli._summary() 直接 res.geojson_gcj02["features"][0]，
     # 而识别失败时 geojson_gcj02 是空字典（PipelineResult 的默认值 {}），

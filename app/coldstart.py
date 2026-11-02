@@ -103,6 +103,10 @@ _MAX_CENTER_DIST_M = 1500.0
 # 实测上海古北一例，正是因为过早截断，正确的候选没能进入配准。
 _MAX_CANDIDATES_PER_NAME = 5
 
+# 城市范围裁剪的余量（度）。0.25° 约合 25 公里，
+# 足以覆盖上海周边的卫星城，又能把哈尔滨/成都这类异地同名地点挡掉。
+_CITY_BBOX_PAD_DEG = 0.25
+
 
 @dataclass
 class OsmPlace:
@@ -302,16 +306,54 @@ class ColdStartGeocoder:
         return res
 
     def _classify(self, raw_name: str, d: dict) -> str:
-        """判断 OSM 要素能否作配准锚点。"""
+        """判断 OSM 要素能否作配准锚点，并给出更精确的类型。
+
+        类型决定配准时的内点容差：行政区标注点与几何质心可差 1-2 公里，
+        车站/POI 则只差几十米。混为一谈会让正确的锚点被判成离群。
+        """
+        from .geocode import infer_kind
+
         cat = (d.get("category") or "").strip()
         osm_class = (d.get("type") or "").strip()
+        kind = infer_kind(raw_name, cat, osm_class)
+        if kind in ("poi", "district", "station"):
+            return kind
+        # 道路/水系：文字沿走向排布，中心不对应固定点位，但**高架与快速路
+        # 在城市级截图里是极好的线性锚点**（Nominatim 返回的是路上一处
+        # 带名字的节点），因此保留为 road 而不是丢弃。
+        if kind == "road":
+            return "road"
         if cat in ("highway", "waterway") or osm_class in ("road",):
-            # 道路/水系：文字沿走向排布，中心不对应固定点位，不可作锚点
-            return "other"
+            return "road"
         if cat in ("public_transport", "railway") or "地铁" in raw_name \
                 or "号线" in raw_name or raw_name.endswith("站"):
             return "transit"
         return "poi"
+
+    def _in_city(
+        self, lon: float, lat: float, bbox, is_wgs84: bool = True
+    ) -> bool:
+        """候选是否落在城市范围内（允许一定余量）。
+
+        Nominatim 的 viewbox 只是**排序提示**，不做强制过滤，同名异地
+        地点照样会返回。实测城市级截图里的「3号线」匹配到哈尔滨、
+        「8号线」匹配到重庆、「1号线」匹配到成都——这些点离真实轨迹
+        上千公里，一旦被误当作内点，配准就会整个跑偏。
+
+        这里做硬性距离裁剪：超出城市范围（含余量）的候选直接丢弃。
+        """
+        if not bbox:
+            return True
+        if not is_wgs84:
+            from .geo.coords import gcj02_to_wgs84
+
+            lon, lat = gcj02_to_wgs84(lon, lat)
+        west, south, east, north = bbox
+        pad = _CITY_BBOX_PAD_DEG
+        return (
+            west - pad <= lon <= east + pad
+            and south - pad <= lat <= north + pad
+        )
 
     def _collect_candidates(
         self, name: str, city: str, min_hits: int = 3
@@ -348,6 +390,9 @@ class ColdStartGeocoder:
                     lon = float(d["lon"])
                     lat = float(d["lat"])
                 except (KeyError, TypeError, ValueError):
+                    continue
+                # 异地同名地点直接丢弃（如「3号线」在哈尔滨）
+                if not self._in_city(lon, lat, bbox):
                     continue
                 key = (round(lon, 4), round(lat, 4))
                 prev = best.get(key)
@@ -478,6 +523,22 @@ class ColdStartGeocoder:
             with self._lock:
                 self._mem[key] = got
         self._save_disk()
+
+        # 城市范围过滤：**在缓存命中之后也必须做**。
+        # 磁盘缓存是长期存在的，里面可能存着过滤规则上线之前写入的
+        # 异地同名地点（「3号线」在哈尔滨）。若只在新查询时过滤，
+        # 这些陈旧候选会被永久复用，直到用户手动删缓存。
+        #
+        # 这里只复用**已经取到过的**城市 bbox（`_collect_candidates`
+        # 查询时已经填过），不额外发起网络请求——bbox 缺失时退化为
+        # 不过滤，行为与旧版一致。
+        bbox = getattr(self, "_bbox_cache", {}).get(normalize_city(city))
+        if bbox:
+            cands = {
+                n: [p for p in lst if self._in_city(p.lon, p.lat, bbox, is_wgs84=False)]
+                for n, lst in cands.items()
+            }
+            cands = {n: lst for n, lst in cands.items() if lst}
 
         # 待查地名太少 → 互证无从谈起，直接给最佳候选。
         # 1 个地名时确实无从互证；2 个是可以的（双向印证，见 _find_region_center）。

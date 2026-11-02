@@ -51,6 +51,58 @@ class GeocodeResult:
     quality: float  # 0-1，可靠度
     source: str  # lexicon / amap / tmap / baidu / tianditu
     address: str = ""
+    kind: str = "poi"  # poi / district / station / road / transit
+
+
+# --- 锚点类型判定 ---------------------------------------------------------
+#
+# 屏幕标注点与真实地理点的偏差量级，完全取决于标注对象的类型：
+#
+#   * 车站 / 一般 POI：图标就画在真实位置旁，偏差通常 < 100 米
+#   * 行政区：地图把「静安区」三个字画在区的视觉重心，而地理编码
+#     返回的是行政区的**几何质心**，两者可差 1-2 公里
+#   * 道路 / 地铁线路：文字沿走向排布，中心点与标注位置天然不对应
+#
+# 城市级低缩放截图里锚点几乎全是行政区，若不分类而用统一容差，
+# 正确锚点会被判成离群，配准就会掉进「几个挤在一起的小地名」里。
+_DISTRICT_SUFFIX = ("区", "县", "市", "旗")
+_STATION_SUFFIX = ("站", "港", "场")
+_TRANSIT_MARKERS = ("号线", "地铁", "联络线", "环线", "内圈", "外圈", "区间线")
+_ROAD_MARKERS = ("高速", "高架", "路", "道", "街", "桥", "隧道", "匝道")
+
+
+def infer_kind(
+    name: str, category: str = "", osm_type: str = ""
+) -> str:
+    """判定锚点类型，用于配准时选择合适的内点容差。
+
+    ``category`` / ``osm_type`` 是 Nominatim 返回的原始分类，
+    有则以它为准（最可靠）；没有则按名称形态推断。
+    """
+    n = (name or "").strip()
+    cat = (category or "").strip().lower()
+    otype = (osm_type or "").strip().lower()
+
+    # OSM 明确标为行政边界 → district
+    if cat == "boundary" or otype == "administrative":
+        return "district"
+    # OSM 明确标为车站类 → station
+    if otype in (
+        "train_station", "station", "subway_station", "light_rail_station",
+        "tram_stop", "bus_station", "ferry_terminal", "airport", "port",
+    ):
+        return "station"
+
+    # 名称形态推断
+    if any(m in n for m in _TRANSIT_MARKERS):
+        return "transit"
+    if any(m in n for m in _ROAD_MARKERS) and len(n) <= 8:
+        return "road"
+    if n.endswith(_DISTRICT_SUFFIX) and len(n) <= 6:
+        return "district"
+    if n.endswith(_STATION_SUFFIX) and len(n) <= 8:
+        return "station"
+    return "poi"
 
 
 class Lexicon:
@@ -161,6 +213,7 @@ class Lexicon:
                     quality=min(1.0, float(e.get("weight", 1.0)) / 5.0),
                     source="lexicon",
                     address=e.get("address", ""),
+                    kind=infer_kind(name),
                 )
             )
         return results
@@ -287,7 +340,8 @@ class Geocoder:
             out.append(
                 GeocodeResult(name=p.get("name", name), lon=lon, lat=lat,
                               quality=exact, source="amap",
-                              address=p.get("address", ""))
+                              address=p.get("address", ""),
+                              kind=infer_kind(p.get("name", name), p.get("type", "")))
             )
         return out
 
@@ -320,7 +374,8 @@ class Geocoder:
             out.append(
                 GeocodeResult(name=p.get("title", name), lon=float(lon), lat=float(lat),
                               quality=exact, source="tmap",
-                              address=p.get("address", ""))
+                              address=p.get("address", ""),
+                              kind=infer_kind(p.get("title", name), p.get("type", "")))
             )
         return out
 
@@ -353,7 +408,8 @@ class Geocoder:
             glon, glat = bd09_to_gcj02(float(lon), float(lat))
             out.append(
                 GeocodeResult(name=p.get("name", name), lon=glon, lat=glat,
-                              quality=0.85, source="baidu", address=p.get("address", ""))
+                              quality=0.85, source="baidu", address=p.get("address", ""),
+                              kind=infer_kind(p.get("name", name), p.get("type", "")))
             )
         return out
 
@@ -379,7 +435,8 @@ class Geocoder:
                 continue
             out.append(
                 GeocodeResult(name=p.get("name", name), lon=float(lon), lat=float(lat),
-                              quality=0.8, source="tianditu", address=p.get("address", ""))
+                              quality=0.8, source="tianditu", address=p.get("address", ""),
+                              kind=infer_kind(p.get("name", name), p.get("type", "")))
             )
         return out
 
@@ -476,6 +533,7 @@ class Geocoder:
                     name=p.name, lon=p.lon, lat=p.lat,
                     quality=0.6, source="osm",
                     address=f"osm/{p.osm_type}/{p.osm_id}",
+                    kind=p.kind,
                 )
             )
         for r in out:
