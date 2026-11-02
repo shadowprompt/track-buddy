@@ -578,8 +578,12 @@ class RidePipeline:
 
         constraints = []
         info = []
+        cache_path = str(self.cfg.road_cache_dir / "roadnames.json")
+        roads_cache = str(self.cfg.road_cache_dir / "roads.json")
         for nm in names:
-            c = fetch_road_name(nm, bbox=bbox, timeout=60.0)
+            c = fetch_road_name(nm, bbox=bbox, timeout=60.0,
+                                cache_path=cache_path,
+                                roads_cache_path=roads_cache)
             constraints.append(c)
             info.append({
                 "name": nm,
@@ -601,7 +605,7 @@ class RidePipeline:
             reg.pixel_to_mercator(float(px), float(py))
             for px, py in track.polyline
         ])
-        shift, val, notes = refine_by_road_names(traj, usable)
+        shift, val, notes, base_val = refine_by_road_names(traj, usable)
         if not np.isfinite(val):
             return info, {"ok": False, "notes": notes}
 
@@ -1070,21 +1074,28 @@ class RidePipeline:
         if road_name_fit and road_name_fit.get("ok"):
             rn_after = float(road_name_fit.get("after_m", 999))
             rn_before = float(road_name_fit.get("before_m", 999))
-            if rn_after <= 50:
-                rn_q = 1.0
-            elif rn_after <= 150:
-                rn_q = 0.92
-            elif rn_after <= 400:
-                rn_q = 0.8
-            elif rn_after <= 800:
-                rn_q = 0.65
-            else:
-                rn_q = 0.5
+            # ⚠️ 分段约束下**不能用绝对值分档**。
+            #
+            # 「分段目标值」的量纲是「轨迹到各路名对应段的加权中位距离」，
+            # 一条 16 公里的轨迹经过 10 条路，每条路上只占一小段，
+            # 目标值天然在几百米量级——它衡量的是「整体贴合程度」，
+            # 不是「位置误差」。用绝对值分档会把「明明改善了 42%」
+            # 的结果判成低质量（实测 1767 米 → rn_q=0.5，置信度反降）。
+            #
+            # 正确的判据是**改善率**：约束把轨迹拉近了多远。
             rn_gain = 1.0 if rn_before <= 0 else max(
                 0.0, min(1.0, (rn_before - rn_after) / max(rn_before, 1)))
-            # 用户明确给了约束 → 这是**主动信息**，置信度应该更高
-            conf = (0.62 * rn_q + 0.20 * ratio + 0.10 * count +
-                    0.08 * rn_gain)
+            if rn_gain >= 0.5:
+                rn_q = 1.0
+            elif rn_gain >= 0.3:
+                rn_q = 0.92
+            elif rn_gain >= 0.15:
+                rn_q = 0.8
+            else:
+                rn_q = 0.65
+            # 用户明确给了约束 → 这是**主动信息**，置信度应当更高
+            conf = (0.55 * rn_q + 0.20 * ratio + 0.12 * count +
+                    0.13 * rn_gain)
             conf *= track.confidence if track.confidence < 1 else 1.0
         return round(min(0.99, max(0.0, conf)), 3)
 

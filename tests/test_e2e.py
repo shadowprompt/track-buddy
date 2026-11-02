@@ -850,8 +850,11 @@ def main() -> int:
 
     # 轨迹在路的北侧 300 米处 → 约束应把它拉回来
     _traj = np.array([[float(x), 300.0] for x in range(-400, 400, 20)])
-    _shift, _val, _notes = refine_by_road_names(
+    _shift, _val, _notes, _base = refine_by_road_names(
         _traj, [_con], max_shift_m=1000.0, coarse_step_m=50.0)
+    check(_base > 200.0,
+          "基准值反映「约束前轨迹离路多远」",
+          f"基准 {_base:.0f} 米")
     check(abs(_val) < 50.0,
           "路名约束把轨迹拉回路面（目标值 < 50 米）",
           f"目标值 {_val:.1f} 米")
