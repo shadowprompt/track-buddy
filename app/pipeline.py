@@ -109,6 +109,7 @@ class RidePipeline:
         city: str = "",
         allow_online: bool = True,
         output_crs: str = "WGS-84",
+        refine: bool = True,
     ) -> PipelineResult:
         t0 = time.time()
         warnings: list[str] = []
@@ -178,7 +179,10 @@ class RidePipeline:
         # 用「轨迹必须走在真实道路上」纠正绝对位置。锚点是 POI 文字标注，
         # 标注点位与真实 POI 存在 100-300m 系统偏差（不同 POI 数据库之间），
         # 会让轨迹整体落到平行的错误道路族上。
-        road_fit, road_net = self._road_refine(reg, track)
+        road_fit, road_net = (
+            self._road_refine(reg, track) if refine
+            else ({"ok": False, "notes": ["本次跳过路网精修（异步模式下由后台任务执行）"]}, None)
+        )
         if road_fit.get("ok"):
             warnings.append(
                 f"路网精修：平移 东{road_fit['shift_e_m']:+.0f}m "
@@ -469,35 +473,47 @@ class RidePipeline:
     def _road_refine(self, reg: Registration, track: TrackResult):
         """路网约束精修：用「轨迹必须走在真实道路上」纠正配准的绝对位置。
 
-        锚点来自 POI 文字标注，标注位置与真实 POI 点位存在系统性偏差
-        （实测同一 POI 在 OSM 与国内底图之间可差 100-300 米），
-        会让整条轨迹落到平行的错误道路族上。
+        两种模式，按截图尺度自动切换：
 
-        道路几何不存在这种问题——路网位置在所有地图上必须一致。
-        这里在保持尺度与朝向的前提下平移轨迹，使贴路距离最小，
-        并同时给出每一段所属的道路名。
+        * **街道级**（尺度 < 5 米/像素）——**修正**模式。
+          在保持尺度与朝向的前提下平移轨迹，使贴路距离最小，
+          并给出每一段所属的道路名。
+
+        * **城市级低缩放**（尺度 > 8 米/像素）——**校验 + 命名**模式。
+          只算贴路距离与路名归属，**不做平移/尺度微调**。
+
+          为什么不做微调：OSM 路网与高德底图本身有 30-100 米的数据差异，
+          低缩放下贴路能到 60 米已经是数据源的上限；此时再「优化」只会
+          过拟合到路网的局部结构——实测尺度被推到 ×1.08、锚点残差从
+          271 米涨到 1692 米，而贴路只从 58 米变到 54 米，**净亏**。
+          低缩放下路网真正的价值是①验证定位是否落在合理街区
+          ②给出路名归属。
+
+        ⚠️ 低缩放下「贴路距离小」**不能**证明位置正确：主干道网稀疏，
+        轨迹整体平移几公里照样能压在另一条平行的主干道上。绝对位置
+        仍然只能靠锚点，路网只能验证形状与尺度是否自洽。
         """
         from .roadfit import RoadNetwork, fetch_roads, refine_with_roads
 
         if not self.cfg.road_fit_enabled:
             return {"ok": False, "notes": ["路网精修已关闭"]}, None
 
-        # 低缩放截图直接跳过路网精修。
+        low_zoom = reg.scale > _ROAD_FIT_MAX_M_PER_PX
+        # 路网等级：**主干道 + 次干道 + 三级路 + 居住路**，
+        # 但排除 service / footway / path 之类的细碎小路。
         #
-        # 城市级截图一张图覆盖十几公里，轨迹在图上只有几百像素。此时：
-        #   1. bbox 拉出来的路网数据量极大（覆盖整个城区），
-        #      OSM 查询要么超时要么被限流（实测「路网获取失败：RuntimeError」）；
-        #   2. 就算拿到了路网，轨迹的像素精度本来就不足以区分
-        #      相邻街道——「贴到路上」这个目标在该尺度没有意义。
-        # 街道级截图（尺度 < 5 米/像素）才启用路网精修。
-        if reg.scale > _ROAD_FIT_MAX_M_PER_PX:
-            return {
-                "ok": False,
-                "notes": [
-                    f"低缩放截图（{reg.scale:.1f} 米/像素）跳过路网精修："
-                    "该尺度下路网无法提供有效约束"
-                ],
-            }, None
+        # 两个方向都要试过才知道边界在哪：
+        #   * 只留主次干道 → 轨迹附近没有主次干道时，贴路距离被
+        #     「最近的主干道有多远」主导（实测 221m）；
+        #   * 留全量（含 service/辅路）→ 轨迹「就近吸附」到旁边的
+        #     辅路上，贴路卡在 30 多米（实测 33m）；
+        #   * 排除细碎小路、保留到居住路 → 贴路 56m（城市级）/ 13m（街道级）。
+        # 另外全量路网的数据量大到查询要 40-90 秒，按等级过滤能降到 1/3。
+        highway_types = [
+            "motorway", "trunk", "primary", "secondary", "tertiary",
+            "residential", "living_street", "pedestrian",
+            "motorway_link", "trunk_link", "primary_link", "secondary_link",
+        ]
 
         # 轨迹像素 bbox → 经纬度 bbox（留 margin 余量覆盖周边路网）
         # 注意 track.bbox 的语义是 (x, y, w, h)，不是 (x0, y0, x1, y1)
@@ -518,27 +534,42 @@ class RidePipeline:
             ]
             lons = [c[0] for c in corners]
             lats = [c[1] for c in corners]
-            margin = 0.006
+            # margin 要够大：轨迹附近的路网覆盖不全时，贴路距离会被
+            # 「最近的路有多远」主导，而不是「轨迹有没有压在道路上」。
+            # 实测城市级 600m → 贴路 432m，2000m → 贴路 56m。
+            margin = 0.02 if low_zoom else 0.006
             gcj_bbox = (min(lons) - margin, min(lats) - margin,
                         max(lons) + margin, max(lats) + margin)
             # GCJ-02 → WGS-84（fetch_roads / OSM API 期望的基准）
             w_lo, w_la = gcj02_to_wgs84(gcj_bbox[0], gcj_bbox[1])
             w_hi, w_ha = gcj02_to_wgs84(gcj_bbox[2], gcj_bbox[3])
             bbox = (w_lo, w_la, w_hi, w_ha)
+            if low_zoom:
+                # 对齐到固定网格：分块边界随轨迹采样与配准的亚像素变化
+                # 而微动，不对齐的话缓存块的「完全包含」判定永远不成立，
+                # 每次识别都重新拉一遍路网（实测每次 220 秒）。
+                g = 0.005
+                bbox = (math.floor(w_lo / g) * g, math.floor(w_la / g) * g,
+                        math.ceil(w_hi / g) * g, math.ceil(w_ha / g) * g)
         except Exception as exc:
             return {"ok": False,
                     "notes": [f"bbox 计算失败：{type(exc).__name__}"]}, None
 
         try:
             roads = fetch_roads(
-                bbox, timeout=self.cfg.http_timeout * 2,
+                bbox, timeout=90.0 if low_zoom else self.cfg.http_timeout * 2,
                 cache_path=str(self.cfg.road_cache_dir / "roads.json"),
+                highway_types=highway_types,
             )
         except Exception as exc:
             return {"ok": False,
-                    "notes": [f"路网获取失败，跳过精修：{type(exc).__name__}"]}, None
+                    "notes": [f"路网获取失败，跳过精修：{type(exc).__name__}: {exc}"]}, None
 
         net = RoadNetwork(roads)
+        if low_zoom:
+            fit = self._road_verify(reg, track, net)
+            return fit.to_dict(), net
+
         fit = refine_with_roads(reg, track.polyline, roads)
         if fit.ok:
             # 把平移量并入配准矩阵（墨卡托 y 轴向上，北为正）
@@ -546,6 +577,35 @@ class RidePipeline:
                 [fit.shift_e_m, fit.shift_n_m], dtype=float
             )
         return fit.to_dict(), net
+
+    def _road_verify(self, reg: Registration, track: TrackResult, net: Any):
+        """城市级低缩放：只校验贴路距离 + 给出路名归属，不做位置修正。
+
+        见 `_road_refine` 的说明——低缩放下路网是「校验器 + 命名器」，
+        不是「修正器」。
+        """
+        from .roadfit import RoadFit
+
+        fit = RoadFit(source="osm")
+        names, d = net.query(reg, track.polyline)
+        if len(d) == 0:
+            fit.notes.append("路网校验失败：轨迹没有采样到路网点")
+            return fit
+        median = float(np.median(d))
+        fit.median_before_m = median
+        fit.median_after_m = median
+        fit.segments = net.segments(reg, track.polyline)
+        ordered: list[str] = []
+        for sg in fit.segments:
+            if not ordered or ordered[-1] != sg["road"]:
+                ordered.append(sg["road"])
+        fit.roads = ordered
+        fit.ok = True
+        fit.notes.append(
+            f"路网校验：贴路中位 {median:.0f} 米"
+            f"（低缩放下只校验不修正——OSM 与高德底图本身差 30-100 米）"
+        )
+        return fit
 
     def _attribute_roads(
         self,

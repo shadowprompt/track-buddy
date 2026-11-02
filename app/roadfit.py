@@ -52,7 +52,13 @@ from .geo.coords import lonlat_to_mercator, wgs84_to_gcj02
 # --- 数据获取 -------------------------------------------------------------
 
 OSM_API = "https://api.openstreetmap.org/api/0.6/map"
-OVERPASS = "https://overpass-api.de/api/interpreter"
+# Overpass 公共镜像。主站经常繁忙/限流，轮换几个镜像更稳。
+OVERPASS_MIRRORS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+]
 
 
 def _fetch_osm_api(bbox: tuple[float, float, float, float], timeout: float) -> str:
@@ -61,19 +67,41 @@ def _fetch_osm_api(bbox: tuple[float, float, float, float], timeout: float) -> s
     return urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8")
 
 
-def _fetch_overpass(bbox: tuple[float, float, float, float], timeout: float) -> str:
-    q = ('[out:json][timeout:90];way["highway"]["name"](%.6f,%.6f,%.6f,%.6f);out geom;'
-         % (bbox[1], bbox[0], bbox[3], bbox[2]))
+def _fetch_overpass(
+    bbox: tuple[float, float, float, float], timeout: float,
+    highway_types: list[str] | None = None,
+) -> str:
+    if highway_types:
+        filt = '~"^(%s)$"' % "|".join(highway_types)
+    else:
+        filt = ""
+    q = ('[out:json][timeout:180];way["highway"%s]["name"](%.6f,%.6f,%.6f,%.6f);out geom;'
+         % (filt, bbox[1], bbox[0], bbox[3], bbox[2]))
     data = urllib.parse.urlencode({"data": q}).encode()
-    req = urllib.request.Request(OVERPASS, data=data,
-                                 headers={"User-Agent": "meituan-ride/0.1"})
-    return urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8")
+    last: Exception | None = None
+    # 主站最可靠，给足超时；备用镜像常年不稳定，各给较短超时，
+    # 快速失败换下一个而不是死等。
+    for i, mirror in enumerate(OVERPASS_MIRRORS):
+        per = timeout if i == 0 else max(10.0, timeout / len(OVERPASS_MIRRORS))
+        req = urllib.request.Request(mirror, data=data,
+                                     headers={"User-Agent": "meituan-ride/0.1"})
+        try:
+            text = urllib.request.urlopen(req, timeout=per).read().decode("utf-8")
+            # Overpass 繁忙时返回的是 HTML 网关错误页而不是 JSON，
+            # 直接 json.loads 会抛 JSONDecodeError，看不出真实原因。
+            if text.lstrip()[:1] != "{":
+                raise ValueError("响应不是 JSON")
+            return text
+        except Exception as exc:  # noqa: BLE001 — 换下一个镜像
+            last = exc
+    raise RuntimeError(f"Overpass 全部镜像失败：{last}")
 
 
 def fetch_roads(
     bbox: tuple[float, float, float, float],
     timeout: float = 25.0,
     cache_path: str | None = None,
+    highway_types: list[str] | None = None,
 ) -> list[tuple[str, list[tuple[float, float]]]]:
     """取回 bbox 内的具名道路几何。
 
@@ -103,7 +131,7 @@ def fetch_roads(
             return [(nm, [(p[0], p[1]) for p in pts])
                     for nm, pts in blk.get("roads", [])]
 
-    roads = _fetch_roads_missing(bbox, timeout)
+    roads = _fetch_roads_missing(bbox, timeout, highway_types)
     _save_cache_block(cache_path, key, roads)
     return roads
 
@@ -151,42 +179,109 @@ def _bbox_contains(outer: list[float], inner: list[float]) -> bool:
 
 
 def _fetch_roads_missing(
-    bbox: tuple[float, float, float, float], timeout: float
+    bbox: tuple[float, float, float, float], timeout: float,
+    highway_types: list[str] | None = None,
 ) -> list[tuple[str, list[tuple[float, float]]]]:
-    """实际走网络拉取指定 bbox 的道路。"""
+    """实际走网络拉取指定 bbox 的道路。
+
+    ``highway_types`` 非空时只取这些等级的道路。城市级低缩放截图一张图
+    覆盖十几公里，全量路网的数据量大到查询要 40-90 秒；而**主干道 +
+    次干道**既是骑行轨迹最常走的路，数量又只有全量的 1/3。
+
+    但不能只留主干道——轨迹附近没有主干道时，贴路距离会被「最近的主干道
+    有多远」主导（实测 432m vs 56m）。
+    """
     roads: list[tuple[str, list[tuple[float, float]]]] = []
     errors = []
-    try:
-        data = json.loads(_fetch_overpass(bbox, timeout))
-        for e in data.get("elements", []):
-            nm = (e.get("tags") or {}).get("name")
-            g = e.get("geometry") or []
-            if nm and len(g) >= 2:
-                roads.append((nm, [(p["lon"], p["lat"]) for p in g]))
-    except Exception as exc:
-        errors.append(f"overpass: {type(exc).__name__}")
-
-    if not roads:
-        try:
-            xml = _fetch_osm_api(bbox, timeout)
-            root = ET.fromstring(xml)
-            nodes = {n.get("id"): (float(n.get("lon")), float(n.get("lat")))
-                     for n in root.iter("node")}
-            for w in root.iter("way"):
-                tags = {t.get("k"): t.get("v") for t in w.findall("tag")}
-                nm = tags.get("name")
-                if not nm or tags.get("highway") is None:
-                    continue
-                pts = [nodes[nd.get("ref")] for nd in w.findall("nd")
-                       if nd.get("ref") in nodes]
-                if len(pts) >= 2:
-                    roads.append((nm, pts))
-        except Exception as exc:
-            errors.append(f"osmapi: {type(exc).__name__}")
+    # 按面积选数据源。⚠️ 阈值不能按 OSM API 的「面积上限 0.25 平方度」
+    # 来定：它还有**节点数上限**（5 万个），上海这种高密度区域
+    # 0.0054 平方度就已经超了，请求直接返回 HTTP 400（实测踩过：
+    # bbox 面积 0.0054 → osmapi 失败，而同一范围 Overpass 亚秒级返回）。
+    area = abs((bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
+    order = ("osmapi", "overpass") if area < 0.0015 else ("overpass", "osmapi")
+    for which in order:
+        if roads:
+            break
+        if which == "overpass":
+            # Overpass 公共实例不稳定：繁忙时返回 504 网关页、超时，
+            # 甚至对某些 bbox 返回空结果。重试 + 扩大范围各来一次。
+            for attempt in range(3):
+                try:
+                    data = json.loads(
+                        _fetch_overpass(bbox, timeout, highway_types)
+                    )
+                    for e in data.get("elements", []):
+                        nm = (e.get("tags") or {}).get("name")
+                        g = e.get("geometry") or []
+                        if nm and len(g) >= 2:
+                            roads.append((nm, [(p["lon"], p["lat"]) for p in g]))
+                    if roads:
+                        break
+                    errors.append("overpass: 返回空结果")
+                except Exception as exc:
+                    errors.append(f"overpass: {type(exc).__name__}")
+                if attempt < 2:
+                    time.sleep(1.5 * (attempt + 1))
+            if not roads:
+                cx = (bbox[0] + bbox[2]) / 2.0
+                cy = (bbox[1] + bbox[3]) / 2.0
+                hw = (bbox[2] - bbox[0])
+                hh = (bbox[3] - bbox[1])
+                big = (cx - hw, cy - hh, cx + hw, cy + hh)
+                try:
+                    data = json.loads(
+                        _fetch_overpass(big, timeout, highway_types)
+                    )
+                    for e in data.get("elements", []):
+                        nm = (e.get("tags") or {}).get("name")
+                        g = e.get("geometry") or []
+                        if nm and len(g) >= 2:
+                            roads.append((nm, [(p["lon"], p["lat"]) for p in g]))
+                except Exception as exc:
+                    errors.append(f"overpass(扩大): {type(exc).__name__}")
+        else:
+            try:
+                roads.extend(
+                    _roads_via_osm_api(bbox, timeout, highway_types)
+                )
+            except Exception as exc:
+                errors.append(f"osmapi: {type(exc).__name__}")
 
     if not roads:
         raise RuntimeError("路网获取失败：" + "，".join(errors))
     return roads
+
+
+def _roads_via_osm_api(
+    bbox: tuple[float, float, float, float],
+    timeout: float,
+    highway_types: list[str] | None = None,
+) -> list[tuple[str, list[tuple[float, float]]]]:
+    """走 OSM API（api.openstreetmap.org/api/0.6/map）取具名道路。
+
+    适合很小的 bbox：实测 3.5km×2.8km 只要 3.5 秒，而 Overpass 主站
+    同一时刻连测三次全超时。OSM API 的面积上限 0.25 平方度、节点数上限
+    5 万个，分块后远低于此。
+    """
+    xml = _fetch_osm_api(bbox, timeout)
+    root = ET.fromstring(xml)
+    nodes = {n.get("id"): (float(n.get("lon")), float(n.get("lat")))
+             for n in root.iter("node")}
+    want = set(highway_types) if highway_types else None
+    out: list[tuple[str, list[tuple[float, float]]]] = []
+    for w in root.iter("way"):
+        tags = {t.get("k"): t.get("v") for t in w.findall("tag")}
+        nm = tags.get("name")
+        hw = tags.get("highway")
+        if not nm or hw is None:
+            continue
+        if want is not None and hw not in want:
+            continue
+        pts = [nodes[nd.get("ref")] for nd in w.findall("nd")
+               if nd.get("ref") in nodes]
+        if len(pts) >= 2:
+            out.append((nm, pts))
+    return out
 
 
 # --- 精修 -----------------------------------------------------------------

@@ -312,7 +312,58 @@
       );
     }
     go.disabled = false;
+
+    // 城市级低缩放截图：路网精修要联网拉路网（40-80 秒），
+    // 服务端已把它放到后台线程，这里轮询取精修结果。
+    //
+    // 为什么要有这一层：低缩放下路网精修的价值最大——实测贴路中位
+    // 432m → 58m、落点修正近 1 公里；但它必须联网，不能让识别请求
+    // 干等。先给粗结果、再补精修结果，体验和精度都能拿到。
+    if (data && data.refine_pending) {
+      pollRefine(data.shot_id);
+    }
   };
+
+  // ---------- 异步路网精修轮询 ----------
+
+  let refineTimer = null;
+  let refineShot = null;
+
+  function pollRefine(shotId) {
+    refineShot = shotId;
+    if (refineTimer) clearTimeout(refineTimer);
+    const tick = async () => {
+      if (refineShot !== shotId) return;
+      try {
+        const r = await fetch('/api/refine/' + encodeURIComponent(shotId));
+        const j = await r.json();
+        if (j.state === 'done' && j.payload) {
+          showStatus(
+            '<span class="spin"></span> 位置精修完成，正在更新地图…'
+          );
+          try {
+            render(j.payload);
+          } catch (e) {
+            console.error('精修结果渲染失败:', e);
+          }
+          showStatus(
+            '已用真实路网精修位置（贴路中位 ' +
+            num((j.payload.road_fit || {}).median_after_m, 0, '—') + ' 米）'
+          );
+          return;
+        }
+        if (j.state === 'error') {
+          showStatus('位置精修失败：' + text(j.message, '未知错误'), 'err');
+          return;
+        }
+        refineTimer = setTimeout(tick, 3000);
+      } catch (e) {
+        // 轮询本身失败不致命，粗结果已经可用了
+        refineTimer = setTimeout(tick, 5000);
+      }
+    };
+    refineTimer = setTimeout(tick, 2500);
+  }
 
   // ---------- 渲染结果 ----------
 

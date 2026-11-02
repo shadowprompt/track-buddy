@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -66,6 +67,7 @@ async def recognize(
     city: str = Form(""),
     output_crs: str = Form("WGS-84"),
     allow_online: bool = Form(True),
+    refine: str = Form("auto"),
 ) -> JSONResponse:
     """上传截图，识别轨迹并返回 GeoJSON。"""
     data = await file.read()
@@ -88,12 +90,20 @@ async def recognize(
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=f"图片解析失败: {exc}") from exc
 
+    # 城市级低缩放截图的路网精修要联网拉路网（实测 40-80 秒），
+    # 放在主流程里会让识别请求长时间挂起。这里改成：
+    # 主流程先出粗结果并立即返回，后台线程继续做精修，
+    # 前端轮询 /api/refine/{shot_id} 取精修后的结果。
+    want_refine = refine.strip().lower() in ("1", "true", "yes", "on", "auto")
+    do_sync_refine = want_refine and refine.strip().lower() in ("1", "true", "yes", "on")
+
     try:
         result = _pipeline.run(
             img,
             city=city.strip(),
             allow_online=allow_online,
             output_crs=output_crs,
+            refine=do_sync_refine,
         )
     except Exception as exc:  # noqa: BLE001 — 兜底，避免单次请求打挂服务
         raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc
@@ -118,7 +128,97 @@ async def recognize(
         "track_polyline_px": result.track_polyline_px,
         "image_size": list(result.image_size),
     }
+
+    # 需要后台精修吗？
+    #
+    # 判据：尺度大（低缩放）且路网精修还没跑过。低缩放下路网精修的价值
+    # 最大（贴路中位 432m → 58m，落点修正近 1 公里），但耗时也最长。
+    scale = float(result.diagnostics.get("scale_ground_m_per_px") or 0.0)
+    need_bg = (
+        want_refine
+        and not do_sync_refine
+        and scale > 8.0
+        and not (result.road_fit or {}).get("ok")
+    )
+    if need_bg:
+        _start_refine(shot_id, shot_path, city.strip(), output_crs, allow_online)
+        payload["refine_pending"] = True
+        payload["refine_state"] = "running"
     return JSONResponse(payload)
+
+
+# --- 异步路网精修 ---------------------------------------------------------
+
+_refine_jobs: dict[str, dict[str, Any]] = {}
+_refine_lock = threading.Lock()
+
+
+def _build_payload(result: Any, shot_id: str, shot_path: Path) -> dict[str, Any]:
+    ext = shot_path.suffix.lower() or ".jpg"
+    return {
+        "ok": result.confidence > 0 and result.track_points > 0,
+        "shot_id": shot_id,
+        "shot_url": f"/api/shots/{shot_id}{ext}",
+        "geojson": result.geojson,
+        "geojson_gcj02": result.geojson_gcj02,
+        "confidence": result.confidence,
+        "crs": result.crs,
+        "track_points": result.track_points,
+        "distance_m": result.distance_m,
+        "anchors_used": result.anchors_used,
+        "anchors_rejected": result.anchors_rejected,
+        "road_attribution": result.road_attribution,
+        "road_fit": result.road_fit,
+        "diagnostics": result.diagnostics,
+        "warnings": result.warnings,
+        "elapsed_ms": result.elapsed_ms,
+        "track_polyline_px": result.track_polyline_px,
+        "image_size": list(result.image_size),
+    }
+
+
+def _run_refine(
+    shot_id: str, shot_path: Path, city: str,
+    output_crs: str, allow_online: bool,
+) -> None:
+    try:
+        img = imread_unicode(shot_path)
+        result = _pipeline.run(
+            img, city=city, allow_online=allow_online,
+            output_crs=output_crs, refine=True,
+        )
+        payload = _build_payload(result, shot_id, shot_path)
+        with _refine_lock:
+            _refine_jobs[shot_id] = {"state": "done", "payload": payload}
+    except Exception as exc:  # noqa: BLE001
+        with _refine_lock:
+            _refine_jobs[shot_id] = {"state": "error", "message": str(exc)}
+
+
+def _start_refine(
+    shot_id: str, shot_path: Path, city: str,
+    output_crs: str, allow_online: bool,
+) -> None:
+    with _refine_lock:
+        if shot_id in _refine_jobs:
+            return
+        _refine_jobs[shot_id] = {"state": "running"}
+    th = threading.Thread(
+        target=_run_refine,
+        args=(shot_id, shot_path, city, output_crs, allow_online),
+        daemon=True,
+    )
+    th.start()
+
+
+@app.get("/api/refine/{shot_id}")
+def get_refine(shot_id: str) -> JSONResponse:
+    """查询后台路网精修的进度与结果。"""
+    with _refine_lock:
+        job = _refine_jobs.get(shot_id)
+    if job is None:
+        return JSONResponse({"state": "unknown"})
+    return JSONResponse(job)
 
 
 @app.get("/api/shots/{name}")
