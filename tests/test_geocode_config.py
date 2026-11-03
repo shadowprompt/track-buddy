@@ -79,9 +79,91 @@ def test_amap_error_not_silent():
     print("  [OK] _amap 失败会记录原因")
 
 
+def test_env_file_change_takes_effect_without_restart():
+    """改 .env 文件后必须立即生效，不用重启服务。
+
+    实测踩过的坑：key 属性是 `@property`，看起来像「每次实时读取」，
+    但 `load_dotenv()` 是在**模块导入时**把 .env 灌进 `os.environ` 的——
+    改文件不改进程环境变量，于是新 key 必须重启服务才生效，
+    而现象是「明明改了却不生效」，非常难查。
+
+    现在每次取值都重新读 .env 文件（按 mtime 缓存），
+    所以改完立刻可用。
+    """
+    import shutil
+    import time
+
+    from app.config import AppConfig
+
+    base = AppConfig()
+    if not base.env_path.exists():
+        print("  [SKIP] 仓库无 .env，跳过")
+        return
+
+    tmp = base.env_path.with_name(".env_hotreload_test")
+    shutil.copy(base.env_path, tmp)
+    try:
+        cfg = AppConfig(env_path=tmp)
+        before = cfg.amap_key
+        tmp.write_text("AMAP_KEY=deadbeefdeadbeefdeadbeefdeadbeef\n",
+                       encoding="utf-8")
+        time.sleep(0.05)
+        after = cfg.amap_key
+        assert before != after, "改 .env 后取值没变化（需重启才生效）"
+        assert after.startswith("deadbeef"), f"未读到文件新值：{after}"
+        print("  [OK] 改 .env 立即生效（无需重启）")
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def test_explicit_env_beats_env_file():
+    """显式设置的环境变量优先级高于 .env 文件。"""
+    import os
+
+    from app.config import AppConfig
+
+    base = AppConfig()
+    if not base.env_path.exists():
+        print("  [SKIP] 仓库无 .env，跳过")
+        return
+
+    sentinel = "explicit1234567890abcdef12345678"
+    os.environ["AMAP_KEY"] = sentinel
+    try:
+        got = AppConfig().amap_key
+        assert got == sentinel, f"显式环境变量未优先：{got}"
+        print("  [OK] 显式环境变量优先于 .env")
+    finally:
+        os.environ.pop("AMAP_KEY", None)
+
+
+def test_repeated_load_dotenv_keeps_file_authority():
+    """重复调用 load_dotenv() 不能把文件里的值误判成「显式设置」。
+
+    踩过的坑：第一次调用把文件值灌进 os.environ，第二次调用时
+    os.environ 里已经有了这个 key，于是被误判成用户 export 的，
+    结果 .env 的改动永远不生效。
+    """
+    from app.config import load_dotenv, _FILE_SEEDED_VALUES
+
+    load_dotenv()
+    load_dotenv()
+    seeded = _FILE_SEEDED_VALUES.get("AMAP_KEY")
+    if seeded is None:
+        print("  [SKIP] 未从 .env 读到 AMAP_KEY，跳过")
+        return
+    import os
+    assert os.environ.get("AMAP_KEY") == seeded, (
+        "重复加载后 os.environ 与 seeded 不一致")
+    print("  [OK] 重复加载不会改变文件值的归属")
+
+
 if __name__ == "__main__":
     print("在线地理编码配置测试：")
     test_dotenv_loaded_on_import()
+    test_env_file_change_takes_effect_without_restart()
+    test_explicit_env_beats_env_file()
+    test_repeated_load_dotenv_keeps_file_authority()
     test_probe_reports_hint()
     test_probe_is_wired_to_health()
     test_amap_error_not_silent()

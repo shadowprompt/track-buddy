@@ -411,6 +411,28 @@
     return String(v);
   }
 
+  // 低置信度时给出**可操作**的提示。
+  //
+  // 为什么必须区分「没填路名」和「填了路名但没生效」：
+  // 实测同一张截图，无路名时置信度 0.20、路名归属完全跑到另一个区
+  // （常熟路/武宁南路/普雄路，全在静安区）；填了 10 个路名后
+  // 置信度 0.78、路名归属全部正确。两种情况的补救动作完全不同。
+  function lowConfidenceHint(d) {
+    const conf = typeof d.confidence === 'number' ? d.confidence : 0;
+    if (conf >= 0.45) return '';
+    const rnInput = ($('roadNames') && $('roadNames').value || '').trim();
+    const tip = rnInput
+      ? '已填路名但定位仍不可靠——请检查路名是否与实际路线一致' +
+        '（路名要写具体，比如「打浦路隧道」比「世纪大道」有用得多）。'
+      : '未填路名时，截图里的地名文字标注位置与真实地点有数百米偏差，' +
+        '容易定位到错误的街区。<b>填写你记得走过的路名</b>可以把位置钉死。';
+    return '<div class="kv" style="margin-top:8px;padding:8px 10px;' +
+      'border-radius:6px;background:#fff7ed;border-left:3px solid #f97316">' +
+      '<span style="color:#c2410c;font-weight:600">置信度偏低（' +
+      Math.round(conf * 100) + '%），结果可能不准</span>' +
+      '<span style="color:#7c2d12">' + tip + '</span></div>';
+  }
+
   // 当前识别结果（供「换个位置」切换用）
   let currentResult = null;
 
@@ -448,7 +470,8 @@
       '<div class="kv"><span>耗时</span><span>' + int(d.elapsed_ms, 0) + ' ms</span></div>' +
       (d.warnings && d.warnings.length
         ? '<ul class="warnlist">' + d.warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>'
-        : '');
+        : '') +
+      lowConfidenceHint(d);
 
     // 用户提供的路名约束
     const rnc = d.road_name_constraints || [];

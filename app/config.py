@@ -97,22 +97,68 @@ class AppConfig:
     # 100-300 米；道路几何没有这个问题，因此用它做最终校正。
     road_fit_enabled: bool = True
     road_fit_max_shift_m: float = 800.0
+    # .env 文件位置（改完不用重启服务就能生效，见 _env_value）
+    env_path: Path = ROOT / ".env"
+    # .env 解析结果的缓存（按 mtime 失效）
+    _env_cache: dict[str, str] = field(
+        default_factory=dict, repr=False, compare=False)
+    _env_cache_mtime: float = field(default=-1.0, repr=False, compare=False)
+
+    def _file_env_value(self, name: str) -> str | None:
+        """读 .env 文件里当前的 key 值（按 mtime 缓存，避免重复读盘）。
+
+        ⚠️ **为什么要实时读文件**：`load_dotenv()` 在模块导入时把 .env
+        的内容灌进了 ``os.environ``。若只读 ``os.environ``，用户改了
+        .env 文件后**必须重启服务**才能生效——而 key 属性是
+        ``@property``，看起来像是「实时读取」，容易误判。
+
+        这里每次都重新读文件（mtime 没变就用缓存），
+        改完 .env 立即生效，不用重启。
+        """
+        try:
+            mtime = self.env_path.stat().st_mtime
+        except OSError:
+            return None
+        if mtime != self._env_cache_mtime:
+            self._env_cache = _read_env_file(self.env_path)
+            self._env_cache_mtime = mtime
+        val = self._env_cache.get(name, "").strip()
+        return val or None
+
+    def _env_value(self, name: str) -> str | None:
+        """取配置值。
+
+        优先级：**显式环境变量 > .env 文件当前内容 > 其他环境变量**。
+
+        「显式环境变量」= 用户自己 export / 用系统环境变量设置的，
+        即 ``os.environ[name]`` 与 load_dotenv 灌进去的值不同。
+        """
+        file_val = self._file_env_value(name)
+        env_val = os.environ.get(name, "").strip() or None
+        seeded = _FILE_SEEDED_VALUES.get(name)
+        if env_val and seeded is not None and env_val == seeded:
+            # 还是 load_dotenv 灌进去的那个值（用户没改过）
+            # -> 以 .env 文件**当前内容**为准（改文件立即生效）
+            return file_val or env_val
+        if env_val:
+            return env_val
+        return file_val
 
     @property
     def amap_key(self) -> str | None:
-        return os.environ.get(AMAP_KEY_ENV) or None
+        return self._env_value(AMAP_KEY_ENV)
 
     @property
     def tmap_key(self) -> str | None:
-        return os.environ.get(TMAP_KEY_ENV) or None
+        return self._env_value(TMAP_KEY_ENV)
 
     @property
     def baidu_key(self) -> str | None:
-        return os.environ.get(BAIDU_KEY_ENV) or None
+        return self._env_value(BAIDU_KEY_ENV)
 
     @property
     def tianditu_key(self) -> str | None:
-        return os.environ.get(TIANDITU_KEY_ENV) or None
+        return self._env_value(TIANDITU_KEY_ENV)
 
     @property
     def has_online_key(self) -> bool:
@@ -134,19 +180,39 @@ class AppConfig:
         return self.tmap_key or TMAP_PUBLIC_KEY
 
 
-def load_dotenv(path: Path | None = None) -> None:
-    """极简 .env 加载，避免引入额外依赖。已存在的环境变量优先。"""
-    env_path = path or (ROOT / ".env")
+def _read_env_file(env_path: Path) -> dict[str, str]:
+    """读取 .env 文件内容（纯文本解析，忽略注释与空行）。"""
+    out: dict[str, str] = {}
     if not env_path.exists():
-        return
+        return out
     for raw in env_path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, val = line.partition("=")
-        key = key.strip()
-        val = val.strip().strip('"').strip("'")
-        os.environ.setdefault(key, val)
+        out[key.strip()] = val.strip().strip('"').strip("'")
+    return out
+
+
+# .env 里出现过的 key
+_FILE_ENV_KEYS: set[str] = set()
+# load_dotenv **实际写入** os.environ 的值。
+# 用它区分「这个环境变量是用户显式设置的」还是「只是 .env 灌进去的」：
+#   os.environ[key] == _FILE_SEEDED_VALUES[key] -> 还是文件灌的那个值
+#                                            -> 以文件当前内容为准（改文件立即生效）
+#   os.environ[key] != _FILE_SEEDED_VALUES[key] -> 用户显式改过 -> 用它的值
+_FILE_SEEDED_VALUES: dict[str, str] = {}
+
+
+def load_dotenv(path: Path | None = None) -> None:
+    """极简 .env 加载，避免引入额外依赖。已存在的环境变量优先。"""
+    env_path = path or (ROOT / ".env")
+    values = _read_env_file(env_path)
+    for key, val in values.items():
+        if key not in os.environ:
+            os.environ[key] = val
+            _FILE_SEEDED_VALUES[key] = val
+    _FILE_ENV_KEYS.update(values.keys())
 
 
 # ⚠️ **必须在模块导入时加载**（而不是只在 `app/server.py` 里调用）。
