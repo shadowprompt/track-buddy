@@ -220,7 +220,7 @@ class RidePipeline:
         road_name_fit: dict[str, Any] = {}
         if road_names:
             road_name_constraints, road_name_fit = self._apply_road_names(
-                reg, track, road_names, city
+                reg, track, road_names, city, allow_online
             )
             for n in road_name_fit.get("notes", []):
                 warnings.append(n)
@@ -527,20 +527,25 @@ class RidePipeline:
         track: TrackResult,
         road_names: list[str],
         city: str = "",
+        allow_online: bool = True,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """应用用户提供的路名约束（线约束）。
 
-        流程：
-          1. 查每个路名在 OSM 里的全部路段（GCJ-02 墨卡托米）；
-          2. 用「轨迹必须贴着这条路」做平移搜索；
-          3. 若目标值显著改善，把平移量并入配准结果。
+        两级策略（顺序很重要）：
+          1. **起终点锚定**（`app/endpointfit.py`）——解出相似变换，
+             修正锚点配准给错的**尺度**。
+          2. **平移精修**（`app/roadname_constraint.py`）——在 1 的基础上
+             做最后的像素级微调。
 
-        ⚠️ **只平移，不改尺度**：尺度由锚点配准给出（几何上更可靠），
-        路名约束只用来修正绝对位置。
+        为什么必须先修尺度
+        ------------------
+        低缩放截图下锚点配准的尺度会偏大 26%（实测 15.73 vs 真值 12.5-13.4），
+        轨迹被拉长后东端甩过黄浦江——起点落在浦东，路名归属报出
+        「打浦路隧道 / 时光印记大道 / 世博大道 / 东岸绿道」。
+        而只允许平移的约束**无法修复尺度错误**，怎么挪都救不回来。
 
-        ⚠️ **采纳门槛**：目标值必须改善到原来的 0.7 倍以下才采纳。
-        否则说明用户给的路名与轨迹对不上（比如他记错了路名），
-        这时强行移动轨迹比不动更糟。
+        ⚠️ 平移精修阶段仍然**只平移、不改尺度**：尺度已由起终点锚定
+        确定（那是与地标标注无关的精确信号），平移阶段只微调绝对位置。
         """
         from .roadname_constraint import fetch_road_name, refine_by_road_names
 
@@ -601,13 +606,52 @@ class RidePipeline:
                 "notes": ["用户提供的路名在 OSM 里查不到几何，无法作为约束"],
             }
 
+        notes: list[str] = []
+        anchor_fit: dict[str, Any] = {}
+
+        # --- 第一级：起终点锚定（修尺度） ---
+        if track.start_marker and track.end_marker and len(usable) >= 3:
+            try:
+                from .endpointfit import fit_by_endpoints
+                px = np.array(track.polyline, dtype=float)
+                arc = np.concatenate([[0.0], np.cumsum(
+                    np.linalg.norm(np.diff(px, axis=0), axis=1))])
+                fit = fit_by_endpoints(
+                    px, arc,
+                    (float(track.start_marker[0]), float(track.start_marker[1])),
+                    (float(track.end_marker[0]), float(track.end_marker[1])),
+                    [(c.name, c.segments) for c in usable],
+                    weights=[c.uniqueness for c in usable],
+                )
+                if fit.ok:
+                    old_scale = reg.scale
+                    # 锚定结果直接替换配准矩阵（尺度 + 旋转 + 平移一起换）
+                    reg.matrix = fit.matrix
+                    reg.translation = fit.translation
+                    notes.extend(fit.notes)
+                    anchor_fit = {
+                        "ok": True,
+                        "scale_before": round(float(old_scale), 4),
+                        "scale_after": round(float(fit.scale), 4),
+                        "scale_ratio": round(
+                            float(fit.scale / max(old_scale, 1e-9)), 4),
+                        "rotation_deg": round(float(fit.rotation_deg), 3),
+                        "start_road": fit.start_road,
+                        "end_road": fit.end_road,
+                        "chain_residual_m": round(float(fit.value), 1),
+                    }
+            except Exception as exc:  # noqa: BLE001
+                notes.append(
+                    f"起终点锚定失败（{type(exc).__name__}），退回平移约束")
+
         traj = np.array([
             reg.pixel_to_mercator(float(px), float(py))
             for px, py in track.polyline
         ])
-        shift, val, notes, base_val = refine_by_road_names(traj, usable)
+        shift, val, notes2, base_val = refine_by_road_names(traj, usable)
+        notes.extend(notes2)
         if not np.isfinite(val):
-            return info, {"ok": False, "notes": notes}
+            return info, {"ok": False, "notes": notes, "anchor_fit": anchor_fit}
 
         # 目标值改善程度 → 采纳判定
         base_note = notes[0] if notes else ""
@@ -643,6 +687,42 @@ class RidePipeline:
                 f"改善不足，可能是路名与轨迹不匹配）"
             )
 
+        # --- 跨江护栏 ---
+        #
+        # 骑行轨迹横穿黄浦江几乎一定是错的。本例中锚点配准把尺度算大 26%，
+        # 轨迹被拉长后东端甩过江，起点落在浦东侧。护栏的作用是**兜底**：
+        # 即使上面的算法再出 bug，也不该输出一条横穿长江的骑行轨迹。
+        water_check: dict[str, Any] = {}
+        try:
+            from .waterguard import check_crossing
+            lonlat_now = [
+                reg.pixel_to_lonlat(float(px), float(py))
+                for px, py in track.polyline
+            ]
+            crossed, which, ratio = check_crossing(
+                lonlat_now,
+                city=city or "上海",
+                cache_dir=str(self.cfg.road_cache_dir),
+                allow_network=allow_online,
+            )
+            water_check = {
+                "crossed": bool(crossed),
+                "waters": which,
+                "ratio": round(float(ratio), 4),
+            }
+            if crossed:
+                notes.append(
+                    f"⚠️ 轨迹疑似横跨{which}（{ratio * 100:.0f}% 的点在河面上），"
+                    f"结果可能不可靠——请核对起终点是否在江的同一侧"
+                )
+        except Exception as exc:  # noqa: BLE001
+            # 护栏失败不应该让整个识别挂掉，但必须留下痕迹——
+            # 否则「护栏没生效」和「护栏判定未横跨」无法区分。
+            # ⚠️ 这里**不能**用 `except Exception: pass`：
+            # 实测踩过——参数名写错（allow_network vs allow_online）
+            # 触发 NameError，被静默吞掉，护栏形同虚设却毫无迹象。
+            notes.append(f"跨江检查未能完成（{type(exc).__name__}）")
+
         return info, {
             "ok": bool(improved),
             "shift_e_m": round(float(shift[0]), 1),
@@ -650,6 +730,8 @@ class RidePipeline:
             "before_m": round(base_val, 1),
             "after_m": round(val, 1),
             "n_constraints": len(usable),
+            "anchor_fit": anchor_fit,
+            "water_check": water_check,
             "notes": notes,
         }
 
@@ -1097,6 +1179,20 @@ class RidePipeline:
             conf = (0.55 * rn_q + 0.20 * ratio + 0.12 * count +
                     0.13 * rn_gain)
             conf *= track.confidence if track.confidence < 1 else 1.0
+
+        # --- 跨江惩罚 ---
+        #
+        # 骑行轨迹横穿黄浦江/长江几乎一定是错的。
+        # 本例中锚点配准把尺度算大 26%，轨迹被拉长后东端甩过江，
+        # 起点落在浦东——若不做惩罚，置信度仍有 0.83（看起来很可信），
+        # 用户会以为结果是准的。
+        #
+        # 惩罚力度：命中则**减半**。因为过桥是合法的（外白渡桥等），
+        # 不能直接归零；但横跨大河确实大幅降低了结果的可信度。
+        water = (road_name_fit or {}).get("water_check") or {}
+        if water.get("crossed"):
+            conf *= 0.5
+
         return round(min(0.99, max(0.0, conf)), 3)
 
 

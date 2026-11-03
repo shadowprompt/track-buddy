@@ -473,6 +473,25 @@
         html += '<div class="kv"><span>路名约束</span><span>' +
           esc(rnf.notes[rnf.notes.length - 1]) + '</span></div>';
       }
+      // 起终点锚定：尺度被修正的证据。
+      // 低缩放截图下锚点配准的尺度常常偏大 20%+（地标文字标注有方向性偏移），
+      // 轨迹会被拉长到甩过黄浦江。用起终点徽章 + 路名锚定可以修正尺度。
+      const af = rnf.anchor_fit || {};
+      if (af.ok) {
+        html += '<div class="kv"><span>起终点锚定</span><span>尺度 ' +
+          num(af.scale_before, 2, '—') + ' → <b>' + num(af.scale_after, 2, '—') +
+          ' m/px</b>（×' + num(af.scale_ratio, 2, '—') +
+          '），起点锚在「' + esc(af.start_road || '—') +
+          '」、终点锚在「' + esc(af.end_road || '—') + '」</span></div>';
+      }
+      // 跨江警告：轨迹不该横穿黄浦江
+      const wc = rnf.water_check || {};
+      if (wc.crossed) {
+        html += '<div class="kv"><span style="color:#c2410c">跨江检查</span>' +
+          '<span style="color:#c2410c">轨迹疑似横跨' + esc(wc.waters || '大河') +
+          '（' + Math.round((wc.ratio || 0) * 100) +
+          '% 的点在江面上），请核对起终点是否在江的同一侧</span></div>';
+      }
       $('altNote').innerHTML = html;
       $('altList').innerHTML = '';
       $('altCard').style.display = 'block';

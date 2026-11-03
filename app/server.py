@@ -174,7 +174,11 @@ async def recognize(
         and not (result.road_fit or {}).get("ok")
     )
     if need_bg:
-        _start_refine(shot_id, shot_path, city.strip(), output_crs, allow_online)
+        # ⚠️ 必须把 road_names 传进去：后台精修会**重跑整个 pipeline**，
+        # 不传的话用户的路名约束（以及基于它的起终点锚定）全部丢失，
+        # 精修后的结果反而比主流程更差（实测尺度会退回被污染的 15.73）。
+        _start_refine(shot_id, shot_path, city.strip(), output_crs,
+                      allow_online, _names or None)
         payload["refine_pending"] = True
         payload["refine_state"] = "running"
     return JSONResponse(payload)
@@ -216,12 +220,14 @@ def _build_payload(result: Any, shot_id: str, shot_path: Path) -> dict[str, Any]
 def _run_refine(
     shot_id: str, shot_path: Path, city: str,
     output_crs: str, allow_online: bool,
+    road_names: list[str] | None = None,
 ) -> None:
     try:
         img = imread_unicode(shot_path)
         result = _pipeline.run(
             img, city=city, allow_online=allow_online,
             output_crs=output_crs, refine=True,
+            road_names=road_names or None,
         )
         payload = _build_payload(result, shot_id, shot_path)
         with _refine_lock:
@@ -234,6 +240,7 @@ def _run_refine(
 def _start_refine(
     shot_id: str, shot_path: Path, city: str,
     output_crs: str, allow_online: bool,
+    road_names: list[str] | None = None,
 ) -> None:
     with _refine_lock:
         if shot_id in _refine_jobs:
@@ -241,7 +248,7 @@ def _start_refine(
         _refine_jobs[shot_id] = {"state": "running"}
     th = threading.Thread(
         target=_run_refine,
-        args=(shot_id, shot_path, city, output_crs, allow_online),
+        args=(shot_id, shot_path, city, output_crs, allow_online, road_names),
         daemon=True,
     )
     th.start()
