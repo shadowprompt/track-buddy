@@ -315,6 +315,45 @@ console.log(JSON.stringify(out));
 
 
 
+def test_low_confidence_hint() -> int:
+    """低置信度 / 缩放过低提示的渲染测试（Node 跑真实前端函数）。
+
+    这几句提示是用户唯一的行动指引，判错方向都有代价：
+    该提示却没提示 -> 用户拿到错结果却以为准的；
+    不该提示却提示 -> 让用户白折腾（去截一张更大的图）。
+
+    用 Node 直接执行页面里的 `lowConfidenceHint`，比截图验证更精准，
+    也不依赖浏览器能启动。
+    """
+    print("\n[4] 低置信度 / 缩放级别提示")
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    script = Path(__file__).resolve().parent / "frontend_hint_test.js"
+    if not node:
+        print("  未找到 node，跳过（依赖 Node.js）")
+        return 0
+    if not script.exists():
+        print(f"  脚本缺失: {script}")
+        return 1
+    proc = subprocess.run(
+        [node, str(script), str(HTML)],
+        capture_output=True, text=True, timeout=60)
+    if proc.returncode != 0:
+        print("  Node 脚本执行失败：")
+        print(proc.stdout[-1500:])
+        print(proc.stderr[-800:])
+        check(False, "低置信度提示渲染正确", "node 脚本失败")
+        return 1
+    # Node 脚本自己逐项 check 并以退出码表达结果，这里只做汇总
+    tail = proc.stdout.strip().splitlines()
+    check("全部通过" in tail[-1] if tail else False,
+          "低置信度提示渲染正确（6 个场景）",
+          tail[-1] if tail else "无输出")
+    return 0
+
+
 def test_proxy() -> int:
     """腾讯地图本地代理测试（需要服务在 8848 端口运行）。"""
     print("\n[3] 腾讯地图本地代理（回归项）")
@@ -463,6 +502,7 @@ def main() -> int:
           "两个面板改为上下堆叠（vis-block 容器）")
 
     test_proxy()
+    test_low_confidence_hint()
 
     print("\n" + "=" * 66)
     ok = sum(1 for x in results if x[0])
