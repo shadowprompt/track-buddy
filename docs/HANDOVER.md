@@ -2100,6 +2100,34 @@ register()  →  Registration.alternatives（最多 4 个）
 * `app/simfit.py` 与 `app/chainfit.py` 两条备选路线**未接入主流程**，
   保留作为后续探索的参考实现。它们的思路有价值，但实测都不如起终点锚定。
 
+### 22.11 高德 key 的平台类型（2026-11-03 实测）
+
+用户配了 `AMAP_KEY` 到 `.env`，但接口返回 `USERKEY_PLAT_NOMATCH`。
+
+**原因**：高德 key 绑定**平台类型**，不能跨类型使用：
+
+| key 类型 | 能调的接口 |
+|---|---|
+| Web端(JS API) | 浏览器里的 JS 地图（**本项目用不了**）|
+| **Web服务** | `restapi.amap.com/v3/...`（**本项目需要这个**）|
+| Android / iOS | 各自的原生 SDK |
+
+本项目用的是 `https://restapi.amap.com/v3/place/text`（Web 服务），
+所以必须申请 **Web服务** 类型的 key。错误码 10009 就是这个意思。
+
+**教训：`.env` 配好了不等于服务可用。**
+原来 `/api/health` 只检查「key 是否存在」，于是「key 配错类型」看起来
+和「在线服务不可用」一模一样。现在改成：
+
+* `Geocoder.probe_online()`——用真实端点**主动打一次**，
+  把错误码和对应的修复建议一起返回；
+* `/api/health` 的 `geocoding.probe` 字段直接展示结果；
+* `Geocoder._amap()` 遇到失败时记录 `_last_error`，不再静默 `return []`。
+
+顺带修掉一个隐患：`load_dotenv()` 原本只在 `app/server.py` 里调用，
+**CLI 与任何不经过 server 的调用路径都读不到 `.env`**。
+现在 `config.py` 在模块导入时自己加载一次。
+
 ### 22.10 这个案例的通用启示
 
 1. **「贴路距离」几乎不携带尺度信息**。

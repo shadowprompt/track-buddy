@@ -13,6 +13,11 @@ venv/
 out/
 dist/*.tmp
 
+# 本地密钥（AMAP_KEY / TMAP_KEY 等）—— 绝不入库
+.env
+.env.local
+.env.*.local
+
 # 服务运行时缓存与用户上传的原图（含个人位置信息，绝不入库）
 data/uploads/
 data/cache/

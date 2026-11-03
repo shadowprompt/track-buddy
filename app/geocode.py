@@ -303,6 +303,10 @@ class Geocoder:
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": "meituan-ride/0.1 (+local)"})
         self._last_call: dict[str, float] = {}
+        # 最近一次在线地理编码失败的**可读原因**（如 key 平台类型不匹配）。
+        # 用于 /api/health 暴露配置问题——静默失败会让人误以为
+        # 「在线服务不可用」，而实际是 key 用错了地方。
+        self._last_error: str = ""
 
     # ---------- 在线 provider ----------
 
@@ -312,6 +316,69 @@ class Geocoder:
         if wait > 0:
             time.sleep(wait)
         self._last_call[provider] = time.time()
+
+    def probe_online(self) -> dict[str, Any]:
+        """主动探测在线地理编码是否**真的可用**。
+
+        ⚠️ 「有 key」不等于「key 能用」——这是实测踩过的坑。
+        高德 key 绑定平台类型（Web端(JS API) / Web服务 / Android / iOS…），
+        类型不对时接口返回 `USERKEY_PLAT_NOMATCH`（10009），
+        而只检查 key 是否存在会让「配错了」看起来像「服务正常」。
+
+        这里用真实端点打一次，把结果原样报出来。
+        返回 {"amap": {...}, "tmap": {...}, ...}
+        """
+        out: dict[str, Any] = {}
+        if self.cfg.amap_key:
+            out["amap"] = self._probe_amap()
+        if self.cfg.tmap_key:
+            out["tmap"] = self._probe_tmap()
+        return out
+
+    def _probe_amap(self) -> dict[str, Any]:
+        key = self.cfg.amap_key or ""
+        params = {"key": key, "keywords": "上海站", "city": "上海",
+                  "citylimit": "true", "extensions": "base"}
+        try:
+            r = self._session.get(
+                "https://restapi.amap.com/v3/place/text",
+                params=params, timeout=self.cfg.http_timeout)
+            data = r.json()
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if str(data.get("status")) == "1":
+            pois = data.get("pois") or []
+            return {"ok": True, "hits": len(pois),
+                    "sample": pois[0].get("name") if pois else None}
+        info = str(data.get("info") or "")
+        hint = ""
+        if "USERKEY_PLAT_NOMATCH" in info:
+            hint = ("key 平台类型不匹配：该 key 是「Web端(JS API)」类型，"
+                    "本项目需要「Web服务」类型——请到高德控制台为同一应用"
+                    "添加一个 Web服务 key")
+        elif "INVALID_USER_KEY" in info:
+            hint = "key 无效或已被删除"
+        elif "INVALID_USER_SCODE" in info or "INVALID_USER_SIGNATURE" in info:
+            hint = "key 开启了数字签名，需要按官方算法生成 signature 参数"
+        elif "DAILY_QUERY_OVER_LIMIT" in info or "OVER_LIMIT" in info:
+            hint = "配额已用尽（当天调用次数超限）"
+        return {"ok": False, "error": info or "未知错误", "hint": hint}
+
+    def _probe_tmap(self) -> dict[str, Any]:
+        key = self.cfg.tmap_key or ""
+        params = {"key": key, "keyword": "上海站", "page_size": "5",
+                  "page_index": "1", "output": "json"}
+        try:
+            r = self._session.get(
+                "https://apis.map.qq.com/ws/place/v1/search",
+                params=params, timeout=self.cfg.http_timeout)
+            data = r.json()
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        status = int(data.get("status", -1))
+        if status == 0:
+            return {"ok": True, "hits": len(data.get("data") or [])}
+        return {"ok": False, "error": data.get("message") or "未知错误"}
 
     def _amap(self, name: str, city: str) -> list[GeocodeResult]:
         key = self.cfg.amap_key
@@ -329,6 +396,28 @@ class Geocoder:
         except (requests.RequestException, ValueError):
             return []
         if data.get("status") != "1":
+            info = str(data.get("info") or "")
+            # ⚠️ **不要静默吞掉 key 的配置错误**。
+            #
+            # `USERKEY_PLAT_NOMATCH`（错误码 10009）= 「请求 key 与绑定平台不符」：
+            # 用户申请的是 **Web端(JS API)** 的 key，而本项目用的是
+            # **Web服务** 接口（restapi.amap.com/v3/...）。
+            # 两者不能互换——这是高德控制台里「添加 Key」时选的平台类型决定的。
+            #
+            # 实测踩过：key 配了但类型不对，接口返回 status=0，
+            # 代码直接 `return []`，看起来像「在线服务不可用」，
+            # 实际上只要去控制台加一个 Web服务 key 就能立刻用上。
+            #
+            # 所以这里把原因记下来，让 /api/health 能报出来。
+            if info:
+                self._last_error = f"高德 {info}"
+                if "USERKEY_PLAT_NOMATCH" in info:
+                    self._last_error = (
+                        "高德 key 平台类型不匹配（10009）：该 key 是"
+                        "「Web端(JS API)」类型，本项目需要「Web服务」类型。"
+                        "请到高德控制台为应用添加一个 Web服务 key，"
+                        "并写进 .env 的 AMAP_KEY"
+                    )
             return []
         out = []
         for p in data.get("pois", [])[:8]:

@@ -46,17 +46,37 @@ _SERVER_PORT: int = 0
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    """健康检查，同时报告当前可用的地理编码能力。"""
+    """健康检查，同时报告当前可用的地理编码能力。
+
+    ⚠️ **必须区分「有 key」和「key 能用」**（实测踩过）：
+    高德 key 有平台类型之分——「Web端(JS API)」的 key 调 Web 服务接口会返回
+    `USERKEY_PLAT_NOMATCH`（10009）。只检查 key 是否存在，
+    会让「key 配错了」看起来像「在线服务正常」。
+
+    所以这里对有 key 的服务做一次**主动探测**（用真实端点打一次），
+    把失败原因原样报出来。探测很便宜（一次请求），只在 health 调用时发生。
+    """
+    geo: dict[str, Any] = {
+        "amap": bool(CONFIG.amap_key),
+        "tmap": bool(CONFIG.tmap_key),
+        "baidu": bool(CONFIG.baidu_key),
+        "tianditu": bool(CONFIG.tianditu_key),
+        "online_available": CONFIG.has_online_key,
+    }
+    # 上一次在线调用失败的原因（若已发生过）
+    if _pipeline.geocoder._last_error:
+        geo["last_error"] = _pipeline.geocoder._last_error
+    # 主动探测：有 key 的服务真的能用吗？
+    # （key 平台类型不匹配时，key 存在但接口必然失败）
+    if geo["online_available"]:
+        try:
+            geo["probe"] = _pipeline.geocoder.probe_online()
+        except Exception:
+            geo["probe"] = {"error": "探测失败"}
     return {
         "status": "ok",
         "version": app.version,
-        "geocoding": {
-            "amap": bool(CONFIG.amap_key),
-            "tmap": bool(CONFIG.tmap_key),
-            "baidu": bool(CONFIG.baidu_key),
-            "tianditu": bool(CONFIG.tianditu_key),
-            "online_available": CONFIG.has_online_key,
-        },
+        "geocoding": geo,
         "lexicon": _pipeline.lexicon.stats(),
     }
 

@@ -149,4 +149,15 @@ def load_dotenv(path: Path | None = None) -> None:
         os.environ.setdefault(key, val)
 
 
+# ⚠️ **必须在模块导入时加载**（而不是只在 `app/server.py` 里调用）。
+#
+# 实测踩过：`load_dotenv()` 原本只在 server.py 里被调用，
+# 于是**任何不经过 server 的路径都读不到 `.env`**——
+# CLI（`python -m app.cli`）、测试脚本、直接 import app.pipeline 的工具，
+# 全部拿不到 AMAP_KEY，看起来就像「key 没配」。
+#
+# 放在这里最稳：`AppConfig` 的 key 属性是 `@property`（每次访问都重读
+# `os.environ`），所以加载顺序不影响取值。
+load_dotenv()
+
 CONFIG = AppConfig()
