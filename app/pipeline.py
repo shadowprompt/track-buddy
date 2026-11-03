@@ -171,13 +171,28 @@ class RidePipeline:
         # 「这张图的信息量不够」，而不是给一个看起来精确却错的结果。
         zoom = self._assess_zoom_level(pairs, road_names)
         if zoom["zoom_too_low"]:
-            warnings.append(
-                f"地图缩放级别过低：底图未显示街道名，"
-                f"仅认出 {zoom['n_broad_anchors']} 个大范围地标"
-                f"（{'、'.join(zoom['broad_examples'][:4])} 等），"
-                f"它们的位置误差可达数公里，无法定位到街区。"
-                f"请填写你记得走过的路名，或截取放大到街道级的地图。"
-            )
+            ex = "、".join(zoom["broad_examples"][:4])
+            if zoom["position_ok"]:
+                # 位置已靠路名修正，但形状修不了——必须说清楚。
+                warnings.append(
+                    f"地图缩放级别过低：底图未显示街道名，"
+                    f"仅认出 {zoom['n_broad_anchors']} 个大范围地标"
+                    f"（{ex} 等），它们的位置误差可达数公里。"
+                    f"你填的路名已把**位置**修正到街区级"
+                    f"（起点终点误差约 300-900 米），"
+                    f"但**街道级走向无法从这张图恢复**——"
+                    f"城市级缩放下截图里的轨迹线本身就是直线，"
+                    f"锯齿在截图阶段就丢了。"
+                    f"如需真实路线，请把地图放大到能看到街道名后重新截图。"
+                )
+            else:
+                warnings.append(
+                    f"地图缩放级别过低：底图未显示街道名，"
+                    f"仅认出 {zoom['n_broad_anchors']} 个大范围地标"
+                    f"（{ex} 等），"
+                    f"它们的位置误差可达数公里，无法定位到街区。"
+                    f"请填写你记得走过的路名，或截取放大到街道级的地图。"
+                )
 
         # --- 阶段 4：配准 ---
         reg = register(
@@ -423,11 +438,29 @@ class RidePipeline:
         #   2) 大范围地标确实占多数。
         # 只看条件 1 的话，街道级截图上「路名没查到地理坐标」的情况
         # 会被误判成缩放过低（实际缺的是地名数据，不是分辨率）。
-        too_low = bool(
-            n >= 5 and not street and not has_road_names and broad_ratio >= 0.45
-        )
+        no_street = bool(n >= 5 and not street and broad_ratio >= 0.45)
+
+        # ⚠️ **「位置」和「形状」是两个独立维度，不能混为一谈**。
+        #
+        # 城市级截图下：
+        #   * 位置 -> 可以靠用户提供的路名修正（起终点锚定实测准到 300-900 米）
+        #   * 形状 -> **修不了**。截图里那条像素轨迹本身就是一条直线，
+        #     街道级锯齿在截图阶段就丢了。
+        #
+        # 实测（同一张城市级截图）：
+        #   真实路线是 Z 字形（小木桥路往南 -> 中山南二路往西 -> 肇嘉浜路往北
+        #   -> 虹桥路往西 -> 虹古路往北），而还原出来是一条斜线，
+        #   中段偏差 1-1.5 公里。
+        #
+        # 所以「填了路名就不提示」是错的——那会让用户以为拿到了完整结果。
+        # 正确的说法是：**位置已修正到街区级，街道级走向无法从这张图恢复**。
+        position_ok = bool(has_road_names or street)
         return {
-            "zoom_too_low": too_low,
+            # 无街道级锚点 -> 底图没显示路名 -> 形状不可恢复（提示用）
+            "zoom_too_low": no_street,
+            # 位置是否可信（有路名约束或有街道级锚点）-> 影响置信度封顶
+            "position_ok": position_ok,
+            "has_road_names": has_road_names,
             "n_anchor_names": n,
             "n_street_anchors": len(street),
             "n_broad_anchors": len(broad),
@@ -1295,7 +1328,12 @@ class RidePipeline:
         # 这种情况下配准再"自洽"也是自洽在错误的位置上（实测 RMSE 856 米，
         # 起点被拽到 3 公里外的另一个区），置信度必须封顶，
         # 否则用户会以为结果可信。
-        if zoom and zoom.get("zoom_too_low"):
+        #
+        # ⚠️ **只在「位置也不可信」时封顶**：用户填了路名时位置已经被
+        # 起终点锚定修正到街区级（实测误差 300-900 米），这时封顶会
+        # 把一个正确的结果说成不可信。缩放过低仍然要提示——那影响的是
+        # **形状**（街道级走向无法从城市级截图恢复）。
+        if zoom and not zoom.get("position_ok", True):
             conf = min(conf, 0.2)
 
         return round(min(0.99, max(0.0, conf)), 3)

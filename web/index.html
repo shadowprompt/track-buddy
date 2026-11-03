@@ -429,8 +429,18 @@
     if (conf >= 0.45 && !zoom.zoom_too_low) return '';
     const rnInput = ($('roadNames') && $('roadNames').value || '').trim();
     let tip;
-    if (zoom.zoom_too_low) {
+    let head;
+    if (zoom.zoom_too_low && zoom.position_ok) {
+      // 位置已经靠路名修正了，但形状修不了——必须说清楚，别让用户
+      // 以为拿到的是完整结果。
+      head = '位置已修正到街区级，但街道级走向无法从这张图恢复';
+      tip = '这张地图的<b>缩放级别太低</b>——底图没有显示街道名，' +
+        '截图里的轨迹线本身就是一条直线，街道的锯齿在截图阶段就丢了。' +
+        '你填的路名已把<b>起终点</b>钉准（误差约 300-900 米），' +
+        '但中间的走向只能靠<b>放大到街道级重新截图</b>才能还原。';
+    } else if (zoom.zoom_too_low) {
       const ex = (zoom.broad_examples || []).slice(0, 3).join('、');
+      head = '地图缩放级别过低，结果可能不准';
       tip = '这张地图的<b>缩放级别太低</b>——底图没有显示街道名，' +
         '图上能读到的只有行政区、地铁线这类大范围地标' +
         (ex ? '（' + esc(ex) + ' 等）' : '') +
@@ -438,18 +448,18 @@
         (rnInput ? '' : '<b>填写你记得走过的路名</b>能把它钉死；') +
         '或者截一张<b>放大到街道级</b>的地图再试。';
     } else if (rnInput) {
+      head = '置信度偏低，结果可能不准';
       tip = '已填路名但定位仍不可靠——请检查路名是否与实际路线一致' +
         '（路名要写具体，比如「打浦路隧道」比「世纪大道」有用得多）。';
     } else {
+      head = '置信度偏低，结果可能不准';
       tip = '未填路名时，截图里的地名文字标注位置与真实地点有数百米偏差，' +
         '容易定位到错误的街区。<b>填写你记得走过的路名</b>可以把位置钉死。';
     }
     return '<div class="kv" style="margin-top:8px;padding:8px 10px;' +
       'border-radius:6px;background:#fff7ed;border-left:3px solid #f97316">' +
-      '<span style="color:#c2410c;font-weight:600">' +
-      (zoom.zoom_too_low ? '地图缩放级别过低，结果可能不准'
-                         : '置信度偏低，结果可能不准') +
-      '（' + Math.round(conf * 100) + '%）</span>' +
+      '<span style="color:#c2410c;font-weight:600">' + head +
+      '（置信度 ' + Math.round(conf * 100) + '%）</span>' +
       '<span style="color:#7c2d12">' + tip + '</span></div>';
   }
 
@@ -497,6 +507,15 @@
           int(dg.zoom.n_street_anchors, 0) + ' 个、大范围 ' +
           int(dg.zoom.n_broad_anchors, 0) + ' 个' +
           (dg.zoom.zoom_too_low ? '（<b style="color:#c2410c">无街道级锚点</b>）' : '') +
+          '</span></div>' +
+          '<div class="kv"><span>结果可靠性</span><span>位置 ' +
+          (dg.zoom.position_ok
+            ? '可靠（起终点已钉准）'
+            : '<b style="color:#c2410c">不可靠</b>') +
+          ' / 街道级走向 ' +
+          (dg.zoom.zoom_too_low
+            ? '<b style="color:#c2410c">无法从这张图恢复</b>'
+            : '可恢复') +
           '</span></div>'
         : '') +
       lowConfidenceHint(d);

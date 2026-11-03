@@ -49,14 +49,18 @@ check(out.includes('街道级'), '给出「放大到街道级」建议');
 check(out.includes('静安区'), '列出具体的大范围地标示例');
 check(out.includes('20%'), '显示置信度百分比');
 
-// --- 场景 2：城市级截图 + 已填路名 ---
+// --- 场景 2：城市级截图 + 已填路名（位置已修正，但形状仍不可恢复）---
 els.roadNames.value = '小木桥路,龙华中路';
 out = lowConfidenceHint({
-  confidence: 0.3,
-  diagnostics: { zoom: { zoom_too_low: true, broad_examples: ['静安区'] } },
+  confidence: 0.776,
+  diagnostics: { zoom: { zoom_too_low: true, position_ok: true,
+                          broad_examples: ['静安区'] } },
 });
-console.log('\n【场景2】缩放过低 + 已填路名\n  ' + out.replace(/<[^>]+>/g, '').slice(0, 200) + '\n');
-check(out.includes('缩放级别过低'), '仍提示缩放过低');
+console.log('\n【场景2】缩放过低 + 已填路名\n  ' + out.replace(/<[^>]+>/g, '').slice(0, 220) + '\n');
+check(out.includes('缩放级别太低'), '仍提示缩放级别过低');
+check(out.includes('位置已修正'), '明确说明位置已修正');
+check(out.includes('走向'), '说明街道级走向无法恢复');
+check(out.includes('放大'), '给出「放大到街道级重截」建议');
 check(!out.includes('填写你记得走过的路名'),
       '已填路名时不再重复要填路名', out.slice(0, 200));
 
@@ -77,12 +81,14 @@ check(out.includes('路名是否与实际路线一致'), '提示检查路名是�
 out = lowConfidenceHint({ confidence: 0.78, diagnostics: {} });
 check(out === '', '高置信度时不显示任何提示', JSON.stringify(out.slice(0, 80)));
 
-// --- 场景 6：高置信度但缩放过低 -> 仍要提示 ---
+// --- 场景 6：高置信度但缩放过低 -> 仍要提示（形状问题与置信度无关）---
 out = lowConfidenceHint({
   confidence: 0.78,
-  diagnostics: { zoom: { zoom_too_low: true, broad_examples: ['静安区'] } },
+  diagnostics: { zoom: { zoom_too_low: true, position_ok: false,
+                          broad_examples: ['静安区'] } },
 });
-check(out.includes('缩放级别过低'), '缩放过低时即使置信度高也要提示');
+check(out.includes('缩放级别'), '缩放过低时即使置信度高也要提示');
+check(out.includes('位置'), '区分「位置」与「走向」两个维度');
 
 console.log('');
 if (failures.length) {

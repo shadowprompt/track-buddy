@@ -73,10 +73,15 @@ def test_street_level_not_flagged():
 
 
 def test_user_road_names_disable_flag():
-    """用户填了路名 -> 即使没有街道级锚点也不该提示缩放过低。
+    """用户填了路名 -> 位置可信，但**形状**仍不可恢复。
 
-    理由：路名约束提供了街道级信息（起终点锚定 + 路名链），
-    定位是可靠的，不该再让用户去折腾截图。
+    这是本测试最容易搞错的一处。填了路名只解决「位置」，
+    不解决「形状」：城市级截图里那条像素轨迹本身就是直线，
+    街道锯齿在截图阶段就丢了，路名再准也变不回来。
+
+    所以：
+      zoom_too_low  仍为 True（事实：底图没显示路名）
+      position_ok   变为 True（位置已靠路名/街道级锚点钉准）
     """
     pairs = [_pair(n, k) for n, k in [
         ("静安区", "district"), ("3号线", "transit"),
@@ -84,8 +89,36 @@ def test_user_road_names_disable_flag():
         ("1号线", "transit"), ("12号线", "transit"),
     ]]
     r = _assess(pairs, ["小木桥路", "龙华中路"])
-    assert not r["zoom_too_low"], "填了路名仍被判为缩放过低"
-    print("  [OK] 用户填了路名后不再提示缩放过低")
+    assert r["zoom_too_low"], "无街道级锚点时形状仍应判为不可恢复"
+    assert r["position_ok"], "填了路名后位置应判为可信"
+    assert r["has_road_names"], "has_road_names 应为 True"
+    print("  [OK] 填了路名：位置可信，但形状仍标记为不可恢复")
+
+
+def test_no_road_names_means_position_unreliable():
+    """没填路名 + 无街道级锚点 -> 位置也不可信（置信度要封顶）。"""
+    pairs = [_pair(n, k) for n, k in [
+        ("静安区", "district"), ("3号线", "transit"),
+        ("上海西站", "station"), ("8号线", "transit"),
+        ("1号线", "transit"), ("12号线", "transit"),
+    ]]
+    r = _assess(pairs, [])
+    assert r["zoom_too_low"], "应判为缩放过低"
+    assert not r["position_ok"], "无路名无街道锚点时位置不应判为可信"
+    print("  [OK] 无路名且无街道锚点：位置判为不可信")
+
+
+def test_street_anchor_makes_position_reliable():
+    """有街道级锚点 -> 位置可信（即使没填路名）。"""
+    pairs = [_pair(n, k) for n, k in [
+        ("静安区", "district"), ("3号线", "transit"),
+        ("上海西站", "station"), ("长风路", "road"),
+        ("天山路", "road"), ("北翟路", "road"),
+    ]]
+    r = _assess(pairs, [])
+    assert not r["zoom_too_low"], "有街道级锚点不应判为缩放过低"
+    assert r["position_ok"], "有街道级锚点时位置应判为可信"
+    print("  [OK] 有街道级锚点时位置判为可信")
 
 
 def test_expressway_not_street_level():
@@ -111,6 +144,8 @@ if __name__ == "__main__":
     test_city_level_screenshot_flagged()
     test_street_level_not_flagged()
     test_user_road_names_disable_flag()
+    test_no_road_names_means_position_unreliable()
+    test_street_anchor_makes_position_reliable()
     test_expressway_not_street_level()
     test_too_few_anchors_not_flagged()
     print("\n全部通过")
