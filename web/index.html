@@ -417,19 +417,39 @@
   // 实测同一张截图，无路名时置信度 0.20、路名归属完全跑到另一个区
   // （常熟路/武宁南路/普雄路，全在静安区）；填了 10 个路名后
   // 置信度 0.78、路名归属全部正确。两种情况的补救动作完全不同。
+  //
+  // 还要区分「缩放级别过低」——这是**信息不足**，不是算法不行：
+  // 城市级截图（一张图覆盖 20 公里）底图不显示街道名，能认出的
+  // 只有行政区/地铁线/大 POI，它们的文字标注位置与真实点位差公里级
+  // （实测中位 2.2 公里、最大 16.7 公里），而轨迹本身才 11 公里。
   function lowConfidenceHint(d) {
     const conf = typeof d.confidence === 'number' ? d.confidence : 0;
-    if (conf >= 0.45) return '';
+    const dg = d.diagnostics || {};
+    const zoom = dg.zoom || {};
+    if (conf >= 0.45 && !zoom.zoom_too_low) return '';
     const rnInput = ($('roadNames') && $('roadNames').value || '').trim();
-    const tip = rnInput
-      ? '已填路名但定位仍不可靠——请检查路名是否与实际路线一致' +
-        '（路名要写具体，比如「打浦路隧道」比「世纪大道」有用得多）。'
-      : '未填路名时，截图里的地名文字标注位置与真实地点有数百米偏差，' +
+    let tip;
+    if (zoom.zoom_too_low) {
+      const ex = (zoom.broad_examples || []).slice(0, 3).join('、');
+      tip = '这张地图的<b>缩放级别太低</b>——底图没有显示街道名，' +
+        '图上能读到的只有行政区、地铁线这类大范围地标' +
+        (ex ? '（' + esc(ex) + ' 等）' : '') +
+        '，它们的位置误差可达数公里，靠它们定位不到街区。' +
+        (rnInput ? '' : '<b>填写你记得走过的路名</b>能把它钉死；') +
+        '或者截一张<b>放大到街道级</b>的地图再试。';
+    } else if (rnInput) {
+      tip = '已填路名但定位仍不可靠——请检查路名是否与实际路线一致' +
+        '（路名要写具体，比如「打浦路隧道」比「世纪大道」有用得多）。';
+    } else {
+      tip = '未填路名时，截图里的地名文字标注位置与真实地点有数百米偏差，' +
         '容易定位到错误的街区。<b>填写你记得走过的路名</b>可以把位置钉死。';
+    }
     return '<div class="kv" style="margin-top:8px;padding:8px 10px;' +
       'border-radius:6px;background:#fff7ed;border-left:3px solid #f97316">' +
-      '<span style="color:#c2410c;font-weight:600">置信度偏低（' +
-      Math.round(conf * 100) + '%），结果可能不准</span>' +
+      '<span style="color:#c2410c;font-weight:600">' +
+      (zoom.zoom_too_low ? '地图缩放级别过低，结果可能不准'
+                         : '置信度偏低，结果可能不准') +
+      '（' + Math.round(conf * 100) + '%）</span>' +
       '<span style="color:#7c2d12">' + tip + '</span></div>';
   }
 
@@ -470,6 +490,14 @@
       '<div class="kv"><span>耗时</span><span>' + int(d.elapsed_ms, 0) + ' ms</span></div>' +
       (d.warnings && d.warnings.length
         ? '<ul class="warnlist">' + d.warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>'
+        : '') +
+      (dg.zoom && dg.zoom.n_anchor_names
+        ? '<div class="kv"><span>锚点构成</span><span>共 ' +
+          int(dg.zoom.n_anchor_names, 0) + ' 个地标：街道级 ' +
+          int(dg.zoom.n_street_anchors, 0) + ' 个、大范围 ' +
+          int(dg.zoom.n_broad_anchors, 0) + ' 个' +
+          (dg.zoom.zoom_too_low ? '（<b style="color:#c2410c">无街道级锚点</b>）' : '') +
+          '</span></div>'
         : '') +
       lowConfidenceHint(d);
 

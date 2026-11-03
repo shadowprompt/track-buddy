@@ -77,8 +77,7 @@ class PipelineResult:
 # "Cannot read properties of undefined (reading 'toFixed')"，
 # 完全不知道发生了什么。这里用一份默认值把结构固定下来。
 DIAG_KEYS: tuple[str, ...] = (
-    "scale_mercator_m_per_px",
-    "scale_ground_m_per_px",
+    "scale_mercator_m_per_px",    "scale_ground_m_per_px",
     "rotation_deg",
     "model",
     "rmse_m",
@@ -94,6 +93,7 @@ DIAG_KEYS: tuple[str, ...] = (
     "online_geocoding",
     "lexicon",
     "alternatives",
+    "zoom",
 )
 
 
@@ -103,6 +103,17 @@ def _base_diagnostics(**over: Any) -> dict[str, Any]:
     dg["lexicon"] = {}
     dg.update(over)
     return dg
+
+
+# 「大范围对象」类型：行政区、地铁线路。
+# 这类标注的文字位置与真实点位可差 1-16 公里，无法支撑街区级定位。
+_BROAD_KINDS = ("district", "transit")
+
+# 高速公路 / 国道 / 高架——名字里含这些的「道路」同样是几十公里级的大对象，
+# 不能算作街道级锚点（实测「外环高速」偏差 3087 米）。
+# ⚠️ **不要排除「大道」**：世纪大道/龙东大道虽是长道路，但在城市里
+# 仍是有效的定位参考（用户提供的路名里就有「中山南二路」这类）。
+_EXPRESSWAY_MARKERS = ("高速", "国道", "省道", "高架", "环线")
 
 
 class RidePipeline:
@@ -153,6 +164,20 @@ class RidePipeline:
 
         # --- 阶段 3：地理编码 ---
         pairs = self._resolve_anchors(anchors, city, allow_online, warnings)
+
+        # --- 阶段 3.5：缩放级别评估 ---
+        # 城市级截图里底图不显示街道名，能认出的只有行政区/地铁线/大 POI，
+        # 它们的文字标注位置与真实点位差公里级。此时必须明确告诉用户
+        # 「这张图的信息量不够」，而不是给一个看起来精确却错的结果。
+        zoom = self._assess_zoom_level(pairs, road_names)
+        if zoom["zoom_too_low"]:
+            warnings.append(
+                f"地图缩放级别过低：底图未显示街道名，"
+                f"仅认出 {zoom['n_broad_anchors']} 个大范围地标"
+                f"（{'、'.join(zoom['broad_examples'][:4])} 等），"
+                f"它们的位置误差可达数公里，无法定位到街区。"
+                f"请填写你记得走过的路名，或截取放大到街道级的地图。"
+            )
 
         # --- 阶段 4：配准 ---
         reg = register(
@@ -280,7 +305,7 @@ class RidePipeline:
 
         geojson = _build_geojson(lonlat, reg, track)
         confidence = self._score_confidence(
-            reg, track, anchors, pairs, road_fit, road_name_fit
+            reg, track, anchors, pairs, road_fit, road_name_fit, zoom
         )
 
         # --- 阶段 6：路名归属 ---
@@ -334,6 +359,7 @@ class RidePipeline:
                 online_geocoding=bool(self.cfg.has_online_key and allow_online),
                 lexicon=self.lexicon.stats(),
                 alternatives=len(alternatives),
+                zoom=zoom,
             ),
             warnings=warnings,
             elapsed_ms=int((time.time() - t0) * 1000),
@@ -341,6 +367,73 @@ class RidePipeline:
             track_polyline_px=[[int(px), int(py)] for px, py in simplified],
             image_size=(int(img.shape[1]), int(img.shape[0])),
         )
+
+    def _assess_zoom_level(
+        self,
+        pairs: list[AnchorPair],
+        road_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """判断截图的地图缩放级别是否过低（城市级视野）。
+
+        为什么必须有这个判断：城市级缩放（一张图覆盖 20 公里）时，
+        底图**根本不显示街道名**，OCR 只能认出行政区、地铁线、
+        大型 POI 这类「大范围对象」。而它们的**文字标注位置**被
+        地图引擎挪到视野空白处，与真实点位可差很远——
+
+        实测上海城市级截图（1260x2720，覆盖整个上海）：
+
+        | 锚点 | 标注位置→真实位置 偏差 |
+        |---|---|
+        | 14号线 / 3号线 / 上海西站 | 800–917 米 |
+        | 上海站 / 12号线 / 上海南站 | 1638–2301 米 |
+        | 静安区 / 徐汇区 / 4号线内圈 | 2681–3225 米 |
+        | 1号线 / 西岸自然 | 6143–16696 米 |
+
+        **每个锚点的偏移都是公里级，而整条轨迹只有 11 公里长**——
+        锚点偏移比轨迹本身还大，原理上就无法定位到街区级别。
+        这时无论怎么调配准算法都救不回来，必须靠用户补信息。
+
+        判据：地理编码后是否存在**街道级锚点**（普通道路）。
+        高速公路（外环高速）不算——它同样是几十公里级的大对象。
+        """
+        # 按名字去重：同名多候选是常态（「虹桥路」149 段），
+        # 一个名字只算一次，且优先取「非大范围」的候选类型。
+        kinds: dict[str, str] = {}
+        for p in pairs:
+            nm = (p.name or "").strip()
+            if not nm:
+                continue
+            cur = kinds.get(nm)
+            if cur is None or (cur in _BROAD_KINDS and p.kind not in _BROAD_KINDS):
+                kinds[nm] = p.kind
+
+        street = [
+            nm for nm, k in kinds.items()
+            if k == "road" and not any(x in nm for x in _EXPRESSWAY_MARKERS)
+        ]
+        broad = [
+            nm for nm, k in kinds.items()
+            if k in ("district", "transit") or nm.endswith(("区", "县", "市"))
+        ]
+        n = len(kinds)
+        has_road_names = bool([x for x in (road_names or []) if x.strip()])
+        broad_ratio = len(broad) / n if n else 0.0
+        # ⚠️ **两个条件都要满足**，避免误判：
+        #   1) 一个街道级锚点都没有；
+        #   2) 大范围地标确实占多数。
+        # 只看条件 1 的话，街道级截图上「路名没查到地理坐标」的情况
+        # 会被误判成缩放过低（实际缺的是地名数据，不是分辨率）。
+        too_low = bool(
+            n >= 5 and not street and not has_road_names and broad_ratio >= 0.45
+        )
+        return {
+            "zoom_too_low": too_low,
+            "n_anchor_names": n,
+            "n_street_anchors": len(street),
+            "n_broad_anchors": len(broad),
+            "broad_ratio": round(broad_ratio, 3),
+            "broad_examples": broad[:6],
+        }
 
     def _resolve_anchors(
         self,
@@ -1050,6 +1143,7 @@ class RidePipeline:
         pairs: list[AnchorPair],
         road_fit: dict[str, Any] | None = None,
         road_name_fit: dict[str, Any] | None = None,
+        zoom: dict[str, Any] | None = None,
     ) -> float:
         """综合置信度。
 
@@ -1192,6 +1286,17 @@ class RidePipeline:
         water = (road_name_fit or {}).get("water_check") or {}
         if water.get("crossed"):
             conf *= 0.5
+
+        # --- 缩放级别封顶 ---
+        #
+        # 城市级截图里底图不显示街道名，能用的锚点只有行政区/地铁线/大 POI，
+        # 它们的文字标注位置与真实点位差公里级（实测中位 2.2 公里、
+        # 最大 16.7 公里），而整条轨迹才 11 公里——**锚点偏移比轨迹还大**。
+        # 这种情况下配准再"自洽"也是自洽在错误的位置上（实测 RMSE 856 米，
+        # 起点被拽到 3 公里外的另一个区），置信度必须封顶，
+        # 否则用户会以为结果可信。
+        if zoom and zoom.get("zoom_too_low"):
+            conf = min(conf, 0.2)
 
         return round(min(0.99, max(0.0, conf)), 3)
 
