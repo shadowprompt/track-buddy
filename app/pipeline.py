@@ -258,12 +258,16 @@ class RidePipeline:
         # 「带用户意图的强约束」，后者应该压过前者。
         road_name_constraints: list[dict[str, Any]] = []
         road_name_fit: dict[str, Any] = {}
+        # 无路名时这两个变量也必须存在——阶段 5.5 会用到
+        _road_cons: list[Any] = []
+        _notes_collected = 0
         if road_names:
-            road_name_constraints, road_name_fit = self._apply_road_names(
-                reg, track, road_names, city, allow_online
+            road_name_constraints, road_name_fit, _road_cons = (
+                self._apply_road_names(reg, track, road_names, city, allow_online)
             )
             for n in road_name_fit.get("notes", []):
                 warnings.append(n)
+            _notes_collected = len(road_name_fit.get("notes", []))
             # 路名约束改变了轨迹位置 → 重新做一次路网校验，
             # 否则 road_fit 里还是**平移前**的贴路距离，
             # 置信度会用过期数据算（实测偏低 0.18）。
@@ -301,6 +305,50 @@ class RidePipeline:
         sampled = resample_polyline(track.polyline, step_px=step_px)
         simplified = simplify_polyline(sampled, eps=eps_px)
         lonlat_gcj = apply_to_polyline(reg, simplified)
+
+        # --- 阶段 5.5：形状重建 ---
+        #
+        # 城市级截图里 11 公里的骑行只占 ~680 像素，美团画的那条线
+        # **本身就是直线**——街道锯齿在截图阶段就丢了。
+        # 路名能修正**位置**，但修不了**形状**；这里用路名的真实几何
+        # 把直线「掰」回沿路的走向（见 `app/shapefit.py`）。
+        if _road_cons and road_name_fit.get("ok"):
+            rebuilt = self._rebuild_shape(
+                lonlat_gcj, _road_cons, road_name_fit
+            )
+            if rebuilt is not None:
+                lonlat_gcj = rebuilt
+                # ⚠️ **重建后必须重跑跨江检查**。
+                # 重建会让轨迹变长、变弯（实测 13102 -> 17553 米），
+                # 可能触到江边；而跨江护栏是**安全底线**，
+                # 必须反映**最终**输出，而不是重建前的状态。
+                try:
+                    from .waterguard import check_crossing
+                    crossed2, which2, ratio2 = check_crossing(
+                        [(float(lo), float(la)) for lo, la in lonlat_gcj],
+                        city=city or "上海",
+                        cache_dir=str(self.cfg.road_cache_dir),
+                        allow_network=allow_online,
+                    )
+                    road_name_fit["water_check"] = {
+                        "crossed": bool(crossed2),
+                        "waters": which2,
+                        "ratio": round(float(ratio2), 4),
+                        "after_rebuild": True,
+                    }
+                    if crossed2:
+                        road_name_fit.setdefault("notes", []).append(
+                            f"⚠️ 形状重建后的轨迹疑似横跨{which2}"
+                            f"（{ratio2:.0%} 的点在江面上），请核对起终点")
+                except Exception as exc:  # noqa: BLE001
+                    road_name_fit.setdefault("notes", []).append(
+                        f"形状重建后跨江检查未能完成（{type(exc).__name__}）")
+        # ⚠️ **补收 notes**：形状重建在阶段 5.5 往 road_name_fit 里追加了
+        # 说明，而上面的收集发生在阶段 4.5 结束时——不补收就静默丢失
+        # （实测重建成功了但 warnings 里一个字都没有）。
+        if road_name_fit.get("notes"):
+            for n in road_name_fit["notes"][_notes_collected:]:
+                warnings.append(n)
 
         # --- 输出坐标转换 ---
         if output_crs.upper() in ("WGS-84", "WGS84", "EPSG:4326"):
@@ -654,8 +702,11 @@ class RidePipeline:
         road_names: list[str],
         city: str = "",
         allow_online: bool = True,
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], list[Any]]:
         """应用用户提供的路名约束（线约束）。
+
+        第三个返回值是**可用的路名约束列表**（含 OSM 几何），
+        供后续的形状重建复用——避免为同一批路名再查一次 OSM。
 
         两级策略（顺序很重要）：
           1. **起终点锚定**（`app/endpointfit.py`）——解出相似变换，
@@ -705,7 +756,7 @@ class RidePipeline:
                 w_hi, w_ha = gcj02_to_wgs84(max(lons) + 0.06, max(lats) + 0.06)
                 bbox = (w_lo, w_la, w_hi, w_ha)
             except Exception:
-                return [], {"ok": False, "notes": ["无法确定路名检索范围"]}
+                return [], {"ok": False, "notes": ["无法确定路名检索范围"]}, []
 
         constraints = []
         info = []
@@ -730,7 +781,7 @@ class RidePipeline:
             return info, {
                 "ok": False,
                 "notes": ["用户提供的路名在 OSM 里查不到几何，无法作为约束"],
-            }
+            }, []
 
         notes: list[str] = []
         anchor_fit: dict[str, Any] = {}
@@ -777,7 +828,8 @@ class RidePipeline:
         shift, val, notes2, base_val = refine_by_road_names(traj, usable)
         notes.extend(notes2)
         if not np.isfinite(val):
-            return info, {"ok": False, "notes": notes, "anchor_fit": anchor_fit}
+            return info, {"ok": False, "notes": notes,
+                          "anchor_fit": anchor_fit}, usable
 
         # 目标值改善程度 → 采纳判定
         base_note = notes[0] if notes else ""
@@ -859,7 +911,114 @@ class RidePipeline:
             "anchor_fit": anchor_fit,
             "water_check": water_check,
             "notes": notes,
-        }
+        }, usable
+
+    def _rebuild_shape(
+        self,
+        lonlat_gcj: list[tuple[float, float]],
+        constraints: list[Any],
+        road_name_fit: dict[str, Any],
+    ) -> list[tuple[float, float]] | None:
+        """用用户提供的路名重建轨迹形状。
+
+        背景：城市级缩放（一张图覆盖 20 公里）时，截图里的骑行轨迹线
+        **本身就是一条直线**——11 公里的骑行只占 ~680 像素，
+        街道锯齿在截图阶段就丢了。所以「位置」可以靠路名修正（起终点锚定，
+        实测准到 300-900 米），但「形状」修不了。
+
+        这里用路名的**真实道路几何**把直线掰回沿路的走向：
+        小木桥路往南 -> 中山南二路往西 -> 肇嘉浜路往北 -> 虹古路往北，
+        也就是用户记忆里那条 Z 字形路线。
+
+        实测效果（同一张城市级截图）：
+          lat 方向反转次数  5 -> 19（直线变锯齿）
+          离首尾直线距离    0.067 -> 0.121
+          轨迹长度          13102 -> 17553 米（真实路径本该比直线长）
+          逐段残差          9333 -> 7021 米
+
+        ⚠️ **重建是「基于路名的推断」**，不是从截图直接读出的。
+        原始轨迹会保留在 `road_name_fit["shape_fit"]["original"]` 里，
+        前端可切换对比。
+        """
+        try:
+            import numpy as np
+
+            from .geo.coords import mercator_to_lonlat
+            from .roadchain import build_candidates, select_chain
+            from .roadname_constraint import _dist_to_segments
+            from .shapefit import _arc, fit_shape, main_axis
+
+            traj = np.array(
+                [lonlat_to_mercator(lo, la) for lo, la in lonlat_gcj])
+            if len(traj) < 10:
+                return None
+            arc = np.concatenate([[0.0], np.cumsum(
+                np.linalg.norm(np.diff(traj, axis=0), axis=1))])
+
+            cands = build_candidates(
+                [(c.name, c.segments) for c in constraints])
+            chain = select_chain(cands, traj, arc)
+            if not chain.ok:
+                return None
+
+            polys, arcs, lens, names = [], [], [], []
+            for inst in chain.chosen:
+                poly = main_axis(inst.points)
+                if len(poly) < 2:
+                    return None
+                a = _arc(poly)
+                polys.append(poly)
+                arcs.append(a)
+                lens.append(float(a[-1]))
+                names.append(inst.name)
+            if len(polys) != len(constraints):
+                # 链式 DP 选出的实例数必须与路名数一致，否则无法逐段对应
+                return None
+
+            def residual(points, idx, spans):
+                """逐段残差：每段只对它自己对应的路名算距离。
+
+                ⚠️ 不能用「到所有路名的残差合计」——重建后该段贴着自己
+                的路名（残差 0）但离其他路名更远，合计值反而变差，
+                会误杀正确的重建（实测 28201 -> 31788）。
+                """
+                total = float(arc[-1]) or 1.0
+                bounds = np.linspace(0.0, total, 120 + 1)
+                tot = 0.0
+                for k, (a, b) in enumerate(spans):
+                    if b < a or k >= len(constraints):
+                        continue
+                    lo, hi = bounds[a], bounds[b + 1]
+                    ii = np.where((arc >= lo) & (arc <= hi))[0]
+                    if len(ii) < 2:
+                        continue
+                    tot += float(np.median(_dist_to_segments(
+                        points[ii], constraints[k].segments)))
+                return tot
+
+            fit = fit_shape(traj, arc, polys, arcs, lens, names,
+                            residual_fn=residual, n_seg=120)
+            info = fit.to_dict()
+            info["original"] = [
+                [round(lo, 6), round(la, 6)] for lo, la in lonlat_gcj]
+            road_name_fit["shape_fit"] = info
+            if not fit.ok or fit.points is None:
+                for n in fit.notes:
+                    if "跳过" in n or "未改善" in n or "放弃" in n:
+                        road_name_fit.setdefault("notes", []).append(
+                            "形状重建：" + n)
+                return None
+            out = [tuple(mercator_to_lonlat(float(x), float(y)))
+                   for x, y in fit.points]
+            road_name_fit.setdefault("notes", []).append(
+                f"形状重建：已按路名把轨迹掰回沿路走向"
+                f"（覆盖 {fit.covered_ratio:.0%}，"
+                f"逐段残差 {fit.before_m:.0f} -> {fit.after_m:.0f} 米）")
+            return out
+        except Exception as exc:  # noqa: BLE001
+            road_name_fit.setdefault("notes", []).append(
+                f"形状重建未执行（{type(exc).__name__}）")
+            return None
 
     def _collect_alternatives(
         self, reg: Registration, track: TrackResult,

@@ -554,6 +554,18 @@
           '），起点锚在「' + esc(af.start_road || '—') +
           '」、终点锚在「' + esc(af.end_road || '—') + '」</span></div>';
       }
+      // 形状重建：城市级截图里的轨迹线本身是直线，
+      // 这里按用户填的路名把它掰回沿路的走向（Z 字形）。
+      const sf = rnf.shape_fit;
+      if (sf && sf.ok) {
+        html += '<div class="kv"><span>形状重建</span><span>已按路名把轨迹' +
+          '掰回沿路走向（覆盖 ' + Math.round((sf.covered_ratio || 0) * 100) +
+          '%，逐段残差 ' + Math.round(sf.before_m) + ' → <b>' +
+          Math.round(sf.after_m) + ' 米</b>）</span></div>';
+      } else if (sf && sf.notes && sf.notes.length) {
+        html += '<div class="kv"><span>形状重建</span><span>' +
+          esc(sf.notes[sf.notes.length - 1]) + '</span></div>';
+      }
       // 跨江警告：轨迹不该横穿黄浦江
       const wc = rnf.water_check || {};
       if (wc.crossed) {
