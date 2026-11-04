@@ -993,83 +993,148 @@ class RidePipeline:
             return {"ok": False, "applied": False,
                     "error": f"{type(exc).__name__}: {exc}"}
 
-    def _osrm_verify(
+    def _external_verify(
         self,
         fit: Any,
         constraints: list[Any],
         road_name_fit: dict[str, Any],
     ) -> None:
-        """用 OSRM 做**交叉验证**：它自己算出的路线是否也经过用户说的路。
+        """用**外部 OSM 路由引擎**做交叉验证：它自己算出的路线是否也经过用户说的路。
 
-        为什么只验证、不用它当轨迹
-        --------------------------
-        实测同一张城市级截图：
+        为什么需要外部验证
+        ------------------
+        本项目的算法（链式 DP + 几何重建）用的是**同一批路名实例**，
+        它给出的结果无法自证——「轨迹贴着用户说的路」本来就是设计目标，
+        谈不上验证。
 
-        | | 高德 walking | OSRM driving |
-        |---|---|---|
-        | 命中用户路名 | **1 / 14 步** | **15 / 51 步** |
-        | 途经点 | 静默丢弃 | **生效** |
+        外部引擎只拿到起终点（和途经点），**完全不知道用户填了哪些路名**。
+        它自己算出的路线能命中这些路名、而且**顺序也对**，才说明
+        用户的记忆与真实路网结构吻合——这是一份**独立于本项目算法**
+        的第三方证据。
 
-        OSRM 走的是「枫林路 → 中山南二路 → 宛平南路 → 零陵路 → 东安路 →
-        斜土路 → 双峰北路 → 肇嘉浜路 → 虹桥路 → 古北路 → 水城路 → 虹古路 →
-        北虹路 → 仙霞路」——**确实就是用户那条路线**（6/10 条路名命中）。
+        引擎选择（实测，同一张城市级截图、同样的起点/终点/途经点）
+        ----------------------------------------------------------
+        | 引擎 | 里程 | 命中 | 顺序一致 | 说明 |
+        |---|---|---|---|---|
+        | **Valhalla pedestrian** | 10.5 km | 5/10 | **100%** | 公共实例免费，原生支持 bicycle/pedestrian/auto |
+        | Valhalla auto | 15.0 km | 6/10 | 80% | |
+        | OSRM driving | 16.7 km | 5/10 | 100% | Demo **只有 driving profile**（实测传 bike/foot 返回完全相同）|
+        | BRouter trekking | 10.3 km | - | - | 不返回路名 |
+        | 高德 walking | 9.7 km | 1/14 | - | 途经点被**静默丢弃** |
 
-        但它的**里程偏长约 2 倍**（24.7 公里 vs 真实约 12 公里）：
-        Demo 只有 driving profile（骑行会走的非机动车道、小区内部道路它不走），
-        加上途经点有几百米偏移，绕路就多。
+        所以优先用 Valhalla（顺序一致率更高、里程更接近真实），
+        OSRM 作为降级。
 
-        所以：**形状用几何重建（里程正确、逐段贴合），
-        OSRM 只用来独立验证「用户的路名序列与真实路网结构一致」**。
-
-        这份验证的价值：OSRM 只知道起终点，**完全不知道用户填了哪些路名**，
-        它算出的路线能命中 6 条，说明用户的记忆与真实路网吻合——
-        是一份**独立于本项目算法**的第三方证据。
+        ⚠️ **只用它验证，不用它的几何当轨迹**：实测 Valhalla 里程
+        10.5 公里，而用户实际骑行约 17.5 公里（10 条路名实例长度之和
+        17308 米是独立标尺）——Valhalla **跳过了起点那一片**
+        （小木桥路/龙华中路/船厂路/中山南二路共 8.7 公里）。
+        形状仍由几何重建提供。
         """
         try:
+            import numpy as np
+
             from .geo.coords import gcj02_to_wgs84, mercator_to_lonlat
-            from .osrm import OsrmClient, match_ratio
+            from .valhalla import (
+                ValhallaClient, match_ratio, order_consistency,
+            )
 
             if fit.points is None or len(fit.points) < 10:
                 return
-            client = getattr(self, "osrm", None)
-            if client is None:
-                client = OsrmClient(cache_dir=str(self.cfg.road_cache_dir))
-                self.osrm = client
-            if not client.enabled:
+            segs = fit.segments
+            if len(segs) < 2:
+                return
+            user_names = [c.name for c in constraints]
+            if not user_names:
                 return
 
             def to_wgs(merc):
                 lo, la = mercator_to_lonlat(float(merc[0]), float(merc[1]))
                 return gcj02_to_wgs84(lo, la)
 
-            segs = fit.segments
-            if len(segs) < 2:
-                return
-            wps = [to_wgs(fit.points[b]) for _, b, _ in segs[:-1]]
-            route = client.route([to_wgs(fit.points[0])] + wps
-                                 + [to_wgs(fit.points[-1])])
-            if not route.ok:
+            # 途经点 = 各路名与轨迹的接触点（路名主数据源是 OSM）
+            #
+            # ⚠️ **必须过滤 NaN**：`contact_points` 在实例为空时写入
+            # `(nan, nan)`。带着 NaN 去请求，Valhalla 会直接失败
+            # （而失败时若无 note 就是静默失效）。
+            import math as _math
+
+            raw_wps = list(getattr(self, "_chain_contact_geo", []))
+            wps: list[tuple[float, float]] = []
+            for cg in raw_wps:
+                if cg is None:
+                    continue
+                try:
+                    lo, la = float(cg[0]), float(cg[1])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if not (_math.isfinite(lo) and _math.isfinite(la)):
+                    continue
+                wps.append(to_wgs((lo, la)))
+            if not wps:
+                wps = [to_wgs(fit.points[b]) for _, b, _ in segs[:-1]]
+            # 去重相邻重复点（Valhalla 对重复位置敏感）
+            ded: list[tuple[float, float]] = []
+            for p in wps:
+                if not ded or abs(p[0] - ded[-1][0]) > 1e-7 \
+                        or abs(p[1] - ded[-1][1]) > 1e-7:
+                    ded.append(p)
+            s0 = to_wgs(fit.points[0])
+            s1 = to_wgs(fit.points[-1])
+            pts_req = [s0] + ded + [s1]
+
+            client = getattr(self, "valhalla", None)
+            if client is None:
+                client = ValhallaClient(cache_dir=str(self.cfg.road_cache_dir))
+                self.valhalla = client
+            if not client.enabled:
                 return
 
-            names_all = [n for leg in route.leg_names for n in leg]
-            user_names = [c.name for c in constraints]
-            hits = sorted({n for n in names_all
-                           if any(u in n or n in u for u in user_names)})
-            ratio = match_ratio(names_all, user_names)
-            road_name_fit["osrm_verify"] = {
-                "ok": True,
-                "match_ratio": round(ratio, 3),
-                "hits": hits,
-                "n_user_names": len(user_names),
-                "route_distance_m": round(route.distance_m, 1),
-                "note": "OSRM 独立算出的路线命中的用户路名",
-            }
-            if hits:
+            best: dict[str, Any] | None = None
+            for costing in ("pedestrian", "auto"):
+                r = client.route(pts_req, costing=costing)
+                if not r.ok:
+                    continue
+                ratio = match_ratio(r.road_names, user_names)
+                oscore, seq = order_consistency(r.road_names, user_names)
+                hits = [n for n in user_names
+                        if any(n in rn or rn in n for rn in r.road_names)]
+                cand = {
+                    "ok": True,
+                    "engine": f"Valhalla {costing}",
+                    "match_ratio": round(ratio, 3),
+                    "order_consistency": round(oscore, 3),
+                    "hits": hits,
+                    "n_user_names": len(user_names),
+                    "route_distance_m": round(r.distance_m, 1),
+                    "hit_sequence": seq,
+                    "note": "外部 OSM 路由引擎独立算出的路线命中的用户路名",
+                }
+                # 排序依据：先看命中数，再看顺序一致率
+                key = (len(hits), oscore)
+                if best is None or key > (len(best.get("hits") or []),
+                                          best.get("order_consistency") or 0):
+                    best = cand
+                if len(hits) >= max(3, int(0.4 * len(user_names))) and oscore >= 0.8:
+                    break
+
+            if best is None:
                 road_name_fit.setdefault("notes", []).append(
-                    f"外部路网校验：OSRM 独立规划出的路线也经过"
-                    f"{'、'.join(hits[:6])}（{len(hits)}/{len(user_names)} 条路名）")
-        except Exception:  # noqa: BLE001
-            pass
+                    "外部路网校验未取得结果（Valhalla 公共实例不可用）")
+                return
+            road_name_fit["external_verify"] = best
+            # 兼容旧字段名
+            road_name_fit["osrm_verify"] = best
+            hits = best.get("hits") or []
+            if hits:
+                oscore = best.get("order_consistency") or 0
+                road_name_fit.setdefault("notes", []).append(
+                    f"外部路网校验：{best['engine']} 独立规划出的路线也经过"
+                    f"{'、'.join(hits[:6])}（{len(hits)}/{best['n_user_names']} "
+                    f"条路名，顺序一致 {oscore:.0%}）")
+        except Exception as exc:  # noqa: BLE001
+            road_name_fit.setdefault("notes", []).append(
+                f"外部路网校验未完成（{type(exc).__name__}）")
 
     def _rebuild_shape(
         self,
@@ -1118,6 +1183,23 @@ class RidePipeline:
             chain = select_chain(cands, traj, arc)
             if not chain.ok:
                 return None
+
+            # 路名与轨迹的**接触点**——外部路由引擎的途经点要用它。
+            #
+            # ⚠️ 不能用「重建后的段末点」当途经点：那批点已经变形了，
+            # 用它们做途经点会让引擎走完全不同的路线
+            # （实测命中从 5/10 掉到 3/10）。
+            #
+            # 单位说明：`contact_points` 只用 arc 记录「接触点在轨迹上的
+            # 位置」，`contact_geo`（真正要用的坐标）与 arc 无关，
+            # 所以这里传米制弧长没问题（反而更合理——`scale_from_chain`
+            # 会拿它跟路名的米制长度比较）。
+            try:
+                from .roadchain import contact_points
+                contact_points(chain, traj, arc)
+            except Exception:  # noqa: BLE001
+                pass
+            self._chain_contact_geo = list(chain.contact_geo)
 
             polys, arcs, lens, names = [], [], [], []
             for inst in chain.chosen:
@@ -1183,7 +1265,7 @@ class RidePipeline:
                 f"（覆盖 {fit.covered_ratio:.0%}，"
                 f"逐段残差 {fit.before_m:.0f} -> {fit.after_m:.0f} 米）")
             # OSRM 只做**交叉验证**，不用它的几何当轨迹（见 _osrm_route 的说明）
-            self._osrm_verify(fit, constraints, road_name_fit)
+            self._external_verify(fit, constraints, road_name_fit)
             # ⚠️ **note 要在 OSRM 调用之后才收集**——OSRM 的诊断信息
             # 是调用时才产生的（之前放在前面，结果被静默吞掉，
             # 排查时完全看不到 OSRM 为什么没被采纳）。

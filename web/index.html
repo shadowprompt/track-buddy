@@ -566,13 +566,18 @@
         html += '<div class="kv"><span>形状重建</span><span>' +
           esc(sf.notes[sf.notes.length - 1]) + '</span></div>';
       }
-      // 外部路网校验：OSRM 只知道起终点、不知道用户填了哪些路名，
-      // 它算出的路线能命中这些路，说明用户的记忆与真实路网吻合。
-      const ov = rnf.osrm_verify;
+      // 外部路网校验：外部引擎只知道起终点、不知道用户填了哪些路名，
+      // 它自己算出的路线能命中这些路（而且顺序也对），说明用户的记忆
+      // 与真实路网吻合——这是一份独立于本项目算法的第三方证据。
+      const ov = rnf.external_verify || rnf.osrm_verify;
       if (ov && ov.ok && ov.hits && ov.hits.length) {
-        html += '<div class="kv"><span>外部路网校验</span><span>OSRM 独立' +
-          '规划的路线也经过' + esc(ov.hits.slice(0, 6).join('、')) +
-          '（' + ov.hits.length + '/' + ov.n_user_names + ' 条路名）</span></div>';
+        html += '<div class="kv"><span>外部路网校验</span><span>' +
+          esc(ov.engine || '外部引擎') + ' 独立规划的路线也经过' +
+          esc(ov.hits.slice(0, 6).join('、')) + '（' + ov.hits.length + '/' +
+          ov.n_user_names + ' 条路名' +
+          (typeof ov.order_consistency === 'number'
+            ? '，顺序一致 ' + Math.round(ov.order_consistency * 100) + '%'
+            : '') + '）</span></div>';
       }
       // 语义校验（大模型，可选）：LLM 只做语义判断，
       // 它的建议必须再通过几何验证才会被采纳。
