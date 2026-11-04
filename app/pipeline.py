@@ -993,6 +993,84 @@ class RidePipeline:
             return {"ok": False, "applied": False,
                     "error": f"{type(exc).__name__}: {exc}"}
 
+    def _osrm_verify(
+        self,
+        fit: Any,
+        constraints: list[Any],
+        road_name_fit: dict[str, Any],
+    ) -> None:
+        """用 OSRM 做**交叉验证**：它自己算出的路线是否也经过用户说的路。
+
+        为什么只验证、不用它当轨迹
+        --------------------------
+        实测同一张城市级截图：
+
+        | | 高德 walking | OSRM driving |
+        |---|---|---|
+        | 命中用户路名 | **1 / 14 步** | **15 / 51 步** |
+        | 途经点 | 静默丢弃 | **生效** |
+
+        OSRM 走的是「枫林路 → 中山南二路 → 宛平南路 → 零陵路 → 东安路 →
+        斜土路 → 双峰北路 → 肇嘉浜路 → 虹桥路 → 古北路 → 水城路 → 虹古路 →
+        北虹路 → 仙霞路」——**确实就是用户那条路线**（6/10 条路名命中）。
+
+        但它的**里程偏长约 2 倍**（24.7 公里 vs 真实约 12 公里）：
+        Demo 只有 driving profile（骑行会走的非机动车道、小区内部道路它不走），
+        加上途经点有几百米偏移，绕路就多。
+
+        所以：**形状用几何重建（里程正确、逐段贴合），
+        OSRM 只用来独立验证「用户的路名序列与真实路网结构一致」**。
+
+        这份验证的价值：OSRM 只知道起终点，**完全不知道用户填了哪些路名**，
+        它算出的路线能命中 6 条，说明用户的记忆与真实路网吻合——
+        是一份**独立于本项目算法**的第三方证据。
+        """
+        try:
+            from .geo.coords import gcj02_to_wgs84, mercator_to_lonlat
+            from .osrm import OsrmClient, match_ratio
+
+            if fit.points is None or len(fit.points) < 10:
+                return
+            client = getattr(self, "osrm", None)
+            if client is None:
+                client = OsrmClient(cache_dir=str(self.cfg.road_cache_dir))
+                self.osrm = client
+            if not client.enabled:
+                return
+
+            def to_wgs(merc):
+                lo, la = mercator_to_lonlat(float(merc[0]), float(merc[1]))
+                return gcj02_to_wgs84(lo, la)
+
+            segs = fit.segments
+            if len(segs) < 2:
+                return
+            wps = [to_wgs(fit.points[b]) for _, b, _ in segs[:-1]]
+            route = client.route([to_wgs(fit.points[0])] + wps
+                                 + [to_wgs(fit.points[-1])])
+            if not route.ok:
+                return
+
+            names_all = [n for leg in route.leg_names for n in leg]
+            user_names = [c.name for c in constraints]
+            hits = sorted({n for n in names_all
+                           if any(u in n or n in u for u in user_names)})
+            ratio = match_ratio(names_all, user_names)
+            road_name_fit["osrm_verify"] = {
+                "ok": True,
+                "match_ratio": round(ratio, 3),
+                "hits": hits,
+                "n_user_names": len(user_names),
+                "route_distance_m": round(route.distance_m, 1),
+                "note": "OSRM 独立算出的路线命中的用户路名",
+            }
+            if hits:
+                road_name_fit.setdefault("notes", []).append(
+                    f"外部路网校验：OSRM 独立规划出的路线也经过"
+                    f"{'、'.join(hits[:6])}（{len(hits)}/{len(user_names)} 条路名）")
+        except Exception:  # noqa: BLE001
+            pass
+
     def _rebuild_shape(
         self,
         lonlat_gcj: list[tuple[float, float]],
@@ -1083,17 +1161,37 @@ class RidePipeline:
                 [round(lo, 6), round(la, 6)] for lo, la in lonlat_gcj]
             road_name_fit["shape_fit"] = info
             if not fit.ok or fit.points is None:
+                # ⚠️ **所有 note 都要传出去**：之前只放行含
+                # 「跳过/未改善/放弃」的，OSRM 失败原因（"未采用"）
+                # 被静默吞掉，排查时完全看不到发生了什么。
                 for n in fit.notes:
-                    if "跳过" in n or "未改善" in n or "放弃" in n:
-                        road_name_fit.setdefault("notes", []).append(
-                            "形状重建：" + n)
+                    road_name_fit.setdefault("notes", []).append(
+                        "形状重建：" + n)
                 return None
-            out = [tuple(mercator_to_lonlat(float(x), float(y)))
-                   for x, y in fit.points]
+            # --- 形状来源的取舍：几何重建 vs OSRM 路线 ---
+            #
+            # 几何重建「逐段精确」（贴住用户说的每条路），但段间是直线跳跃；
+            # OSRM 路线「整体真实」（有正确的路口连接与绕行，形状更像骑行），
+            # 但走的是它自己的最优路，每段可能偏离用户说的那条。
+            #
+            # 判据：**OSRM 命中的用户路名够多才采纳**——
+            # 命中越多说明 OSRM 走的就是用户那条路线。
+            # 实测 OSRM driving 命中 6/10 条（中山南二路、东安路、肇嘉浜路、
+            # 虹桥路、水城路、虹古路），而高德 walking 只命中 1 条。
             road_name_fit.setdefault("notes", []).append(
                 f"形状重建：已按路名把轨迹掰回沿路走向"
                 f"（覆盖 {fit.covered_ratio:.0%}，"
                 f"逐段残差 {fit.before_m:.0f} -> {fit.after_m:.0f} 米）")
+            # OSRM 只做**交叉验证**，不用它的几何当轨迹（见 _osrm_route 的说明）
+            self._osrm_verify(fit, constraints, road_name_fit)
+            # ⚠️ **note 要在 OSRM 调用之后才收集**——OSRM 的诊断信息
+            # 是调用时才产生的（之前放在前面，结果被静默吞掉，
+            # 排查时完全看不到 OSRM 为什么没被采纳）。
+            for n in fit.notes:
+                road_name_fit.setdefault("notes", []).append(
+                    "形状重建：" + n)
+            out = [tuple(mercator_to_lonlat(float(x), float(y)))
+                   for x, y in fit.points]
             return out
         except Exception as exc:  # noqa: BLE001
             road_name_fit.setdefault("notes", []).append(

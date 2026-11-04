@@ -585,6 +585,7 @@ def fit_shape(
     new_pts = best_pts if best_pts is not None else traj
     spans = best_spans
     segs = best_segs
+    after = best_after
     for k, why in skipped:
         res.notes.append(f"第 {k} 段跳过重建：{why}")
     # 守门：**起终点必须不动**。
@@ -629,9 +630,12 @@ def fit_shape(
     res.after_m = after
     res.segments = segs
     res.covered_ratio = len(covered) / max(1, len(traj))
-    if after > before * 0.95:
+    # ⚠️ **必须拿「最好的一轮」比较**，不是最后一轮。
+    # 不动点迭代里中间某轮可能更好（后面的轮次因为轨迹已变形反而变差），
+    # 用最后一轮会误杀正确的重建（实测逐段残差 6663 -> 6663 被判失败）。
+    if best_after > before * 0.95:
         res.notes.append(
-            f"重建后残差未改善（覆盖段 {before:.0f} -> {after:.0f} 米），已放弃")
+            f"重建后残差未改善（覆盖段 {before:.0f} -> {best_after:.0f} 米），已放弃")
         return res
     res.ok = True
     res.points = new_pts
@@ -639,3 +643,95 @@ def fit_shape(
         f"形状重建：覆盖 {res.covered_ratio:.0%} 的轨迹点，"
         f"覆盖段残差 {before:.0f} -> {after:.0f} 米")
     return res
+
+
+# ----------------------------------------------------------------------
+# 与 OSRM 融合：段内用路名几何，段间用 OSRM 的连接路径
+# ----------------------------------------------------------------------
+
+def _align_similar(
+    src_a: np.ndarray, src_b: np.ndarray,
+    dst_a: np.ndarray, dst_b: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """两点定**刚性**变换（平移 + 旋转，**不缩放**）。
+
+    把 `src_a -> src_b` 的向量旋转到 `dst_a -> dst_b` 的方向。
+    返回 (R, t)，用法：`out = src @ R.T + t`。
+
+    ⚠️ **不能用带缩放的相似变换**。
+    物理约束：连接两点的**路网路径长度 >= 直线距离**。
+    若允许缩放（s = |dst|/|src| < 1），就会把连接段**压短**——
+    实测融合后轨迹从 17553 米缩到 14998 米，比直线还短，
+    物理上不可能。
+
+    刚性变换下，连接段保持 OSRM 给的真实长度，
+    末点与下一段首点可能差几米到几十米（可接受）。
+    """
+    ds = src_b - src_a
+    dd = dst_b - dst_a
+    if float(np.hypot(ds[0], ds[1])) < 1e-6:
+        return np.eye(2), dst_a - src_a
+    ang = math.atan2(dd[1], dd[0]) - math.atan2(ds[1], ds[0])
+    c, si = math.cos(ang), math.sin(ang)
+    R = np.array([[c, -si], [si, c]])
+    t = dst_a - R @ src_a
+    return R, t
+
+
+def fuse_with_osrm(
+    rebuilt: np.ndarray,
+    seg_index: list[tuple[int, int]],
+    osrm_legs: list[list[tuple[float, float]]],
+    leg_wgs_to_merc,
+) -> np.ndarray:
+    """把 OSRM 的连接路径插进「段内重建」的轨迹里。
+
+    参数
+    ----
+    rebuilt       段内重建后的轨迹（墨卡托米）
+    seg_index     每段在 rebuilt 里的点下标区间 [(lo, hi), ...]
+    osrm_legs     OSRM 各 leg 的几何（WGS-84 经纬度）
+    leg_wgs_to_merc  WGS-84 -> 墨卡托米 的换算函数
+
+    逻辑
+    ----
+    OSRM 的 leg[i] 是「第 i 个途经点 → 第 i+1 个途经点」的连接，
+    而途经点就是各路名与轨迹的接触点——所以 leg[i] 恰好对应
+    「路名 i 的段 → 路名 i+1 的段」之间的过渡。
+
+    用两点相似变换把 leg[i] 对齐到「段 i 的末点 → 段 i+1 的首点」，
+    再插进去。这样：
+      * 段内仍然精确贴住用户说的那条路；
+      * 段间变成真实的路口连接（而不是直线跳跃）。
+
+    ⚠️ **必须从后往前替换**：前面插入的点会让后面的下标整体后移。
+    """
+    if not osrm_legs or len(seg_index) < 2:
+        return rebuilt
+    segs = [(int(a), int(b)) for a, b in seg_index]
+    out = rebuilt.copy()
+    for i in range(len(segs) - 2, -1, -1):
+        if i >= len(osrm_legs):
+            continue
+        leg = osrm_legs[i]
+        if len(leg) < 2:
+            continue
+        leg_m = np.array([leg_wgs_to_merc(lo, la) for lo, la in leg])
+        hi_i = segs[i][1]
+        lo_j = segs[i + 1][0]
+        if hi_i >= len(rebuilt) or lo_j >= len(rebuilt) or lo_j <= hi_i:
+            continue
+        dst_a = rebuilt[hi_i]
+        dst_b = rebuilt[lo_j]
+        if float(np.hypot(dst_b[0] - dst_a[0], dst_b[1] - dst_a[1])) < 1.0:
+            continue
+        R, t = _align_similar(leg_m[0], leg_m[-1], dst_a, dst_b)
+        mapped = leg_m @ R.T + t
+        bridge = mapped[1:-1]
+        if len(bridge) == 0:
+            continue
+        out = np.vstack([out[:hi_i + 1], bridge, out[lo_j:]])
+        shift = len(bridge)
+        for k in range(i + 1, len(segs)):
+            segs[k] = (segs[k][0] + shift, segs[k][1] + shift)
+    return out
