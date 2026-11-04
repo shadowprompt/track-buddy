@@ -88,6 +88,15 @@ class AppConfig:
     feedback_path: Path = DATA_DIR / "feedback.json"
     # 是否启用在线地理编码（无 key 时自动降级为纯本地词典模式）
     allow_online: bool = True
+    # --- 可选的大模型（OpenAI 兼容协议）---
+    # 不配置就完全跳过 LLM 相关逻辑，现有行为一字不变。
+    # 职责边界见 `app/llm.py`：大模型只做**语义层**
+    # （路名序列合理性、缩放级别复核），坐标层仍由 OSM/地理编码负责。
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = "gpt-4o-mini"
+    llm_timeout: float = 25.0
+    llm_enabled: bool = True
     # 单次请求超时（秒）
     http_timeout: float = 12.0
     # 路网数据本地缓存目录（避免每次识别都重新拉取）

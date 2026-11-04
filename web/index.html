@@ -566,6 +566,17 @@
         html += '<div class="kv"><span>形状重建</span><span>' +
           esc(sf.notes[sf.notes.length - 1]) + '</span></div>';
       }
+      // 语义校验（大模型，可选）：LLM 只做语义判断，
+      // 它的建议必须再通过几何验证才会被采纳。
+      const lr = rnf.llm_review;
+      if (lr && lr.ok) {
+        html += '<div class="kv"><span>语义校验</span><span>' +
+          (lr.applied
+            ? '大模型建议的路名顺序已通过几何验证并采纳'
+            : '大模型复核后保留了原顺序' +
+              ((lr.notes && lr.notes.length) ? '：' + esc(lr.notes[0]) : '')) +
+          '</span></div>';
+      }
       // 跨江警告：轨迹不该横穿黄浦江
       const wc = rnf.water_check || {};
       if (wc.crossed) {

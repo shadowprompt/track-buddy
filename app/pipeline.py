@@ -123,6 +123,15 @@ class RidePipeline:
         self.cfg = cfg
         self.lexicon = Lexicon(cfg.lexicon_path)
         self.geocoder = Geocoder(cfg, self.lexicon)
+        # 大模型是**可选增强**：没配 LLM_BASE_URL/LLM_API_KEY 就完全跳过，
+        # 现有行为一字不变。
+        self.llm = None
+        try:
+            from .llm import LLMClient
+            if getattr(cfg, "llm_enabled", True):
+                self.llm = LLMClient(cfg)
+        except Exception:  # noqa: BLE001
+            self.llm = None
 
     def run(
         self,
@@ -785,6 +794,33 @@ class RidePipeline:
 
         notes: list[str] = []
         anchor_fit: dict[str, Any] = {}
+        llm_review: dict[str, Any] = {}
+
+        # --- 可选：大模型语义层校验路名序列 ---
+        #
+        # 大模型只做**语义层**判断（顺序对不对、哪条路可能记错），
+        # 坐标层仍由 OSM 几何与 DP 对齐负责——大模型没有 OSM 级别的几何。
+        #
+        # ⚠️ **LLM 的建议必须再通过几何验证才被采纳**：
+        # 新顺序的「路名到轨迹距离」代价必须更低，否则保留原顺序。
+        # 这样即使模型判断错，几何证据会把它挡下来。
+        if self.llm is not None and getattr(self.llm, "available", False) \
+                and len(usable) >= 3:
+            llm_review = self._llm_review_road_names(
+                names, usable, reg, track, city)
+            if llm_review.get("applied"):
+                names = [str(x) for x in llm_review.get("names", names)]
+                by_name = {c.name: c for c in usable}
+                usable = [by_name[n] for n in names if n in by_name]
+                info = [
+                    {"name": c.name, "ok": c.ok, "n_segments": c.n_segments,
+                     "total_len_km": round(c.total_len_m / 1000.0, 2),
+                     "uniqueness": round(c.uniqueness, 3), "notes": c.notes}
+                    for c in usable
+                ]
+                notes.extend(llm_review.get("notes", []))
+                for w in llm_review.get("warnings", []):
+                    notes.append(f"路名可能有误：{w}")
 
         # --- 第一级：起终点锚定（修尺度） ---
         if track.start_marker and track.end_marker and len(usable) >= 3:
@@ -910,8 +946,52 @@ class RidePipeline:
             "n_constraints": len(usable),
             "anchor_fit": anchor_fit,
             "water_check": water_check,
+            "llm_review": llm_review,
             "notes": notes,
         }, usable
+
+    def _llm_review_road_names(
+        self,
+        names: list[str],
+        usable: list[Any],
+        reg: Registration,
+        track: TrackResult,
+        city: str = "",
+    ) -> dict[str, Any]:
+        """让大模型校验路名序列（可选增强，失败不影响主流程）。
+
+        几何验证用的是「各路名到轨迹的最近距离之和」——
+        便宜、够用：它能区分「顺序反了」这种**明显**的错误，
+        但不参与精细优化（精细优化由 DP 对齐负责）。
+        """
+        try:
+            import numpy as np
+
+            from .llm_geo import check_road_sequence
+            from .roadname_constraint import _dist_to_segments
+
+            traj = np.array([
+                reg.pixel_to_mercator(float(px), float(py))
+                for px, py in track.polyline
+            ])
+            if len(traj) > 200:                      # 采样，控制计算量
+                traj = traj[:: max(1, len(traj) // 200)]
+            by_name = {c.name: c for c in usable}
+
+            def cost_fn(order: list[str]) -> float:
+                tot = 0.0
+                for nm in order:
+                    c = by_name.get(nm)
+                    if c is None:
+                        return float("inf")
+                    d = _dist_to_segments(traj, c.segments)
+                    tot += float(np.median(d))
+                return tot
+
+            return check_road_sequence(self.llm, names, city, cost_fn)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "applied": False,
+                    "error": f"{type(exc).__name__}: {exc}"}
 
     def _rebuild_shape(
         self,
