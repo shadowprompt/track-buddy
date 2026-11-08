@@ -34,8 +34,8 @@
   {
    "lon": 121.378031,
    "lat": 31.202047,
-   "weight": 7.5,
-   "count": 15,
+   "weight": 32.5,
+   "count": 65,
    "city": "上海",
    "source": "amap",
    "address": "虹桥路1921号"
@@ -127,8 +127,8 @@
   {
    "lon": 121.395766,
    "lat": 31.227794,
-   "weight": 8.5,
-   "count": 17,
+   "weight": 24.0,
+   "count": 48,
    "city": "上海",
    "source": "amap",
    "address": "普陀区"
@@ -160,8 +160,8 @@
   {
    "lon": 121.373745,
    "lat": 31.177126,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 19.0,
+   "count": 38,
    "city": "上海",
    "source": "amap",
    "address": "先锋街66号(龙柏新村地铁站3号口步行330米)"
@@ -181,8 +181,8 @@
   {
    "lon": 121.369015,
    "lat": 31.170352,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 19.0,
+   "count": 38,
    "city": "上海",
    "source": "amap",
    "address": "吴中路1599号(紫藤路地铁站1号口步行210米)"
@@ -250,8 +250,8 @@
   {
    "lon": 121.384007,
    "lat": 31.245972,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 21.5,
+   "count": 43,
    "city": "上海",
    "source": "amap",
    "address": "真光路1258号"
@@ -295,8 +295,8 @@
   {
    "lon": 121.402379,
    "lat": 31.262802,
-   "weight": 48.0,
-   "count": 96,
+   "weight": 50.0,
+   "count": 100,
    "city": "上海",
    "source": "amap",
    "address": "桃浦路22号"
@@ -538,6 +538,15 @@
    "city": "上海",
    "source": "osm",
    "address": "osm/way/1433299150"
+  },
+  {
+   "lon": 121.386201,
+   "lat": 31.212014,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "威宁路276弄1号-20号(威宁路地铁站4号口步行480米)"
   }
  ],
  "珍宝公寓": [
@@ -549,6 +558,15 @@
    "city": "上海",
    "source": "osm",
    "address": "osm/way/1433299147"
+  },
+  {
+   "lon": 121.388637,
+   "lat": 31.211722,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "新渔东路289弄1-10号(威宁路地铁站2号口步行460米)"
   }
  ],
  "新安小区": [
@@ -586,8 +604,8 @@
   {
    "lon": 121.401407,
    "lat": 31.262976,
-   "weight": 36.5,
-   "count": 73,
+   "weight": 38.5,
+   "count": 77,
    "city": "上海",
    "source": "amap",
    "address": "(在建)20号线一期西段;11号线;15号线"
@@ -597,8 +615,8 @@
   {
    "lon": 121.400315,
    "lat": 31.262031,
-   "weight": 36.5,
-   "count": 73,
+   "weight": 38.5,
+   "count": 77,
    "city": "上海",
    "source": "amap",
    "address": "桃浦路与兰溪路交叉口东北220米"
@@ -619,8 +637,8 @@
   {
    "lon": 121.459971,
    "lat": 31.229853,
-   "weight": 43.0,
-   "count": 86,
+   "weight": 65.0,
+   "count": 130,
    "city": "上海",
    "source": "amap",
    "address": "12号线;13号线;2号线"
@@ -630,8 +648,8 @@
   {
    "lon": 121.458744,
    "lat": 31.21515,
-   "weight": 41.5,
-   "count": 83,
+   "weight": 51.5,
+   "count": 103,
    "city": "上海",
    "source": "amap",
    "address": "10号线;12号线;1号线"
@@ -641,8 +659,8 @@
   {
    "lon": 121.421581,
    "lat": 31.352197,
-   "weight": 41.5,
-   "count": 83,
+   "weight": 47.5,
+   "count": 95,
    "city": "上海",
    "source": "amap",
    "address": "宝山区"
@@ -650,8 +668,8 @@
   {
    "lon": 121.643924,
    "lat": 31.261087,
-   "weight": 37.5,
-   "count": 75,
+   "weight": 43.5,
+   "count": 87,
    "city": "上海",
    "source": "amap",
    "address": "浦东新区"
@@ -712,8 +730,8 @@
   {
    "lon": 121.455768,
    "lat": 31.24965,
-   "weight": 37.0,
-   "count": 74,
+   "weight": 39.0,
+   "count": 78,
    "city": "上海",
    "source": "amap",
    "address": "秣陵路303号"
@@ -778,8 +796,8 @@
   {
    "lon": 121.436307,
    "lat": 31.188334,
-   "weight": 55.0,
-   "count": 110,
+   "weight": 59.5,
+   "count": 119,
    "city": "上海",
    "source": "amap",
    "address": "徐汇区"
@@ -811,8 +829,8 @@
   {
    "lon": 121.373415,
    "lat": 31.282353,
-   "weight": 38.5,
-   "count": 77,
+   "weight": 45.5,
+   "count": 91,
    "city": "上海",
    "source": "amap",
    "address": "常和路288-3号楼附近"
@@ -822,8 +840,8 @@
   {
    "lon": 121.371144,
    "lat": 31.274996,
-   "weight": 38.5,
-   "count": 77,
+   "weight": 45.5,
+   "count": 91,
    "city": "上海",
    "source": "amap",
    "address": "桃浦中央绿地"
@@ -833,8 +851,8 @@
   {
    "lon": 121.371728,
    "lat": 31.277275,
-   "weight": 38.5,
-   "count": 77,
+   "weight": 45.5,
+   "count": 91,
    "city": "上海",
    "source": "amap",
    "address": "桃浦中央绿地A区内(北侧)"
@@ -844,8 +862,8 @@
   {
    "lon": 121.413201,
    "lat": 31.232147,
-   "weight": 41.5,
-   "count": 83,
+   "weight": 45.0,
+   "count": 90,
    "city": "上海",
    "source": "amap",
    "address": "13号线;3号线;4号线"
@@ -855,8 +873,8 @@
   {
    "lon": 121.427176,
    "lat": 31.186984,
-   "weight": 41.5,
-   "count": 83,
+   "weight": 45.0,
+   "count": 90,
    "city": "上海",
    "source": "amap",
    "address": "凯旋路与宜山路交叉口西北160米(宜山路地铁站6号口旁)"
@@ -866,8 +884,8 @@
   {
    "lon": 121.47458,
    "lat": 31.201544,
-   "weight": 41.5,
-   "count": 83,
+   "weight": 45.0,
+   "count": 90,
    "city": "上海",
    "source": "amap",
    "address": "鲁班路388弄之1-17号(鲁班路地铁站1号口步行210米)"
@@ -899,8 +917,8 @@
   {
    "lon": 121.808225,
    "lat": 31.144375,
-   "weight": 34.0,
-   "count": 68,
+   "weight": 36.0,
+   "count": 72,
    "city": "上海",
    "source": "amap",
    "address": "申嘉湖高速南向北方向出地道后100米左侧"
@@ -910,8 +928,8 @@
   {
    "lon": 121.297006,
    "lat": 31.267488,
-   "weight": 54.5,
-   "count": 109,
+   "weight": 57.5,
+   "count": 115,
    "city": "上海",
    "source": "amap",
    "address": "14号线"
@@ -921,8 +939,8 @@
   {
    "lon": 121.472339,
    "lat": 31.223653,
-   "weight": 91.0,
-   "count": 182,
+   "weight": 94.0,
+   "count": 188,
    "city": "上海",
    "source": "amap",
    "address": "14号线;1号线"
@@ -932,8 +950,8 @@
   {
    "lon": 121.487426,
    "lat": 31.228005,
-   "weight": 54.0,
-   "count": 108,
+   "weight": 57.0,
+   "count": 114,
    "city": "上海",
    "source": "amap",
    "address": "10号线;14号线"
@@ -976,8 +994,8 @@
   {
    "lon": 121.39547,
    "lat": 31.249618,
-   "weight": 37.0,
-   "count": 74,
+   "weight": 39.0,
+   "count": 78,
    "city": "上海",
    "source": "amap",
    "address": "普陀区"
@@ -987,8 +1005,8 @@
   {
    "lon": 121.395585,
    "lat": 31.249678,
-   "weight": 37.0,
-   "count": 74,
+   "weight": 39.0,
+   "count": 78,
    "city": "上海",
    "source": "amap",
    "address": "大渡河路1668号(铜川路地铁站4号口步行100米)"
@@ -998,8 +1016,8 @@
   {
    "lon": 121.404157,
    "lat": 31.241535,
-   "weight": 35.5,
-   "count": 71,
+   "weight": 37.5,
+   "count": 75,
    "city": "上海",
    "source": "amap",
    "address": "兰溪路164号"
@@ -1031,8 +1049,8 @@
   {
    "lon": 121.424751,
    "lat": 31.220537,
-   "weight": 38.0,
-   "count": 76,
+   "weight": 50.0,
+   "count": 100,
    "city": "上海",
    "source": "amap",
    "address": "长宁区"
@@ -1207,8 +1225,8 @@
   {
    "lon": 121.37825,
    "lat": 31.202131,
-   "weight": 7.5,
-   "count": 15,
+   "weight": 32.5,
+   "count": 65,
    "city": "上海",
    "source": "amap",
    "address": "虹桥路1921号西郊宾馆"
@@ -1218,8 +1236,8 @@
   {
    "lon": 121.378028,
    "lat": 31.20223,
-   "weight": 7.5,
-   "count": 15,
+   "weight": 32.5,
+   "count": 65,
    "city": "上海",
    "source": "amap",
    "address": "虹桥路1921号西郊宾馆"
@@ -1229,8 +1247,8 @@
   {
    "lon": 121.385798,
    "lat": 31.238789,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 21.5,
+   "count": 43,
    "city": "上海",
    "source": "amap",
    "address": "真北路1108号/1208号"
@@ -1240,8 +1258,8 @@
   {
    "lon": 121.420906,
    "lat": 31.289261,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 21.5,
+   "count": 43,
    "city": "上海",
    "source": "amap",
    "address": "汶水路1555号"
@@ -1251,8 +1269,8 @@
   {
    "lon": 121.595665,
    "lat": 31.248914,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 21.5,
+   "count": 43,
    "city": "上海",
    "source": "amap",
    "address": "金藏路158号(台儿庄路地铁站3号口步行440米)"
@@ -1262,8 +1280,8 @@
   {
    "lon": 121.34421,
    "lat": 31.24405,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 21.5,
+   "count": 43,
    "city": "上海",
    "source": "amap",
    "address": "上海市嘉定区江桥镇金沙江路幸福村1队500号"
@@ -1273,8 +1291,8 @@
   {
    "lon": 121.344454,
    "lat": 31.243214,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 21.5,
+   "count": 43,
    "city": "上海",
    "source": "amap",
    "address": "江桥镇金沙江路幸福村1队500号上海万佛讲寺"
@@ -1284,8 +1302,8 @@
   {
    "lon": 121.344352,
    "lat": 31.242751,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "上海万佛讲寺停车场"
@@ -1295,8 +1313,8 @@
   {
    "lon": 121.356695,
    "lat": 31.221909,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 6.5,
+   "count": 13,
    "city": "上海",
    "source": "amap",
    "address": "金钟路788号"
@@ -1306,8 +1324,8 @@
   {
    "lon": 121.357645,
    "lat": 31.221973,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 6.5,
+   "count": 13,
    "city": "上海",
    "source": "amap",
    "address": "金钟路788号上海荟聚Livat"
@@ -1317,8 +1335,8 @@
   {
    "lon": 121.357894,
    "lat": 31.222771,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 6.5,
+   "count": 13,
    "city": "上海",
    "source": "amap",
    "address": "上海荟聚停车场(淞虹路地铁站5号口步行460米)"
@@ -1328,8 +1346,8 @@
   {
    "lon": 121.418224,
    "lat": 31.238164,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "曹杨路536号(曹杨路地铁站5号口步行120米)"
@@ -1339,8 +1357,8 @@
   {
    "lon": 121.42863,
    "lat": 31.235756,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "长寿路与安远路交叉口西240米"
@@ -1350,8 +1368,8 @@
   {
    "lon": 121.279758,
    "lat": 31.33073,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "马陆镇宝安公路3386号"
@@ -1361,8 +1379,8 @@
   {
    "lon": 121.427231,
    "lat": 31.279852,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "沪太路1111号"
@@ -1372,8 +1390,8 @@
   {
    "lon": 121.359678,
    "lat": 31.217422,
-   "weight": 3.0,
-   "count": 6,
+   "weight": 9.0,
+   "count": 18,
    "city": "上海",
    "source": "amap",
    "address": "淞虹路377号(淞虹路地铁站4号口步行70米)"
@@ -1394,8 +1412,8 @@
   {
    "lon": 121.347087,
    "lat": 31.243709,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.5,
+   "count": 7,
    "city": "上海",
    "source": "amap",
    "address": "嘉定区"
@@ -1403,8 +1421,17 @@
   {
    "lon": 121.350208,
    "lat": 31.276894,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.5,
+   "count": 7,
+   "city": "上海",
+   "source": "amap",
+   "address": "普陀区"
+  },
+  {
+   "lon": 121.343959,
+   "lat": 31.282722,
+   "weight": 2.0,
+   "count": 4,
    "city": "上海",
    "source": "amap",
    "address": "普陀区"
@@ -1436,8 +1463,8 @@
   {
    "lon": 121.390008,
    "lat": 31.271864,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "真南路500号"
@@ -1458,8 +1485,8 @@
   {
    "lon": 121.387422,
    "lat": 31.273262,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "真南路500号同济大学沪西校区"
@@ -1469,8 +1496,8 @@
   {
    "lon": 121.427982,
    "lat": 31.25049,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "中山北路2035弄"
@@ -1480,8 +1507,8 @@
   {
    "lon": 121.440407,
    "lat": 31.208569,
-   "weight": 7.5,
-   "count": 15,
+   "weight": 11.0,
+   "count": 22,
    "city": "上海",
    "source": "amap",
    "address": "上海市湖南路街道武康路与湖南路交叉口"
@@ -1502,8 +1529,8 @@
   {
    "lon": 121.50225,
    "lat": 31.282587,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "四平路1239号"
@@ -1513,8 +1540,8 @@
   {
    "lon": 121.506269,
    "lat": 31.281904,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "10号线"
@@ -1524,8 +1551,8 @@
   {
    "lon": 121.21416,
    "lat": 31.286012,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "曹安公路4800号"
@@ -1535,8 +1562,8 @@
   {
    "lon": 121.319308,
    "lat": 31.240986,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 21.5,
+   "count": 43,
    "city": "上海",
    "source": "amap",
    "address": "(在建)13号线西延伸;(在建)市域嘉闵线;13号线"
@@ -1546,8 +1573,8 @@
   {
    "lon": 121.475182,
    "lat": 31.216367,
-   "weight": 16.5,
-   "count": 33,
+   "weight": 31.5,
+   "count": 63,
    "city": "上海",
    "source": "amap",
    "address": "10号线;13号线"
@@ -1557,8 +1584,8 @@
   {
    "lon": 121.464363,
    "lat": 31.220056,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 21.5,
+   "count": 43,
    "city": "上海",
    "source": "amap",
    "address": "13号线"
@@ -1568,8 +1595,8 @@
   {
    "lon": 121.332871,
    "lat": 31.251757,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "嘉定区"
@@ -1579,8 +1606,8 @@
   {
    "lon": 121.414591,
    "lat": 31.063857,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "闵行区"
@@ -1590,8 +1617,8 @@
   {
    "lon": 121.667024,
    "lat": 31.305615,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "浦东新区"
@@ -1601,8 +1628,8 @@
   {
    "lon": 121.37014,
    "lat": 31.170854,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 19.0,
+   "count": 38,
    "city": "上海",
    "source": "amap",
    "address": "吴中路1599号上海万象城"
@@ -1612,8 +1639,8 @@
   {
    "lon": 121.365737,
    "lat": 31.169424,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 19.0,
+   "count": 38,
    "city": "上海",
    "source": "amap",
    "address": "吴中路1799号万象城(紫藤路地铁站2号口步行200米)"
@@ -1623,8 +1650,8 @@
   {
    "lon": 121.383581,
    "lat": 31.245211,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 17.0,
+   "count": 34,
    "city": "上海",
    "source": "amap",
    "address": "真光路1288号上海百联国际广场"
@@ -1634,8 +1661,8 @@
   {
    "lon": 121.384086,
    "lat": 31.246041,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 17.0,
+   "count": 34,
    "city": "上海",
    "source": "amap",
    "address": "真光路1288号"
@@ -1678,8 +1705,8 @@
   {
    "lon": 121.344175,
    "lat": 31.244075,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 17.0,
+   "count": 34,
    "city": "上海",
    "source": "amap",
    "address": "江桥镇金沙江路幸福村1队500号上海万佛讲寺"
@@ -1700,8 +1727,8 @@
   {
    "lon": 121.474483,
    "lat": 31.219898,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 27.5,
+   "count": 55,
    "city": "上海",
    "source": "amap",
    "address": "兴业路马当路交界处"
@@ -1711,8 +1738,8 @@
   {
    "lon": 121.471896,
    "lat": 31.232822,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 27.5,
+   "count": 55,
    "city": "上海",
    "source": "amap",
    "address": "黄浦区人民广场11号地铁口华盛街地下一层A135号鹿先生花店"
@@ -1722,8 +1749,8 @@
   {
    "lon": 121.503217,
    "lat": 31.236471,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 27.5,
+   "count": 55,
    "city": "上海",
    "source": "amap",
    "address": "世纪大道8号上海国金中心商场LG1层LG1-13室"
@@ -1733,8 +1760,8 @@
   {
    "lon": 121.400804,
    "lat": 31.224607,
-   "weight": 8.5,
-   "count": 17,
+   "weight": 24.0,
+   "count": 48,
    "city": "上海",
    "source": "amap",
    "address": "大渡河路189号"
@@ -1744,8 +1771,8 @@
   {
    "lon": 121.39632,
    "lat": 31.225254,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 17.0,
+   "count": 34,
    "city": "上海",
    "source": "amap",
    "address": "15号线"
@@ -1755,8 +1782,8 @@
   {
    "lon": 121.373753,
    "lat": 31.177393,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 19.0,
+   "count": 38,
    "city": "上海",
    "source": "amap",
    "address": "先锋街66号阿拉城(龙柏新村地铁站2号口步行380米)"
@@ -1766,8 +1793,8 @@
   {
    "lon": 121.374082,
    "lat": 31.177286,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 19.0,
+   "count": 38,
    "city": "上海",
    "source": "amap",
    "address": "虹桥镇先锋街66号(龙柏新村地铁站2号口步行430米)"
@@ -1777,8 +1804,8 @@
   {
    "lon": 120.34053,
    "lat": 31.47381,
-   "weight": 4.5,
-   "count": 9,
+   "weight": 16.5,
+   "count": 33,
    "city": "上海",
    "source": "amap",
    "address": "38路/K38路;微巴62号线(扬帆太湖专线)"
@@ -1788,8 +1815,8 @@
   {
    "lon": 120.325343,
    "lat": 31.478242,
-   "weight": 4.5,
-   "count": 9,
+   "weight": 15.5,
+   "count": 31,
    "city": "上海",
    "source": "amap",
    "address": "135路;7路;微巴62号线(扬帆太湖专线);望亭专线"
@@ -1799,8 +1826,8 @@
   {
    "lon": 120.33991,
    "lat": 31.480609,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 1.5,
+   "count": 3,
    "city": "上海",
    "source": "amap",
    "address": "113路;23路;23路区;59路;760路;7路;微巴62号线(扬帆太湖专线);望亭专线"
@@ -1810,8 +1837,8 @@
   {
    "lon": 121.509965,
    "lat": 31.134439,
-   "weight": 4.5,
-   "count": 9,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "浦东新区"
@@ -1821,8 +1848,8 @@
   {
    "lon": 121.416405,
    "lat": 31.16791,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 18.0,
+   "count": 36,
    "city": "上海",
    "source": "amap",
    "address": "徐汇区"
@@ -1832,8 +1859,8 @@
   {
    "lon": 121.399975,
    "lat": 31.161958,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 19.0,
+   "count": 38,
    "city": "上海",
    "source": "amap",
    "address": "漕宝路1011号(虹梅路地铁站1号口步行100米)"
@@ -1843,8 +1870,8 @@
   {
    "lon": 121.43864,
    "lat": 31.124861,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 19.0,
+   "count": 38,
    "city": "上海",
    "source": "amap",
    "address": "朱梅路地铁站1号口"
@@ -1854,8 +1881,8 @@
   {
    "lon": 121.373009,
    "lat": 31.344594,
-   "weight": 21.5,
-   "count": 43,
+   "weight": 35.5,
+   "count": 71,
    "city": "上海",
    "source": "amap",
    "address": "15号线;7号线"
@@ -1865,8 +1892,8 @@
   {
    "lon": 121.398372,
    "lat": 31.198863,
-   "weight": 20.0,
-   "count": 40,
+   "weight": 32.0,
+   "count": 64,
    "city": "上海",
    "source": "amap",
    "address": "15号线"
@@ -1876,8 +1903,8 @@
   {
    "lon": 121.451221,
    "lat": 31.02319,
-   "weight": 21.0,
-   "count": 42,
+   "weight": 33.0,
+   "count": 66,
    "city": "上海",
    "source": "amap",
    "address": "(在建)15号线南延;(在建)23号线;15号线"
@@ -1887,8 +1914,8 @@
   {
    "lon": 121.286143,
    "lat": 31.181388,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 27.5,
+   "count": 55,
    "city": "上海",
    "source": "amap",
    "address": "2号线"
@@ -1898,8 +1925,8 @@
   {
    "lon": 121.502129,
    "lat": 31.238259,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 28.5,
+   "count": 57,
    "city": "上海",
    "source": "amap",
    "address": "14号线;2号线"
@@ -1973,8 +2000,8 @@
   {
    "lon": 121.344822,
    "lat": 31.171247,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 19.0,
+   "count": 38,
    "city": "上海",
    "source": "amap",
    "address": "闵行区"
@@ -1982,8 +2009,8 @@
   {
    "lon": 121.120935,
    "lat": 31.133068,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 19.0,
+   "count": 38,
    "city": "上海",
    "source": "amap",
    "address": "青浦区"
@@ -1993,8 +2020,8 @@
   {
    "lon": 121.327131,
    "lat": 31.164411,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 19.0,
+   "count": 38,
    "city": "上海",
    "source": "amap",
    "address": "闵行区"
@@ -2103,8 +2130,8 @@
   {
    "lon": 121.194582,
    "lat": 31.191609,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "意邦建材6588号意邦一路A4栋D1-05"
@@ -2482,8 +2509,8 @@
   {
    "lon": 120.339687,
    "lat": 31.472708,
-   "weight": 4.0,
-   "count": 8,
+   "weight": 16.0,
+   "count": 32,
    "city": "上海",
    "source": "amap",
    "address": "38路/K38路;微巴62号线(扬帆太湖专线)"
@@ -3492,8 +3519,8 @@
   {
    "lon": 121.473667,
    "lat": 31.230525,
-   "weight": 20.5,
-   "count": 41,
+   "weight": 22.5,
+   "count": 45,
    "city": "上海",
    "source": "amap",
    "address": "黄浦区"
@@ -3789,8 +3816,8 @@
   {
    "lon": 121.403757,
    "lat": 31.218216,
-   "weight": 1.0,
-   "count": 2,
+   "weight": 13.0,
+   "count": 26,
    "city": "上海",
    "source": "amap",
    "address": "长宁区"
@@ -3800,8 +3827,8 @@
   {
    "lon": 121.424318,
    "lat": 31.224932,
-   "weight": 1.0,
-   "count": 2,
+   "weight": 13.0,
+   "count": 26,
    "city": "上海",
    "source": "amap",
    "address": "长宁区"
@@ -3877,8 +3904,8 @@
   {
    "lon": 121.398535,
    "lat": 31.207437,
-   "weight": 13.0,
-   "count": 26,
+   "weight": 20.5,
+   "count": 41,
    "city": "上海",
    "source": "amap",
    "address": "古北路620号"
@@ -3888,8 +3915,8 @@
   {
    "lon": 121.398903,
    "lat": 31.19481,
-   "weight": 8.0,
-   "count": 16,
+   "weight": 14.0,
+   "count": 28,
    "city": "上海",
    "source": "amap",
    "address": "虹桥街道古北路1303号(红宝石路地铁站2号口步行390米)"
@@ -3899,8 +3926,8 @@
   {
    "lon": 121.39379,
    "lat": 31.192663,
-   "weight": 8.0,
-   "count": 16,
+   "weight": 14.0,
+   "count": 28,
    "city": "上海",
    "source": "amap",
    "address": "荣华西道18号"
@@ -3910,8 +3937,8 @@
   {
    "lon": 121.400919,
    "lat": 31.201913,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 11.5,
+   "count": 23,
    "city": "上海",
    "source": "amap",
    "address": "延安西路2299号(红宝石路地铁站4号口步行310米)"
@@ -3921,8 +3948,8 @@
   {
    "lon": 121.399869,
    "lat": 31.202029,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 11.5,
+   "count": 23,
    "city": "上海",
    "source": "amap",
    "address": "延安西路2299号上海世贸商城F1"
@@ -3932,8 +3959,8 @@
   {
    "lon": 121.402326,
    "lat": 31.201843,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 11.5,
+   "count": 23,
    "city": "上海",
    "source": "amap",
    "address": "延安西路辅路与娄山关路交叉口西120米"
@@ -3943,8 +3970,8 @@
   {
    "lon": 121.388768,
    "lat": 31.182985,
-   "weight": 3.0,
-   "count": 6,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "虹梅路3081号"
@@ -3954,8 +3981,8 @@
   {
    "lon": 121.389112,
    "lat": 31.183506,
-   "weight": 3.0,
-   "count": 6,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "虹梅路3081号虹桥基金小镇"
@@ -3965,8 +3992,8 @@
   {
    "lon": 121.387675,
    "lat": 31.183325,
-   "weight": 3.0,
-   "count": 6,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "吴美路与莲花路交叉口北260米"
@@ -3976,8 +4003,8 @@
   {
    "lon": 121.402604,
    "lat": 31.205788,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "仙霞路158号"
@@ -3987,8 +4014,8 @@
   {
    "lon": 121.402547,
    "lat": 31.202892,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "娄山关路55号(伊犁路地铁站4号口步行460米)"
@@ -3998,8 +4025,8 @@
   {
    "lon": 121.396914,
    "lat": 31.213594,
-   "weight": 6.0,
-   "count": 12,
+   "weight": 9.5,
+   "count": 19,
    "city": "上海",
    "source": "amap",
    "address": "天山路600弄1-4号(娄山关路地铁站5号口步行400米)"
@@ -4042,8 +4069,8 @@
   {
    "lon": 121.42175,
    "lat": 31.083214,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "15号线"
@@ -4053,8 +4080,8 @@
   {
    "lon": 121.404058,
    "lat": 31.211158,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "15号线;2号线"
@@ -4064,8 +4091,8 @@
   {
    "lon": 121.217351,
    "lat": 31.046372,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 6.5,
+   "count": 13,
    "city": "上海",
    "source": "amap",
    "address": "文翔路1900号"
@@ -4075,8 +4102,8 @@
   {
    "lon": 121.399482,
    "lat": 31.207208,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 6.5,
+   "count": 13,
    "city": "上海",
    "source": "amap",
    "address": "古北路620号上海对外经贸大学-体育中心"
@@ -4119,8 +4146,8 @@
   {
    "lon": 121.484775,
    "lat": 31.238325,
-   "weight": 16.0,
-   "count": 32,
+   "weight": 26.0,
+   "count": 52,
    "city": "上海",
    "source": "amap",
    "address": "南京东路228号新世界新丸中心 NEW ONE L1层"
@@ -4130,8 +4157,8 @@
   {
    "lon": 121.484628,
    "lat": 31.238101,
-   "weight": 4.0,
-   "count": 8,
+   "weight": 14.0,
+   "count": 28,
    "city": "上海",
    "source": "amap",
    "address": "10号线;2号线"
@@ -4141,8 +4168,8 @@
   {
    "lon": 121.40311,
    "lat": 31.197338,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "虹桥路1438号"
@@ -4152,8 +4179,8 @@
   {
    "lon": 121.402863,
    "lat": 31.197174,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "虹桥路1438号上海高岛屋百货4F层"
@@ -4174,8 +4201,8 @@
   {
    "lon": 121.384082,
    "lat": 31.191282,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 11.5,
+   "count": 23,
    "city": "上海",
    "source": "amap",
    "address": "虹梅路3721号"
@@ -4185,8 +4212,8 @@
   {
    "lon": 121.597,
    "lat": 31.250495,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 11.5,
+   "count": 23,
    "city": "上海",
    "source": "amap",
    "address": "新金桥路金藏路51号(台儿庄路地铁站3号口步行330米)"
@@ -4196,8 +4223,8 @@
   {
    "lon": 121.383389,
    "lat": 31.19127,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 11.5,
+   "count": 23,
    "city": "上海",
    "source": "amap",
    "address": "虹梅路3721号森晟世洋国际广场"
@@ -4372,8 +4399,8 @@
   {
    "lon": 121.444363,
    "lat": 31.20796,
-   "weight": 12.0,
-   "count": 24,
+   "weight": 13.0,
+   "count": 26,
    "city": "上海",
    "source": "amap",
    "address": "10号线"
@@ -4383,8 +4410,8 @@
   {
    "lon": 121.444753,
    "lat": 31.207334,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 3.5,
+   "count": 7,
    "city": "上海",
    "source": "amap",
    "address": "淮海中路1555号"
@@ -4394,8 +4421,8 @@
   {
    "lon": 121.547154,
    "lat": 31.219971,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 3.5,
+   "count": 7,
    "city": "上海",
    "source": "amap",
    "address": "合欢路300号(上海科技馆地铁站3号口步行200米)"
@@ -4405,8 +4432,8 @@
   {
    "lon": 121.454965,
    "lat": 31.197318,
-   "weight": 8.0,
-   "count": 16,
+   "weight": 13.5,
+   "count": 27,
    "city": "上海",
    "source": "amap",
    "address": "枫林路180号"
@@ -4416,8 +4443,8 @@
   {
    "lon": 121.394971,
    "lat": 31.139147,
-   "weight": 8.0,
-   "count": 16,
+   "weight": 13.5,
+   "count": 27,
    "city": "上海",
    "source": "amap",
    "address": "万源路399号"
@@ -4427,8 +4454,8 @@
   {
    "lon": 121.442932,
    "lat": 31.216111,
-   "weight": 8.0,
-   "count": 16,
+   "weight": 13.5,
+   "count": 27,
    "city": "上海",
    "source": "amap",
    "address": "华山路493号"
@@ -4438,8 +4465,8 @@
   {
    "lon": 121.440627,
    "lat": 31.209252,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "徐汇区"
@@ -4449,8 +4476,8 @@
   {
    "lon": 121.441467,
    "lat": 31.211102,
-   "weight": 6.5,
-   "count": 13,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "武康路历史文化名街(东北角)"
@@ -4460,8 +4487,8 @@
   {
    "lon": 121.403433,
    "lat": 31.198288,
-   "weight": 6.0,
-   "count": 12,
+   "weight": 9.5,
+   "count": 19,
    "city": "上海",
    "source": "amap",
    "address": "虹桥路1438号高岛屋百货B3"
@@ -4548,8 +4575,8 @@
   {
    "lon": 121.433095,
    "lat": 31.199005,
-   "weight": 24.5,
-   "count": 49,
+   "weight": 43.5,
+   "count": 87,
    "city": "上海",
    "source": "amap",
    "address": "华山路1954号"
@@ -4559,8 +4586,8 @@
   {
    "lon": 121.436882,
    "lat": 31.025626,
-   "weight": 17.0,
-   "count": 34,
+   "weight": 30.5,
+   "count": 61,
    "city": "上海",
    "source": "amap",
    "address": "东川路800号"
@@ -4570,8 +4597,8 @@
   {
    "lon": 121.435253,
    "lat": 31.202213,
-   "weight": 11.0,
-   "count": 22,
+   "weight": 17.0,
+   "count": 34,
    "city": "上海",
    "source": "amap",
    "address": "10号线;11号线"
@@ -4581,8 +4608,8 @@
   {
    "lon": 121.425326,
    "lat": 31.206078,
-   "weight": 15.5,
-   "count": 31,
+   "weight": 29.0,
+   "count": 58,
    "city": "上海",
    "source": "amap",
    "address": "法华镇路535号"
@@ -4592,8 +4619,8 @@
   {
    "lon": 121.471385,
    "lat": 31.212539,
-   "weight": 2.0,
-   "count": 4,
+   "weight": 3.5,
+   "count": 7,
    "city": "上海",
    "source": "amap",
    "address": "重庆南路227号"
@@ -4603,8 +4630,8 @@
   {
    "lon": 121.472635,
    "lat": 31.21282,
-   "weight": 2.0,
-   "count": 4,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "重庆南路227号(一大会址·新天地地铁站出入口步行360米)"
@@ -4614,8 +4641,8 @@
   {
    "lon": 121.469976,
    "lat": 31.212249,
-   "weight": 2.0,
-   "count": 4,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "重庆南路280号"
@@ -4625,8 +4652,8 @@
   {
    "lon": 121.417249,
    "lat": 31.226464,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "万航渡路1575号"
@@ -4636,8 +4663,8 @@
   {
    "lon": 121.396831,
    "lat": 31.204758,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "仙霞新村街道仙霞路350号"
@@ -4647,8 +4674,8 @@
   {
    "lon": 121.435774,
    "lat": 31.170418,
-   "weight": 7.0,
-   "count": 14,
+   "weight": 13.0,
+   "count": 26,
    "city": "上海",
    "source": "amap",
    "address": "漕溪路251弄5号望族城商务楼7层702/703室"
@@ -4658,8 +4685,8 @@
   {
    "lon": 121.418456,
    "lat": 31.161112,
-   "weight": 7.0,
-   "count": 14,
+   "weight": 13.0,
+   "count": 26,
    "city": "上海",
    "source": "amap",
    "address": "桂林路100号"
@@ -4669,8 +4696,8 @@
   {
    "lon": 113.383715,
    "lat": 22.525426,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "莲新社区孙文东路2号"
@@ -4680,8 +4707,8 @@
   {
    "lon": 113.353944,
    "lat": 22.538304,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "西区街道烟洲社区康欣路3号"
@@ -4691,8 +4718,8 @@
   {
    "lon": 113.391434,
    "lat": 22.4957,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "城桂路6号"
@@ -4702,8 +4729,8 @@
   {
    "lon": 121.453236,
    "lat": 31.191166,
-   "weight": 5.0,
-   "count": 10,
+   "weight": 9.5,
+   "count": 19,
    "city": "上海",
    "source": "amap",
    "address": "东安路270号"
@@ -4713,8 +4740,8 @@
   {
    "lon": 121.429585,
    "lat": 31.182593,
-   "weight": 4.5,
-   "count": 9,
+   "weight": 8.0,
+   "count": 16,
    "city": "上海",
    "source": "amap",
    "address": "中山西路2271号(宜山路地铁站8号口步行290米)"
@@ -4889,8 +4916,8 @@
   {
    "lon": 121.451001,
    "lat": 31.183158,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "宛平南路908弄2号"
@@ -4911,8 +4938,8 @@
   {
    "lon": 121.438591,
    "lat": 31.183509,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "零陵路811号(上海体育馆地铁站2号口步行100米)"
@@ -4955,8 +4982,8 @@
   {
    "lon": 121.455048,
    "lat": 31.181645,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "瑞平路230号(龙华中路地铁站5号口步行200米)"
@@ -4964,8 +4991,8 @@
   {
    "lon": 121.456234,
    "lat": 31.182215,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "凯滨路与瑞平路交叉口西40米"
@@ -4975,8 +5002,8 @@
   {
    "lon": 121.454837,
    "lat": 31.181952,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "瑞平路230号保利·时光里B3"
@@ -4986,8 +5013,8 @@
   {
    "lon": 121.463869,
    "lat": 31.180766,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "东安路龙腾大道交界处"
@@ -4997,8 +5024,8 @@
   {
    "lon": 121.481437,
    "lat": 31.196477,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "蒙自路778号(世博会博物馆地铁站2号口步行70米)"
@@ -5008,8 +5035,8 @@
   {
    "lon": 121.457537,
    "lat": 31.165012,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "云锦路500号(云锦路地铁站5号口步行330米)"
@@ -5074,8 +5101,8 @@
   {
    "lon": 121.46237,
    "lat": 31.176654,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "龙腾大道辅路与龙恒东路交叉口东南100米"
@@ -5085,8 +5112,8 @@
   {
    "lon": 120.920077,
    "lat": 31.041645,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "金泽镇培爱路181号"
@@ -5096,8 +5123,8 @@
   {
    "lon": 121.453633,
    "lat": 31.176011,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "龙华路2588号(近龙华寺)(龙华地铁站3号口步行170米)"
@@ -5129,8 +5156,8 @@
   {
    "lon": 121.432264,
    "lat": 31.231708,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 24.5,
+   "count": 49,
    "city": "上海",
    "source": "amap",
    "address": "14号线"
@@ -5140,8 +5167,8 @@
   {
    "lon": 121.403235,
    "lat": 31.130488,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 24.5,
+   "count": 49,
    "city": "上海",
    "source": "amap",
    "address": "1号线"
@@ -5151,8 +5178,8 @@
   {
    "lon": 121.45992,
    "lat": 31.298562,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 24.5,
+   "count": 49,
    "city": "上海",
    "source": "amap",
    "address": "江场路1175号附近上海协信星光广场北里5A号楼"
@@ -5162,8 +5189,8 @@
   {
    "lon": 121.460425,
    "lat": 31.184775,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "船厂路与龙华中路交叉口东南140米"
@@ -5173,8 +5200,8 @@
   {
    "lon": 121.46315,
    "lat": 31.18185,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "西岸金融城"
@@ -5184,8 +5211,8 @@
   {
    "lon": 121.463175,
    "lat": 31.181725,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "西岸金融城"
@@ -5195,8 +5222,8 @@
   {
    "lon": 121.45613,
    "lat": 31.180184,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "瑞平路237号(龙华中路地铁站5号口步行400米)"
@@ -5206,8 +5233,8 @@
   {
    "lon": 121.455042,
    "lat": 31.18144,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "凯滨路183号(龙华中路地铁站5号口步行350米)"
@@ -5217,8 +5244,8 @@
   {
    "lon": 121.454695,
    "lat": 31.181885,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "凯滨路183号保利·西岸中心"
@@ -5228,8 +5255,8 @@
   {
    "lon": 121.459409,
    "lat": 31.176378,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "龙恒东路与云锦路交叉口东240米"
@@ -5239,8 +5266,8 @@
   {
    "lon": 121.46012,
    "lat": 31.174347,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "云锦路183弄"
@@ -5250,8 +5277,8 @@
   {
    "lon": 121.45946,
    "lat": 31.17441,
-   "weight": 2.5,
-   "count": 5,
+   "weight": 4.0,
+   "count": 8,
    "city": "上海",
    "source": "amap",
    "address": "云锦路183弄9-14号、17-21号"
@@ -5426,8 +5453,8 @@
   {
    "lon": 121.453623,
    "lat": 31.191645,
-   "weight": 1.0,
-   "count": 2,
+   "weight": 2.0,
+   "count": 4,
    "city": "上海",
    "source": "amap",
    "address": "徐汇区门诊5楼体检科(东安路地铁站6号口步行120米)"
@@ -5470,8 +5497,8 @@
   {
    "lon": 121.44203,
    "lat": 31.181448,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "徐家汇街道天钥桥路666号"
@@ -5481,8 +5508,8 @@
   {
    "lon": 121.443529,
    "lat": 31.185605,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "(在建)23号线;4号线"
@@ -5492,8 +5519,8 @@
   {
    "lon": 121.443964,
    "lat": 31.180881,
-   "weight": 5.5,
-   "count": 11,
+   "weight": 10.0,
+   "count": 20,
    "city": "上海",
    "source": "amap",
    "address": "中山南二路1800号上海体育场"
@@ -5547,8 +5574,8 @@
   {
    "lon": 121.389886,
    "lat": 31.269833,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 3.5,
+   "count": 7,
    "city": "上海",
    "source": "amap",
    "address": "真南路500号同济大学(沪西校区)"
@@ -5558,8 +5585,8 @@
   {
    "lon": 121.524975,
    "lat": 31.225225,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 4.5,
+   "count": 9,
    "city": "上海",
    "source": "amap",
    "address": "潍坊路154弄1-33号潍坊十村一小区"
@@ -5569,8 +5596,8 @@
   {
    "lon": 121.512404,
    "lat": 31.265976,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 3.5,
+   "count": 7,
    "city": "上海",
    "source": "amap",
    "address": "周家嘴路1683弄"
@@ -5602,8 +5629,8 @@
   {
    "lon": 121.396998,
    "lat": 31.225042,
-   "weight": 3.5,
-   "count": 7,
+   "weight": 7.0,
+   "count": 14,
    "city": "上海",
    "source": "amap",
    "address": "大渡河路189号(长风公园地铁站2号口步行150米)"
@@ -5613,8 +5640,8 @@
   {
    "lon": 121.442382,
    "lat": 31.186033,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "天钥桥路518号英雄大厦2层"
@@ -5624,8 +5651,8 @@
   {
    "lon": 121.506458,
    "lat": 31.196086,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "雪野路1000号"
@@ -5635,8 +5662,8 @@
   {
    "lon": 121.464832,
    "lat": 31.214366,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "复兴中路593民防大厦"
@@ -5646,8 +5673,8 @@
   {
    "lon": 121.41512,
    "lat": 31.008391,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "鹤庆路398号"
@@ -5657,8 +5684,8 @@
   {
    "lon": 121.408447,
    "lat": 31.211867,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "遵义路448号"
@@ -5668,8 +5695,8 @@
   {
    "lon": 121.408525,
    "lat": 31.212103,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "遵义路与玉屏南路交叉口东南100米"
@@ -5679,8 +5706,8 @@
   {
    "lon": 121.408147,
    "lat": 31.212005,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "遵义路448号上海虹桥君丽假日酒店1层"
@@ -5690,8 +5717,8 @@
   {
    "lon": 121.452314,
    "lat": 31.18138,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "龙华路2381弄1-27号"
@@ -5701,8 +5728,8 @@
   {
    "lon": 121.41203,
    "lat": 31.146783,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "桂平支路35弄"
@@ -5712,8 +5739,8 @@
   {
    "lon": 121.41349,
    "lat": 31.147002,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "桂平支路18号"
@@ -5723,8 +5750,8 @@
   {
    "lon": 121.440641,
    "lat": 31.193908,
-   "weight": 3.5,
-   "count": 7,
+   "weight": 9.5,
+   "count": 19,
    "city": "上海",
    "source": "amap",
    "address": "徐汇区"
@@ -5734,8 +5761,8 @@
   {
    "lon": 121.436603,
    "lat": 31.195514,
-   "weight": 2.0,
-   "count": 4,
+   "weight": 5.5,
+   "count": 11,
    "city": "上海",
    "source": "amap",
    "address": "11号线;1号线;9号线"
@@ -5745,8 +5772,8 @@
   {
    "lon": 121.434406,
    "lat": 31.194219,
-   "weight": 2.0,
-   "count": 4,
+   "weight": 3.5,
+   "count": 7,
    "city": "上海",
    "source": "amap",
    "address": "虹桥路99号"
@@ -5756,8 +5783,8 @@
   {
    "lon": 121.464946,
    "lat": 31.235529,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "成都北路737号(自然博物馆地铁站1号口步行390米)"
@@ -5767,8 +5794,8 @@
   {
    "lon": 121.491506,
    "lat": 31.250758,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "九龙路286号(国网上海市区供电公司东北1门旁)"
@@ -5778,8 +5805,8 @@
   {
    "lon": 121.519976,
    "lat": 31.217808,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "浦东南路1639号"
@@ -5822,8 +5849,8 @@
   {
    "lon": 121.427922,
    "lat": 31.200425,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "淮海西路338号"
@@ -5833,8 +5860,8 @@
   {
    "lon": 121.432395,
    "lat": 31.209648,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "华山路1328号"
@@ -5844,8 +5871,8 @@
   {
    "lon": 121.428141,
    "lat": 31.200709,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "淮海西路338号中国人民解放军海军特色医学中心内"
@@ -5855,8 +5882,8 @@
   {
    "lon": 121.421486,
    "lat": 31.19903,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "凯旋路1388号(虹桥路地铁站1号口步行270米)"
@@ -5866,8 +5893,8 @@
   {
    "lon": 121.409362,
    "lat": 31.19853,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "虹桥路1161号"
@@ -5877,8 +5904,8 @@
   {
    "lon": 121.420822,
    "lat": 31.198594,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 3.0,
+   "count": 6,
    "city": "上海",
    "source": "amap",
    "address": "凯旋路与凯田路交叉口东南40米"
@@ -5921,8 +5948,8 @@
   {
    "lon": 121.436763,
    "lat": 31.195898,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 6.0,
+   "count": 12,
    "city": "上海",
    "source": "amap",
    "address": "漕溪北路90号(徐家汇地铁站出入口步行110米)"
@@ -5932,8 +5959,8 @@
   {
    "lon": 121.443239,
    "lat": 31.197915,
-   "weight": 1.5,
-   "count": 3,
+   "weight": 6.0,
+   "count": 12,
    "city": "上海",
    "source": "amap",
    "address": "宛平路徐家汇公园(东北角)"
@@ -5943,8 +5970,8 @@
   {
    "lon": 121.397151,
    "lat": 31.620273,
-   "weight": 1.0,
-   "count": 2,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "城桥镇新崇南路178号(近南门港码头)"
@@ -5954,8 +5981,8 @@
   {
    "lon": 121.339728,
    "lat": 31.261906,
-   "weight": 1.0,
-   "count": 2,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "曹安公路2388号"
@@ -5965,8 +5992,8 @@
   {
    "lon": 121.797318,
    "lat": 30.985013,
-   "weight": 1.0,
-   "count": 2,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "东大公路2458号"
@@ -5976,8 +6003,8 @@
   {
    "lon": 121.609804,
    "lat": 31.105583,
-   "weight": 1.0,
-   "count": 2,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "周祝公路279号"
@@ -5987,8 +6014,8 @@
   {
    "lon": 121.615239,
    "lat": 31.098156,
-   "weight": 1.0,
-   "count": 2,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "芙蓉花路西150米"
@@ -5998,8 +6025,8 @@
   {
    "lon": 121.611754,
    "lat": 31.098129,
-   "weight": 1.0,
-   "count": 2,
+   "weight": 2.5,
+   "count": 5,
    "city": "上海",
    "source": "amap",
    "address": "周祝公路276号"
@@ -6042,8 +6069,8 @@
   {
    "lon": 121.47574,
    "lat": 31.23433,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 12.5,
+   "count": 25,
    "city": "上海",
    "source": "amap",
    "address": "南京东路街道南京东路789号上海康莱德酒店b3世茂工程部"
@@ -6053,8 +6080,8 @@
   {
    "lon": 121.514032,
    "lat": 31.220619,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 12.5,
+   "count": 25,
    "city": "上海",
    "source": "amap",
    "address": "潍坊西路1弄"
@@ -6064,8 +6091,8 @@
   {
    "lon": 121.481797,
    "lat": 31.23255,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 12.5,
+   "count": 25,
    "city": "上海",
    "source": "amap",
    "address": "广东路500号"
@@ -6075,8 +6102,8 @@
   {
    "lon": 121.529771,
    "lat": 31.223937,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 12.5,
+   "count": 25,
    "city": "上海",
    "source": "amap",
    "address": "潍坊街道向城路17号裙房底层J-08号"
@@ -6086,8 +6113,8 @@
   {
    "lon": 121.315569,
    "lat": 31.19485,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 12.5,
+   "count": 25,
    "city": "上海",
    "source": "amap",
    "address": "苏虹路17号虹桥新天地B1-08"
@@ -6097,8 +6124,8 @@
   {
    "lon": 121.467617,
    "lat": 31.211761,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 11.5,
+   "count": 23,
    "city": "上海",
    "source": "amap",
    "address": "瑞金二路197号"
@@ -6108,8 +6135,8 @@
   {
    "lon": 121.472205,
    "lat": 31.218421,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 11.5,
+   "count": 23,
    "city": "上海",
    "source": "amap",
    "address": "重庆南路149号(近南昌路)"
@@ -6119,8 +6146,8 @@
   {
    "lon": 121.484131,
    "lat": 31.233522,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 13.5,
+   "count": 27,
    "city": "上海",
    "source": "amap",
    "address": "山东中路145号"
@@ -6130,8 +6157,8 @@
   {
    "lon": 121.304576,
    "lat": 31.184073,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "诸光路1588弄"
@@ -6141,8 +6168,8 @@
   {
    "lon": 121.410082,
    "lat": 31.203989,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "延安西路2000号"
@@ -6152,8 +6179,8 @@
   {
    "lon": 121.395644,
    "lat": 31.202157,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "虹桥路1591号(红宝石路地铁站5号口步行320米)"
@@ -6163,8 +6190,8 @@
   {
    "lon": 121.386101,
    "lat": 31.183471,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "闵行区"
@@ -6174,8 +6201,8 @@
   {
    "lon": 121.370868,
    "lat": 31.201789,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "剑河路780弄"
@@ -6185,8 +6212,8 @@
   {
    "lon": 121.391205,
    "lat": 31.179056,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "闵行区"
@@ -6196,8 +6223,8 @@
   {
    "lon": 121.416666,
    "lat": 31.219137,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 14.0,
+   "count": 28,
    "city": "上海",
    "source": "amap",
    "address": "长宁路1018号"
@@ -6207,8 +6234,8 @@
   {
    "lon": 121.252357,
    "lat": 31.17566,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "徐盈路989-1号(徐盈路地铁站1号口步行270米)"
@@ -6218,8 +6245,8 @@
   {
    "lon": 121.307616,
    "lat": 31.211852,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "宁虹路1101弄"
@@ -6229,8 +6256,8 @@
   {
    "lon": 121.36169,
    "lat": 31.208479,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "仙霞西路585号"
@@ -6240,8 +6267,8 @@
   {
    "lon": 121.361943,
    "lat": 31.208751,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "仙霞西路与淞虹路交叉口西60米"
@@ -6251,8 +6278,8 @@
   {
    "lon": 121.361854,
    "lat": 31.208232,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "仙霞西路与淞虹路交叉口西南100米"
@@ -6262,8 +6289,8 @@
   {
    "lon": 121.377067,
    "lat": 31.208903,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "仙霞路1111号"
@@ -6273,8 +6300,8 @@
   {
    "lon": 121.376512,
    "lat": 31.208425,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "仙霞路1111号上海交通大学医学院附属同仁医院(仙霞路院区)"
@@ -6284,8 +6311,8 @@
   {
    "lon": 121.377198,
    "lat": 31.208407,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "仙霞路1111号上海交通大学医学院附属同仁医院内"
@@ -6295,8 +6322,8 @@
   {
    "lon": 121.364957,
    "lat": 31.204095,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "淞虹路938号福缘湾"
@@ -6306,8 +6333,8 @@
   {
    "lon": 121.364573,
    "lat": 31.204907,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "福缘湾·九华商业广场"
@@ -6317,8 +6344,8 @@
   {
    "lon": 121.364532,
    "lat": 31.204779,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "淞虹路与新泾路交叉口北120米"
@@ -6328,8 +6355,8 @@
   {
    "lon": 121.433221,
    "lat": 31.168809,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 5.5,
+   "count": 11,
    "city": "上海",
    "source": "amap",
    "address": "漕宝路33号徐汇日月光中心B2层B2-27(南2门进入直行10m,扶梯下到B2可见)"
@@ -6339,8 +6366,8 @@
   {
    "lon": 121.476503,
    "lat": 31.232259,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 5.0,
+   "count": 10,
    "city": "上海",
    "source": "amap",
    "address": "西藏中路268号来福士广场B1"
@@ -6350,8 +6377,8 @@
   {
    "lon": 121.439082,
    "lat": 31.192436,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "肇嘉浜路1111号美罗城"
@@ -6361,8 +6388,8 @@
   {
    "lon": 121.377518,
    "lat": 31.225181,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "普陀区"
@@ -6372,8 +6399,8 @@
   {
    "lon": 121.376606,
    "lat": 31.225353,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "普陀区"
@@ -6383,8 +6410,8 @@
   {
    "lon": 121.396251,
    "lat": 31.222897,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "1227路;44路;551路;861路"
@@ -6394,8 +6421,8 @@
   {
    "lon": 121.373998,
    "lat": 31.216395,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "2号线"
@@ -6405,8 +6432,8 @@
   {
    "lon": 121.367653,
    "lat": 31.217859,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "长宁区"
@@ -6416,8 +6443,8 @@
   {
    "lon": 121.373616,
    "lat": 31.217019,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "天山西路与蒲淞北路交叉口西120米(北新泾地铁站5号口旁)"
@@ -6427,8 +6454,8 @@
   {
    "lon": 121.74621,
    "lat": 31.039589,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "南园路17号"
@@ -6438,8 +6465,8 @@
   {
    "lon": 121.31808,
    "lat": 30.954671,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "浦南批发市场520号叶青香料"
@@ -6449,8 +6476,8 @@
   {
    "lon": 121.28437,
    "lat": 31.110773,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "泗泾镇沪松公路2567号"
@@ -6460,8 +6487,8 @@
   {
    "lon": 121.392259,
    "lat": 31.199482,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "10号线"
@@ -6471,8 +6498,8 @@
   {
    "lon": 121.391033,
    "lat": 31.210083,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 10.5,
+   "count": 21,
    "city": "上海",
    "source": "amap",
    "address": "长宁区"
@@ -6482,11 +6509,1019 @@
   {
    "lon": 121.392728,
    "lat": 31.207036,
+   "weight": 10.5,
+   "count": 21,
+   "city": "上海",
+   "source": "amap",
+   "address": "仙霞路451弄1-31号"
+  }
+ ],
+ "包玉刚实验小学": [
+  {
+   "lon": 121.433199,
+   "lat": 31.224423,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "武定西路1251弄20号"
+  }
+ ],
+ "上海市长宁实验小学": [
+  {
+   "lon": 121.388121,
+   "lat": 31.20962,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "茅台路625号(近安龙路)"
+  }
+ ],
+ "上海市团校": [
+  {
+   "lon": 121.479479,
+   "lat": 31.274417,
+   "weight": 1.0,
+   "count": 2,
+   "city": "上海",
+   "source": "amap",
+   "address": "西江湾路574号(虹口足球场地铁站4号口步行250米)"
+  }
+ ],
+ "上海行健职业学院": [
+  {
+   "lon": 121.431642,
+   "lat": 31.280036,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "原平路41-55号"
+  }
+ ],
+ "水霞小区安龙路820弄": [
+  {
+   "lon": 121.387937,
+   "lat": 31.208528,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "安龙路与茅台路交叉口南220米"
+  }
+ ],
+ "水霞小区安龙路812弄": [
+  {
+   "lon": 121.387922,
+   "lat": 31.208254,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "安龙路与仙霞路交叉口北220米"
+  }
+ ],
+ "珍宝公寓地下停车场": [
+  {
+   "lon": 121.389039,
+   "lat": 31.21169,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "新渔东路289弄1-10号(威宁路地铁站2号口步行480米)"
+  }
+ ],
+ "古宋小区": [
+  {
+   "lon": 121.389408,
+   "lat": 31.21119,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "茅台路600弄1-75号"
+  }
+ ],
+ "新安小区茅台路": [
+  {
+   "lon": 121.38677,
+   "lat": 31.21125,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "茅台路690弄1-36号"
+  }
+ ],
+ "新安社区居委会": [
+  {
+   "lon": 121.16687,
+   "lat": 31.27168,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "安亭镇南安德路9号"
+  }
+ ],
+ "新安小区地上停车场": [
+  {
+   "lon": 121.386675,
+   "lat": 31.211275,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "安龙路与茅台路交叉口西北120米"
+  }
+ ],
+ "联华超市重庆北路店": [
+  {
+   "lon": 121.469849,
+   "lat": 31.227002,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "重庆北路208号"
+  }
+ ],
+ "联华超市南京西路店": [
+  {
+   "lon": 121.458555,
+   "lat": 31.230273,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "上海市静安区奉贤路193号(御品大厦东南侧约130米)"
+  }
+ ],
+ "联华超市大沽路店": [
+  {
+   "lon": 121.463704,
+   "lat": 31.225165,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "大沽路543号(南京西路地铁站8号口步行310米)"
+  }
+ ],
+ "林百欣游泳馆": [
+  {
+   "lon": 121.387885,
+   "lat": 31.21023,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "茅台路665号"
+  }
+ ],
+ "坐屋居酒屋威宁路店": [
+  {
+   "lon": 121.383903,
+   "lat": 31.207037,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "威宁路150-2号坐屋居酒屋"
+  }
+ ],
+ "坐屋居酒屋天山星城店": [
+  {
+   "lon": 121.387,
+   "lat": 31.212448,
+   "weight": 4.0,
+   "count": 8,
+   "city": "上海",
+   "source": "amap",
+   "address": "新渔东路348号220、221室二楼"
+  }
+ ],
+ "鸟炭居酒屋陆家嘴店": [
+  {
+   "lon": 121.511366,
+   "lat": 31.232534,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "东昌路511号(浦东南路原东昌路地铁站7号口步行320米)"
+  }
+ ],
+ "谷牛烧肉酒场人民广场店": [
+  {
+   "lon": 121.477733,
+   "lat": 31.233594,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "广西北路258号(人民广场地铁站14号口步行180米)"
+  }
+ ],
+ "缘串烧鸟居酒屋畅饮酒场仙霞路店": [
+  {
+   "lon": 121.387257,
+   "lat": 31.206714,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "安龙路685号(星霞苑西门西南50米)"
+  }
+ ],
+ "上海畅农副食品有限公司": [
+  {
+   "lon": 121.560994,
+   "lat": 31.164559,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "沪南路2000号上海农产品中心批发市场"
+  }
+ ],
+ "畅乐程食品贸易有限公司": [
+  {
+   "lon": 121.333675,
+   "lat": 31.258025,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "张掖路355号嘉永南北干货市场"
+  }
+ ],
+ "肯德基大连路店": [
+  {
+   "lon": 121.511556,
+   "lat": 31.259227,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "大连路555号一层1F-01及B1F-01"
+  }
+ ],
+ "上海开大附中交慧教学点": [
+  {
+   "lon": 121.52218,
+   "lat": 30.820614,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "海浪路89弄1号"
+  }
+ ],
+ "上海开放大学学历提升本科大专慧承教学点": [
+  {
+   "lon": 121.437949,
+   "lat": 31.242649,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "西康路1255号16楼(长寿路地铁站3号口步行330米)"
+  }
+ ],
+ "上海市职业教育都市农林开放实训中心": [
+  {
+   "lon": 121.59426,
+   "lat": 31.571278,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "前竖公路289号"
+  }
+ ],
+ "沁园别墅北区": [
+  {
+   "lon": 121.26055,
+   "lat": 31.309345,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "翔方公路150弄"
+  }
+ ],
+ "仙霞别墅北区": [
+  {
+   "lon": 121.385917,
+   "lat": 31.208471,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "仙霞路与威宁路交叉口东北240米"
+  }
+ ],
+ "陆巷社区桂园别墅北区": [
+  {
+   "lon": 121.252224,
+   "lat": 31.30887,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "翔方公路650弄1-128号桂园别墅"
+  }
+ ],
+ "中福城三期": [
+  {
+   "lon": 121.477242,
+   "lat": 31.233436,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "汉口路689弄1-3号(人民广场地铁站14号口步行130米)"
+  }
+ ],
+ "中福城": [
+  {
+   "lon": 121.478685,
+   "lat": 31.233477,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "人民广场地铁站14号口步行300米"
+  }
+ ],
+ "中福城二期": [
+  {
+   "lon": 121.478418,
+   "lat": 31.23339,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "广西北路228弄-1-10号"
+  }
+ ],
+ "贵州茅台": [
+  {
+   "lon": 121.500662,
+   "lat": 31.24836,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "余杭路85号(国际客运中心地铁站出入口步行440米)"
+  }
+ ],
+ "贵州茅台杨高南路店": [
+  {
+   "lon": 121.5343,
+   "lat": 31.211483,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "花木街道锦康路332号芳甸路1379号"
+  }
+ ],
+ "贵州茅台淮海中路店": [
+  {
+   "lon": 121.460059,
+   "lat": 31.217047,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "淮海中路917-921号(上海美臣大酒店南门旁)"
+  }
+ ],
+ "G2京沪高速": [
+  {
+   "lon": 121.385574,
+   "lat": 31.247797,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "普陀区"
+  },
+  {
+   "lon": 121.323622,
+   "lat": 31.25101,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "嘉定区"
+  }
+ ],
+ "G2京沪高速入口苏州方向": [
+  {
+   "lon": 121.335095,
+   "lat": 31.251676,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "嘉定区"
+  }
+ ],
+ "环宇城": [
+  {
+   "lon": 121.409171,
+   "lat": 31.250747,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "铜川路与礼尚路交叉口西南100米"
+  }
+ ],
+ "上海真如环宇城MAX": [
+  {
+   "lon": 121.409564,
+   "lat": 31.250251,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "铜川路699弄1号(真如地铁站2号口步行190米)"
+  }
+ ],
+ "环宇城会员中心上海真如环宇城MAX店": [
+  {
+   "lon": 121.41072,
+   "lat": 31.249969,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "铜川路699弄1号上海真如环宇城MAX LG1层"
+  }
+ ],
+ "虹桥南丰城": [
+  {
+   "lon": 121.407792,
+   "lat": 31.207262,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "遵义路100号"
+  }
+ ],
+ "虹桥南丰城地下停车场": [
+  {
+   "lon": 121.408159,
+   "lat": 31.206792,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "遵义路100号虹桥南丰城"
+  }
+ ],
+ "虹桥南丰城南区": [
+  {
+   "lon": 121.407759,
+   "lat": 31.207066,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "遵义路100号"
+  }
+ ],
+ "MAOLivehouse上海": [
+  {
+   "lon": 121.472075,
+   "lat": 31.209942,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "重庆南路308号白玉兰剧场3层"
+  }
+ ],
+ "上海大楼": [
+  {
+   "lon": 121.48614,
+   "lat": 31.239872,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "江西中路368号(南京东路地铁站6号口步行190米)"
+  }
+ ],
+ "上海建工机场联络线7标项目部停车场": [
+  {
+   "lon": 121.538575,
+   "lat": 31.136625,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "荻山路与杨高南路辅路交叉口东60米"
+  }
+ ],
+ "上海隧道工程有限公司机场联络线4标项目部": [
+  {
+   "lon": 121.445335,
+   "lat": 31.110512,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "平驰路与华展路交叉口南80米"
+  }
+ ],
+ "佘山地铁站": [
+  {
+   "lon": 121.229686,
+   "lat": 31.104097,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "9号线"
+  }
+ ],
+ "桂林路地铁站": [
+  {
+   "lon": 121.418064,
+   "lat": 31.174791,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "15号线;9号线"
+  }
+ ],
+ "吴中路地铁站": [
+  {
+   "lon": 121.413905,
+   "lat": 31.184345,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "15号线"
+  }
+ ],
+ "吴中路": [
+  {
+   "lon": 121.350231,
+   "lat": 31.16365,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "闵行区"
+  }
+ ],
+ "吴中大厦": [
+  {
+   "lon": 121.398568,
+   "lat": 31.182683,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "吴中路618号"
+  }
+ ],
+ "COZI可遇公寓新国际博览中心店": [
+  {
+   "lon": 121.556375,
+   "lat": 31.229225,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "杨高中路2795号希爱大楼F1层"
+  }
+ ],
+ "COZI可遇联洋": [
+  {
+   "lon": 121.556496,
+   "lat": 31.22925,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "杨高中路2795号(芳甸路地铁站3号口步行350米)"
+  }
+ ],
+ "COZI可遇新江湾C栋公寓": [
+  {
+   "lon": 121.505157,
+   "lat": 31.320159,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "上海·星汇广场杨浦区国安路758弄48号"
+  }
+ ],
+ "Vamos巴猫司健身中心世纪金融广场店": [
+  {
+   "lon": 121.534553,
+   "lat": 31.212212,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "锦康路258号陆家嘴世纪金融广场F2层"
+  }
+ ],
+ "VAMOS巴猫司健身中心银霄路店": [
+  {
+   "lon": 121.55725,
+   "lat": 31.212232,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "银霄路5号"
+  }
+ ],
+ "VAMOS巴猫司健身中心证大家园店": [
+  {
+   "lon": 121.598031,
+   "lat": 31.282596,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "五莲路1769弄46号"
+  }
+ ],
+ "上海市进才实验中学": [
+  {
+   "lon": 121.556792,
+   "lat": 31.225536,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "金松路191号"
+  }
+ ],
+ "进才实验中学南校区": [
+  {
+   "lon": 121.530629,
+   "lat": 31.190948,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "严民路177号"
+  }
+ ],
+ "进才森兰实验中学": [
+  {
+   "lon": 121.585562,
+   "lat": 31.307559,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "繁锦路1208号"
+  }
+ ],
+ "世纪公园乡土田园区": [
+  {
+   "lon": 121.555672,
+   "lat": 31.219305,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "锦绣路1001号世纪公园内(东北角)"
+  }
+ ],
+ "世纪茶饮": [
+  {
+   "lon": 121.553775,
+   "lat": 31.219175,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "世纪公园-乡土田园区(迎春路地铁站3号口步行430米)"
+  }
+ ],
+ "太阳都市花园2期": [
+  {
+   "lon": 121.488014,
+   "lat": 31.223901,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "北石皮弄与松雪街交叉口东北60米"
+  }
+ ],
+ "花园城2期": [
+  {
+   "lon": 121.472835,
+   "lat": 31.272376,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "花园路168弄之1-25号"
+  }
+ ],
+ "达安花园2期": [
+  {
+   "lon": 121.42788,
+   "lat": 31.23003,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "长寿路与万航渡路交叉口北100米"
+  }
+ ],
+ "水清木华公寓": [
+  {
+   "lon": 121.560896,
+   "lat": 31.224634,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "芳甸路333弄1-29号"
+  }
+ ],
+ "水清木华公寓停车场入口": [
+  {
+   "lon": 121.5604,
+   "lat": 31.225762,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "水清木华公寓西北门旁"
+  }
+ ],
+ "水清木华公寓停车场": [
+  {
+   "lon": 121.560479,
+   "lat": 31.225611,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "芳甸路333弄1-29号水清木华公寓"
+  }
+ ],
+ "张家浜小区": [
+  {
+   "lon": 121.516841,
+   "lat": 31.26928,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "双辽支路45弄1-25号"
+  },
+  {
+   "lon": 121.446692,
+   "lat": 31.196554,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "肇嘉浜路853弄"
+  }
+ ],
+ "张家浜": [
+  {
+   "lon": 121.569158,
+   "lat": 31.222864,
+   "weight": 5.5,
+   "count": 11,
+   "city": "上海",
+   "source": "amap",
+   "address": "浦东新区"
+  }
+ ],
+ "长宁ArtPark大融城地下停车场入口": [
+  {
+   "lon": 121.359216,
+   "lat": 31.216943,
+   "weight": 3.0,
+   "count": 6,
+   "city": "上海",
+   "source": "amap",
+   "address": "长宁Art Park大融城地下停车场"
+  }
+ ],
+ "长宁ArtPark大融城地下停车场": [
+  {
+   "lon": 121.359818,
+   "lat": 31.217299,
+   "weight": 3.0,
+   "count": 6,
+   "city": "上海",
+   "source": "amap",
+   "address": "淞虹路377号长宁Art Park大融城"
+  }
+ ],
+ "上海交通大学医学院附属瑞金医院远洋院区": [
+  {
+   "lon": 121.45366,
+   "lat": 31.214983,
+   "weight": 1.0,
+   "count": 2,
+   "city": "上海",
+   "source": "amap",
+   "address": "淮海中路1174号(常熟路地铁站2号口步行240米)"
+  }
+ ],
+ "城市集市龙之梦城市生活中心店": [
+  {
+   "lon": 121.416196,
+   "lat": 31.218993,
+   "weight": 3.5,
+   "count": 7,
+   "city": "上海",
+   "source": "amap",
+   "address": "长宁路1018号龙之梦购物中心二层(中山公园地铁站出入口旁)"
+  }
+ ],
+ "龙之梦城市生活中心蓝区": [
+  {
+   "lon": 121.417275,
+   "lat": 31.219575,
+   "weight": 3.5,
+   "count": 7,
+   "city": "上海",
+   "source": "amap",
+   "address": "汇川路与长宁路交叉口北140米"
+  }
+ ],
+ "复旦大学附属中山医院西院区": [
+  {
+   "lon": 121.453999,
+   "lat": 31.197422,
+   "weight": 3.0,
+   "count": 6,
+   "city": "上海",
+   "source": "amap",
+   "address": "枫林路180号"
+  }
+ ],
+ "复旦大学附属中山医院西院区门诊": [
+  {
+   "lon": 121.453222,
+   "lat": 31.198584,
+   "weight": 3.0,
+   "count": 6,
+   "city": "上海",
+   "source": "amap",
+   "address": "医学院路111号"
+  }
+ ],
+ "天山星城": [
+  {
+   "lon": 121.387092,
+   "lat": 31.213195,
+   "weight": 1.5,
+   "count": 3,
+   "city": "上海",
+   "source": "amap",
+   "address": "威宁路358弄1-49号"
+  }
+ ],
+ "天山星城2期": [
+  {
+   "lon": 121.38523,
+   "lat": 31.213629,
+   "weight": 1.5,
+   "count": 3,
+   "city": "上海",
+   "source": "amap",
+   "address": "威宁路358弄(威宁路地铁站3号口步行270米)"
+  }
+ ],
+ "天山星城3期": [
+  {
+   "lon": 121.388475,
+   "lat": 31.214125,
+   "weight": 1.5,
+   "count": 3,
+   "city": "上海",
+   "source": "amap",
+   "address": "天山路与天中路交叉口西南60米"
+  }
+ ],
+ "水霞小区": [
+  {
+   "lon": 121.389134,
+   "lat": 31.208605,
+   "weight": 1.5,
+   "count": 3,
+   "city": "上海",
+   "source": "amap",
+   "address": "水城路与茅台路交叉口西南260米"
+  }
+ ],
+ "水霞小区仙霞路579弄": [
+  {
+   "lon": 121.388699,
+   "lat": 31.207662,
+   "weight": 1.5,
+   "count": 3,
+   "city": "上海",
+   "source": "amap",
+   "address": "安龙路与仙霞路交叉口东北200米"
+  }
+ ],
+ "水霞小区水城路511弄": [
+  {
+   "lon": 121.390592,
+   "lat": 31.209135,
+   "weight": 1.5,
+   "count": 3,
+   "city": "上海",
+   "source": "amap",
+   "address": "水城路511弄1-9号"
+  }
+ ],
+ "八万人体育场": [
+  {
+   "lon": 121.439125,
+   "lat": 31.184575,
    "weight": 0.5,
    "count": 1,
    "city": "上海",
    "source": "amap",
-   "address": "仙霞路451弄1-31号"
+   "address": "天钥桥路909号(上海体育馆地铁站2号口步行350米)"
+  }
+ ],
+ "漕河泾会议中心": [
+  {
+   "lon": 121.399391,
+   "lat": 31.164014,
+   "weight": 1.0,
+   "count": 2,
+   "city": "上海",
+   "source": "amap",
+   "address": "古美路1528号漕河泾现代服务园区A7号楼"
+  }
+ ],
+ "上海城建职业学院静安校区": [
+  {
+   "lon": 121.481078,
+   "lat": 31.247307,
+   "weight": 1.0,
+   "count": 2,
+   "city": "上海",
+   "source": "amap",
+   "address": "河南北路301号(近七浦路)"
+  }
+ ],
+ "K22酸奶草莓上海金山乐高乐园店": [
+  {
+   "lon": 121.096275,
+   "lat": 30.882175,
+   "weight": 6.0,
+   "count": 12,
+   "city": "上海",
+   "source": "amap",
+   "address": "枫泾镇乐纷路爱琴海缤纷里南里1层V5-101B号"
+  }
+ ],
+ "SK女装上海临港宝龙广场店": [
+  {
+   "lon": 121.815575,
+   "lat": 30.906075,
+   "weight": 3.5,
+   "count": 7,
+   "city": "上海",
+   "source": "amap",
+   "address": "鸿音路3155弄128号上海临港宝龙广场2F层"
+  }
+ ],
+ "温莎": [
+  {
+   "lon": 121.477638,
+   "lat": 31.225162,
+   "weight": 1.0,
+   "count": 2,
+   "city": "上海",
+   "source": "amap",
+   "address": "淮海中路街道上海广场"
   }
  ]
 }
