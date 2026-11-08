@@ -20,10 +20,11 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import load_dotenv  # noqa: E402
+from app.maps.staticmap import amap_key, fetch_static_map  # noqa: E402
 
 load_dotenv()
 # 密钥只从环境变量 / .env 读取，绝不写进仓库
-AMAP_KEY = os.environ.get("AMAP_KEY", "")
+AMAP_KEY = amap_key() or ""
 BASE = "http://127.0.0.1:8848"
 
 # 高德静态图 zoom=17、size=1024px 宽时的实测分辨率：
@@ -34,12 +35,11 @@ COVER_M = 1024 * M_PER_PX          # 底图覆盖 523 米
 
 
 def fetch_static(lon: float, lat: float, zoom: int = 17, size: int = 1024):
-    url = (
-        f"https://restapi.amap.com/v3/staticmap?location={lon},{lat}"
-        f"&zoom={zoom}&size={size}*{size}&key={AMAP_KEY}"
-    )
-    with urllib.request.urlopen(url, timeout=30) as r:
-        buf = np.frombuffer(r.read(), np.uint8)
+    """取静态底图。实现收敛到 app/maps/staticmap/。"""
+    res = fetch_static_map(lon, lat, zoom, size, provider="amap", key=AMAP_KEY)
+    if res is None:
+        raise RuntimeError("静态地图获取失败")
+    buf = np.frombuffer(res.data, np.uint8)
     return cv2.imdecode(buf, cv2.IMREAD_COLOR)
 
 

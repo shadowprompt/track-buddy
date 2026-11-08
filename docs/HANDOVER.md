@@ -4142,3 +4142,55 @@ RideBasemap.create(providerName, { container, zoom })
 - `app/trajmap.py`（对比页）仍直接用 `TMap.*`，未纳入适配层——
   它是独立页面，改造收益低、风险高，留作独立任务。
 - 阶段 4（tools 静态地图收敛）待做。
+
+## 22.33 阶段 4：⑥ 静态地图素材收敛
+
+### 问题
+
+`tools/` 下三个实验脚本各自抄了一份「拼 URL + urllib 取图 + 解码」：
+
+- `tools/exp_basemap_match.py`
+- `tools/exp_e2e_multishot.py`
+- `tools/exp_overlap_need.py`
+
+三份的 URL 参数顺序、`size` 拼法（`1024*1024` vs `1024%2A1024`）、
+错误处理（一个抛异常、一个返回 None）都不一样。改一次瓦片参数要动
+三个文件，也很容易漏。
+
+### 做法
+
+新增 `app/maps/staticmap/`（能力⑥），只暴露两个函数：
+
+```
+fetch_static_map(lon, lat, zoom, size, provider="amap", key=..., markers=...)
+  → StaticMap(data=bytes, provider=..., url=...)
+amap_key(cfg=None) -> str | None
+```
+
+- 两个 provider：`amap`（`location` + `size=W*H`）与
+  `tmap`（`center=lat,lon` + `width`/`height` 分开写）。
+- 缺 key 或请求失败一律返回 `None`——实验脚本据此跳过，
+  不该因为一次网络抖动丢掉整批实验。
+- 三个实验脚本改为调用它，自己不再拼 URL。
+
+### 边界
+
+静态地图是**实验素材**，不是识别链路的依赖：删掉整个
+`app/maps/staticmap/` 不影响 `app/server.py` 的可用性。
+它没有走 `ProviderRegistry`——注册表面向的是「按能力装配 + 配置驱动
+顺序 + 健康探测」，静态地图只有两个固定实现、只在实验脚本里用，
+硬套注册表只会增加间接层。
+
+### 验证
+
+新增 `tests/test_maps_staticmap.py` 12 项：两个 provider 的 URL 形态、
+缺 key 返回 None、请求失败返回 None、key 从配置读取、
+三个脚本确实 import 统一 provider 且不再手写 URL、
+仓库内不存在第二份静态地图 URL 拼接。
+
+### 阶段 2–4 的共同边界
+
+- ①② 的可注入 `session_getter` 仍保持原样（既有测试注入契约）。
+- 后台精修 `refine=True` 重跑整条 pipeline、锚点源随配额波动的遗留
+  未动——那是**行为修复**而非去重复，混进重构会破坏归因。
+- `app/trajmap.py`（对比页）仍直接用 `TMap.*`，未纳入前端适配层。

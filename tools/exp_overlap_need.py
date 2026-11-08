@@ -37,6 +37,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import load_dotenv  # noqa: E402
+from app.maps.staticmap import amap_key, fetch_static_map  # noqa: E402
 from app.multishot import _describe, _match_pair  # noqa: E402
 
 load_dotenv()
@@ -70,17 +71,15 @@ def make_pair(dlon: float) -> tuple[np.ndarray, np.ndarray, float]:
     真值：b 的中心在 a 的西边 dlon 度 ⇒ b 的像素 (x,y) 对应 a 的 (x - dx, y)
     ⇒ 「a→b」的位移是 +dx。
     """
-    import urllib.request
-
-    key = os.environ.get("AMAP_KEY", "")
+    key = amap_key() or ""
     lon0 = 121.4600
     lat = LAT0
 
     def fetch(lon: float) -> np.ndarray:
-        url = (f"https://restapi.amap.com/v3/staticmap?location={lon},{lat}"
-               f"&zoom=17&size=1024*1024&key={key}")
-        with urllib.request.urlopen(url, timeout=30) as r:
-            buf = np.frombuffer(r.read(), np.uint8)
+        res = fetch_static_map(lon, lat, 17, 1024, provider="amap", key=key)
+        if res is None:
+            raise RuntimeError("静态地图获取失败")
+        buf = np.frombuffer(res.data, np.uint8)
         return cv2.imdecode(buf, cv2.IMREAD_COLOR)
 
     a = fetch(lon0)
@@ -90,7 +89,7 @@ def make_pair(dlon: float) -> tuple[np.ndarray, np.ndarray, float]:
 
 
 def main() -> int:
-    if not os.environ.get("AMAP_KEY"):
+    if not amap_key():
         print("跳过：未配置 AMAP_KEY（写入 .env 或设置环境变量）")
         return 0
     os.makedirs("tmp_debug/overlap", exist_ok=True)

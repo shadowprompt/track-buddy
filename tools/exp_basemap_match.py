@@ -14,24 +14,20 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import load_dotenv  # noqa: E402
+from app.maps.staticmap import amap_key, fetch_static_map  # noqa: E402
 
 load_dotenv()
 # 密钥只从环境变量 / .env 读取，绝不写进仓库
-AMAP_KEY = os.environ.get("AMAP_KEY", "")
+AMAP_KEY = amap_key() or ""
 
 
 def fetch_static(lon: float, lat: float, zoom: int, size: int = 1024) -> np.ndarray | None:
-    import urllib.request
-    url = (
-        f"https://restapi.amap.com/v3/staticmap?location={lon},{lat}"
-        f"&zoom={zoom}&size={size}*{size}&key={AMAP_KEY}"
-    )
-    try:
-        with urllib.request.urlopen(url, timeout=30) as r:
-            buf = np.frombuffer(r.read(), np.uint8)
-    except Exception as exc:  # noqa: BLE001
-        print("fetch fail", exc)
+    """取静态底图。实现收敛到 app/maps/staticmap/，不再各抄一份 URL。"""
+    res = fetch_static_map(lon, lat, zoom, size, provider="amap", key=AMAP_KEY)
+    if res is None:
+        print("fetch fail")
         return None
+    buf = np.frombuffer(res.data, np.uint8)
     img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
     return img
 
