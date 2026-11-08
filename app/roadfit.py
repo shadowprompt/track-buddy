@@ -508,13 +508,25 @@ def refine_with_roads(
         )
         result.anchor_before_m = before_anchor
         result.anchor_after_m = after_anchor
-        anchor_bad = (
-            before_anchor <= anchor_guard_m
-            and after_anchor > before_anchor + anchor_worsen_m
-        ) or (
-            before_anchor > 0
-            and after_anchor > before_anchor * anchor_worsen_ratio
-            and after_anchor > anchor_guard_m
+        # 只有锚点**本身可信**时，锚点残差才有否决权。
+        #
+        # 截图上的 POI 文字是排版标注，不是真实地理点位：中低缩放图常有
+        # 100~300m 的系统性标注偏移，此时 before_anchor 本来就大，锚点
+        # 自己都没法证明绝对位置正确，「残差被放大」也就不能证明平移错了。
+        # 反过来，这类图恰恰最需要路网几何来纠正整体位置。
+        #
+        # 相对倍数只在基线可信时才有意义；不加这个前提会出现反直觉的
+        # 结果：同一段合理平移，锚点基线越小，相对放大倍数越大，反而
+        # 越容易被判成「破坏锚点一致性」而误拒。锚点不可信时仍由位移
+        # 比例护栏与贴路改善判据兜底，不会失去防止「搬到平行路」的能力。
+        anchor_reliable = before_anchor <= anchor_guard_m
+        anchor_bad = anchor_reliable and (
+            after_anchor > before_anchor + anchor_worsen_m
+            or (
+                before_anchor > 0
+                and after_anchor > before_anchor * anchor_worsen_ratio
+                and after_anchor > anchor_guard_m
+            )
         )
         if anchor_bad:
             result.notes.append(

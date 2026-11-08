@@ -872,6 +872,16 @@ budget = canvas_pixel_budget(总输入像素)   # 内存预算 ∩ 输入规模
 
 返回多个候选时全部交给 RANSAC，由几何一致性挑选，天然处理同名地点歧义。
 
+**天地图的三个注意点**：一是控制台变量名写法不统一，
+`TIANDITU_API_KEY` / `TIANDITU_KEY` / `TIANDITU_TK` 都能识别，
+`/api/health` 会主动探测 tk 是否真的可用；二是天地图返回 CGCS2000
+（工程精度上等同 WGS-84），而项目内部锚点按 GCJ-02 处理，
+`app/geocode.py` 会做一次 `wgs84_to_gcj02` 转换——漏掉会整体偏约 570 米；
+三是普通搜索是「包含关键词」语义，项目只保留同名候选，并从词典里该城市
+的已核验坐标派生搜索视野，过滤异地同名（详见 HANDOVER §22.28）。
+在线源顺序可用 `GEOCODE_PROVIDER_ORDER` 调整（默认同源优先），
+上游配额耗尽或返回空时自动落到下一源。
+
 **为什么需要第 4 级（冷启动）**
 
 第 3 级只覆盖已核验过的地名。换一个区域就完全无法识别：实测长宁剑河路
@@ -995,10 +1005,17 @@ AMAP_KEY=你的密钥
 # 或腾讯 / 百度 / 天地图
 TMAP_KEY=
 BAIDU_MAP_KEY=
-TIANDITU_KEY=
+# 天地图 tk 三种变量名都能识别
+TIANDITU_API_KEY=
+# 可选：在线源顺序（默认 amap,tmap,baidu,tianditu）
+# GEOCODE_PROVIDER_ORDER=tianditu,amap
+# 可选：天地图搜索视野（默认全球；按业务区域收紧可减少异地同名）
+# TIANDITU_MAP_BOUND=<minx>,<miny>,<maxx>,<maxy>
 ```
 
 未配置密钥时自动降级为纯本地词典模式，功能可用但只能识别词典覆盖的区域。
+只想用天地图时，把 `GEOCODE_PROVIDER_ORDER` 设为 `tianditu`（或
+`tianditu,amap` 保留高德兜底），无需改代码。
 
 ---
 

@@ -84,3 +84,49 @@ def test_anchor_guard_is_optional_for_existing_callers():
     )
     assert not fit.ok
     assert np.hypot(fit.shift_e_m, fit.shift_n_m) <= 0.15 * 700.0 + 5.0
+
+
+def test_unreliable_anchors_cannot_veto_a_reasonable_shift():
+    """锚点基线本就不可信时，不能用「相对放大」否决合理的路网修正。
+
+    回归背景：在线锚点从高德降到天地图后，同一张图的可靠锚点残差
+    基线由约 200m 变成约 140m，同一段约 330m 的平移使残差放大倍数
+    跨过 2.5 倍阈值，于是本来正确的精修被判成「破坏锚点一致性」。
+    基线变小反而更容易误拒，说明相对判据必须以「锚点可信」为前提。
+    """
+    traj = _trajectory(4000.0)
+    roads = _parallel_road(330.0)
+    # 锚点自身已有约 140m 偏差（POI 文字排版），且方向不指向平移方向：
+    # 平移后绝对残差确实变大，但锚点本来就没有资格否决。
+    anchors = np.array([[140.0, 0.0], [-138.0, 12.0], [145.0, -8.0]])
+    fit = refine_with_roads(
+        _LinearReg(), traj, roads,
+        max_shift_m=800.0,
+        shift_span_ratio=0.15,
+        anchor_points_m=anchors,
+        anchor_guard_m=100.0,
+        anchor_worsen_m=80.0,
+        anchor_worsen_ratio=2.5,
+    )
+    assert fit.anchor_before_m > 100.0
+    assert fit.anchor_after_m > fit.anchor_before_m * 2.5
+    assert fit.ok, fit.notes
+    assert abs(fit.shift_n_m - 330.0) < 50.0
+
+
+def test_reliable_anchors_still_veto_after_baseline_fix():
+    """加前提后，锚点可信的场景仍必须拒绝搬到平行路。"""
+    traj = _trajectory(4000.0)
+    roads = _parallel_road(276.0)
+    anchors = np.array([[12.0, 0.0], [-18.0, 8.0], [25.0, -6.0]])
+    fit = refine_with_roads(
+        _LinearReg(), traj, roads,
+        max_shift_m=800.0,
+        shift_span_ratio=0.15,
+        anchor_points_m=anchors,
+        anchor_guard_m=100.0,
+        anchor_worsen_m=80.0,
+        anchor_worsen_ratio=2.5,
+    )
+    assert not fit.ok
+    assert np.hypot(fit.shift_e_m, fit.shift_n_m) == 0.0
