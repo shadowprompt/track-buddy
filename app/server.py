@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -16,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import CONFIG, DATA_DIR, ROOT, load_dotenv
 from .cv_utils import imread_unicode
+from .multishot import stitch as stitch_images
 from .pipeline import RidePipeline
 from .tmap_proxy import create_proxy_router, make_secret, render_page
 
@@ -81,6 +83,200 @@ def health() -> dict[str, Any]:
     }
 
 
+def _parse_road_names(raw: str) -> list[str]:
+    """把用户输入的路名拆成去重后的列表。
+
+    支持逗号、顿号、换行分隔。
+    """
+    names: list[str] = []
+    for part in raw.replace("\n", ",").replace("、", ",").split(","):
+        p = part.strip()
+        if p and p not in names:
+            names.append(p)
+    return names
+
+
+def _save_upload(data: bytes, filename: str | None) -> tuple[str, Path]:
+    """保存上传的图片，返回 (shot_id, 路径)。"""
+    ext = Path(filename or "shot.jpg").suffix.lower() or ".jpg"
+    if ext not in (".jpg", ".jpeg", ".png", ".webp"):
+        ext = ".jpg"
+    shot_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    shot_path = UPLOAD_DIR / f"{shot_id}{ext}"
+    shot_path.write_bytes(data)
+    return shot_id, shot_path
+
+
+def _build_payload_from(result: Any, shot_id: str, shot_url: str) -> dict[str, Any]:
+    """把 PipelineResult 打包成接口返回结构。"""
+    return {
+        "ok": result.confidence > 0 and result.track_points > 0,
+        "shot_id": shot_id,
+        "shot_url": shot_url,
+        "geojson": result.geojson,
+        "geojson_gcj02": result.geojson_gcj02,
+        "confidence": result.confidence,
+        "crs": result.crs,
+        "track_points": result.track_points,
+        "distance_m": result.distance_m,
+        "anchors_used": result.anchors_used,
+        "anchors_rejected": result.anchors_rejected,
+        "road_attribution": result.road_attribution,
+        "road_fit": result.road_fit,
+        "road_name_constraints": result.road_name_constraints,
+        "road_name_fit": result.road_name_fit,
+        "alternatives": result.alternatives,
+        "diagnostics": result.diagnostics,
+        "warnings": result.warnings,
+        "elapsed_ms": result.elapsed_ms,
+        "track_polyline_px": result.track_polyline_px,
+        "image_size": list(result.image_size),
+    }
+
+
+def _persist_last_result(payload: dict[str, Any]) -> None:
+    """落盘给「轨迹地图对照页」用。
+
+    低缩放截图的定位结果光看坐标看不出对错，
+    必须落到真实底图上才知道落在哪个街区。
+    """
+    try:
+        p = dict(payload)
+        gj = p.get("geojson_gcj02") or p.get("geojson") or {}
+        feats = gj.get("features") or []
+        coords = (
+            [[round(float(lo), 6), round(float(la), 6)]
+             for lo, la in feats[0]["geometry"]["coordinates"]]
+            if feats else []
+        )
+        p["coords"] = coords
+        p["coords_a"] = list(coords)
+        p["coords_b"] = list(coords)
+        (DATA_DIR / "last_result.json").write_text(
+            json.dumps(p, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+@app.post("/api/recognize_multi")
+async def recognize_multi(
+    files: list[UploadFile] = File(...),
+    city: str = Form(""),
+    output_crs: str = Form("WGS-84"),
+    allow_online: bool = Form(True),
+    refine: str = Form("auto"),
+    road_names: str = Form(""),
+) -> JSONResponse:
+    """上传**多张**街道级截图，拼成一张大图后识别。
+
+    ## 为什么需要这个接口
+
+    城市级截图里，11 公里的骑行只占约 680 像素——底图上的轨迹线
+    **本身就是直线**，街道锯齿在截图阶段就已丢失。这种图能定出
+    「位置」（误差 300-900 米），但**恢复不了「形状」**。
+
+    街道级截图能看清形状，但一张图盖不住整条路线。
+    所以做法是：沿路线滑动截 4-6 张有重叠的图，服务端用特征匹配
+    求出图间位移、拼成一张大图，再走单图的完整流程。
+
+    拼成大图还顺带解决了**尺度**问题：
+    单张街道级图的尺度会算成 16 米/像素（偏差 8 倍），
+    而大图上的 POI 标注铺开在数公里范围内，尺度能被稳定定出来。
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="没有收到图片")
+    max_bytes = CONFIG.vision.max_upload_mb * 1024 * 1024
+    names = _parse_road_names(road_names)
+
+    saved: list[tuple[str, Path]] = []
+    imgs: list[np.ndarray] = []
+    for f in files:
+        data = await f.read()
+        if len(data) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{f.filename or '文件'} 超过 {CONFIG.vision.max_upload_mb}MB 限制",
+            )
+        if not data:
+            continue
+        shot_id, shot_path = _save_upload(data, f.filename)
+        try:
+            img = imread_unicode(shot_path)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=f"图片解析失败: {exc}") from exc
+        saved.append((shot_id, shot_path))
+        imgs.append(img)
+
+    if not imgs:
+        raise HTTPException(status_code=400, detail="没有可用的图片")
+
+    # --- 拼接 ---
+    stitch_info: dict[str, Any] = {}
+    canvas = imgs[0]
+    if len(imgs) > 1:
+        try:
+            st = stitch_images(imgs)
+        except Exception as exc:  # noqa: BLE001 — 拼接失败不该让整个请求 500
+            st = None
+            stitch_info = {"ok": False, "notes": [f"拼接失败: {exc}"]}
+        if st is not None:
+            stitch_info = st.to_dict()
+            if st.ok and st.canvas is not None:
+                canvas = st.canvas
+            elif not st.ok:
+                # 拼接不上就退回第一张，但必须告诉用户
+                stitch_info.setdefault("notes", []).append(
+                    "拼接未成功，已退回用第 1 张图识别——"
+                    "请确认各张截图有足够重叠（相邻两张至少约 1/3 重叠）"
+                )
+    else:
+        stitch_info = {"ok": True, "notes": ["只有一张图，无需拼接"], "used": [0]}
+
+    # --- 识别（复用单图流程）---
+    want_refine = refine.strip().lower() in ("1", "true", "yes", "on", "auto")
+    do_sync_refine = refine.strip().lower() in ("1", "true", "yes", "on")
+    try:
+        result = _pipeline.run(
+            canvas,
+            city=city.strip(),
+            allow_online=allow_online,
+            output_crs=output_crs,
+            refine=do_sync_refine,
+            road_names=names or None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc
+
+    shot_id, shot_path = saved[0]
+    payload = _build_payload_from(result, shot_id, f"/api/shots/{shot_id}{shot_path.suffix}")
+    payload["stitch"] = stitch_info
+    payload["n_shots"] = len(imgs)
+    payload["warnings"] = list(result.warnings) + list(stitch_info.get("notes") or [])
+
+    # 拼接后的画布存一份，供前端叠加显示。
+    #
+    # ⚠️ **必须用 PNG，不能用 JPEG**：
+    # 用户要靠这张图判断「拼得对不对」，而 JPEG 的有损压缩会在
+    # 接缝处产生可见的块状噪声，还会让底图的街道注记糊掉，
+    # 反而更难判断。PNG 无损，画布又只是白底+拼接内容，体积可接受。
+    try:
+        canvas_shot_id = f"{shot_id}_stitched"
+        cv2.imwrite(str(UPLOAD_DIR / f"{canvas_shot_id}.png"), canvas)
+        payload["stitched_url"] = f"/api/shots/{canvas_shot_id}.png"
+    except Exception:
+        payload["stitched_url"] = f"/api/shots/{shot_id}{shot_path.suffix}"
+
+    _persist_last_result(payload)
+    # 多图结果单独存一份——否则之后跑一次单图识别就会把它冲掉，
+    # 核对页就看不到了。
+    try:
+        (DATA_DIR / "last_stitch.json").write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    return JSONResponse(payload)
+
+
 @app.post("/api/recognize")
 async def recognize(
     file: UploadFile = File(...),
@@ -139,48 +335,8 @@ async def recognize(
     except Exception as exc:  # noqa: BLE001 — 兜底，避免单次请求打挂服务
         raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc
 
-    payload: dict[str, Any] = {
-        "ok": result.confidence > 0 and result.track_points > 0,
-        "shot_id": shot_id,
-        "shot_url": f"/api/shots/{shot_id}{ext}",
-        "geojson": result.geojson,
-        "geojson_gcj02": result.geojson_gcj02,
-        "confidence": result.confidence,
-        "crs": result.crs,
-        "track_points": result.track_points,
-        "distance_m": result.distance_m,
-        "anchors_used": result.anchors_used,
-        "anchors_rejected": result.anchors_rejected,
-        "road_attribution": result.road_attribution,
-        "road_fit": result.road_fit,
-        "road_name_constraints": result.road_name_constraints,
-        "road_name_fit": result.road_name_fit,
-        "alternatives": result.alternatives,
-        "diagnostics": result.diagnostics,
-        "warnings": result.warnings,
-        "elapsed_ms": result.elapsed_ms,
-        "track_polyline_px": result.track_polyline_px,
-        "image_size": list(result.image_size),
-    }
-
-    # 落盘给「轨迹地图对照页」用：低缩放截图的定位结果光看坐标
-    # 看不出对错，必须落到真实底图上才知道落在哪个街区。
-    try:
-        import json as _json
-        _map_payload = dict(payload)
-        _map_payload["coords"] = [
-            [round(float(lo), 6), round(float(la), 6)]
-            for lo, la in (
-                (result.geojson_gcj02 or result.geojson)["features"][0]
-                ["geometry"]["coordinates"]
-            )
-        ] if (result.geojson_gcj02 or result.geojson).get("features") else []
-        _map_payload["coords_a"] = list(_map_payload["coords"])
-        _map_payload["coords_b"] = list(_map_payload["coords"])
-        (DATA_DIR / "last_result.json").write_text(
-            _json.dumps(_map_payload, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
+    payload = _build_payload_from(result, shot_id, f"/api/shots/{shot_id}{ext}")
+    _persist_last_result(payload)
 
     # 需要后台精修吗？
     #
@@ -369,6 +525,29 @@ def _server_port(request: Request | None = None) -> int:
     except Exception:  # noqa: BLE001 — 读不到就用默认值
         pass
     return 8000
+
+
+@app.get("/stitch-check")
+async def stitch_check(request: Request, shot: str = "") -> Response:
+    """多图拼接的核对页。
+
+    把三样东西按**同一坐标系**叠在一张画布上：
+
+    1. 拼接图（大图，网页缩放到能看全）；
+    2. 每张原图在画布上的位置框（黄色虚线，编号）；
+    3. 识别出的轨迹（绿色）与锚点（黄色点）。
+
+    只给「拼接成功 + 复核分 0.95」这样的数字，用户没法判断拼得对不对；
+    这个页面让他一眼看出：位置框是不是首尾相接、轨迹有没有贴住底图。
+
+    页面还能**下载对照图**（PNG），方便留存或发给别人看。
+    """
+    from .stitchcheck import load_stitch_result, render_stitch_check
+
+    result = load_stitch_result(shot or None)
+    html = render_stitch_check(result)
+    html = render_page(html, _server_port(request), _TMAP_SECRET)
+    return Response(content=html, media_type="text/html")
 
 
 @app.get("/traj-map")

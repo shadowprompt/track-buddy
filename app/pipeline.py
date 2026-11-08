@@ -315,20 +315,20 @@ class RidePipeline:
         simplified = simplify_polyline(sampled, eps=eps_px)
         lonlat_gcj = apply_to_polyline(reg, simplified)
 
-        # --- 阶段 5.5：形状重建 ---
+        # --- 阶段 5.5：按路名串出路线 ---
         #
         # 城市级截图里 11 公里的骑行只占 ~680 像素，美团画的那条线
         # **本身就是直线**——街道锯齿在截图阶段就丢了。
-        # 路名能修正**位置**，但修不了**形状**；这里用路名的真实几何
-        # 把直线「掰」回沿路的走向（见 `app/shapefit.py`）。
+        # 路名能修正**位置**，但修不了**形状**；这里用用户的路名列表
+        # （本身就是路线描述）**串出**完整路线（见 `app/routebuild.py`）。
         if _road_cons and road_name_fit.get("ok"):
-            rebuilt = self._rebuild_shape(
+            rebuilt = self._build_route(
                 lonlat_gcj, _road_cons, road_name_fit
             )
             if rebuilt is not None:
                 lonlat_gcj = rebuilt
                 # ⚠️ **重建后必须重跑跨江检查**。
-                # 重建会让轨迹变长、变弯（实测 13102 -> 17553 米），
+                # 串路会让轨迹变长、变弯（实测 13102 -> 14656 米），
                 # 可能触到江边；而跨江护栏是**安全底线**，
                 # 必须反映**最终**输出，而不是重建前的状态。
                 try:
@@ -1041,9 +1041,6 @@ class RidePipeline:
 
             if fit.points is None or len(fit.points) < 10:
                 return
-            segs = fit.segments
-            if len(segs) < 2:
-                return
             user_names = [c.name for c in constraints]
             if not user_names:
                 return
@@ -1072,7 +1069,17 @@ class RidePipeline:
                     continue
                 wps.append(to_wgs((lo, la)))
             if not wps:
-                wps = [to_wgs(fit.points[b]) for _, b, _ in segs[:-1]]
+                # 兜底：用串路结果里各路名的接触点（routebuild 的 segments）
+                for seg in (getattr(fit, "segments", None) or []):
+                    if not isinstance(seg, dict):
+                        continue
+                    frm = seg.get("from_m")
+                    if frm is None:
+                        continue
+                    j = int(np.argmin(np.abs(np.cumsum(
+                        np.linalg.norm(np.diff(fit.points, axis=0), axis=1))
+                    ) - float(frm)))
+                    wps.append(to_wgs(fit.points[j]))
             # 去重相邻重复点（Valhalla 对重复位置敏感）
             ded: list[tuple[float, float]] = []
             for p in wps:
@@ -1136,40 +1143,160 @@ class RidePipeline:
             road_name_fit.setdefault("notes", []).append(
                 f"外部路网校验未完成（{type(exc).__name__}）")
 
-    def _rebuild_shape(
+    def _insert_seam_paths(
+        self,
+        fit: Any,
+        constraints: list[Any],
+    ) -> None:
+        """用 Valhalla 的逐对连接路径填充接缝。
+
+        串路只解决了「每条路走哪一段」，相邻两条路之间仍是**直线跳跃**。
+        实测（同一张城市级截图）：
+          船厂路 → 中山南二路  直线 1054 米 | 真实路径 1478 米
+                               经由 零陵路、枫林路、斜土路
+          中山南二路 → 东安路  直线 1692 米 | 真实路径 2024 米
+                               经由 斜土路、枫林路、肇嘉浜路、宛平路
+
+        插入后整条路线才是一条**可骑行**的路线，而不是若干直线的拼接。
+
+        ⚠️ 物理约束：Valhalla 路径长度必然 >= 直线距离，所以插入只会让
+        路线**变长**。若反而变短，说明对齐错了——必须放弃。
+        """
+        try:
+            import numpy as np
+
+            from .geo.coords import (
+                gcj02_to_wgs84, lonlat_to_mercator, mercator_to_lonlat,
+                wgs84_to_gcj02,
+            )
+            from .seampath import insert_seams
+            from .valhalla import ValhallaClient
+
+            route = getattr(fit, "points", None)
+            if route is None or len(route) < 10:
+                return
+            segs = getattr(fit, "segments", None) or []
+            if len(segs) < 2:
+                return
+
+            client = getattr(self, "valhalla", None)
+            if client is None:
+                client = ValhallaClient(cache_dir=str(self.cfg.road_cache_dir))
+                self.valhalla = client
+            if not client.enabled:
+                fit.notes.append("接缝插入：Valhalla 未启用，跳过")
+                return
+
+            def to_wgs(merc):
+                lo, la = mercator_to_lonlat(float(merc[0]), float(merc[1]))
+                return gcj02_to_wgs84(lo, la)
+
+            def to_merc(wgs):
+                clo, cla = wgs84_to_gcj02(wgs[0], wgs[1])
+                return lonlat_to_mercator(clo, cla)
+
+            # 接缝 i = 「路 i 的离开点」-> 「路 i+1 的进入点」。
+            # 这两个点就是 routebuild 算出的锚点（各段的起止）。
+            bounds = list(getattr(fit, "arc_bounds", None) or [])
+            # ⚠️ arc_bounds 是**每条路名**的锚点（长度 = 路名数），
+            # 而 segments 只含**命中**的路名——两者长度不同。
+            # 所以判定用「路名数」，不是 segments 数。
+            n_roads = len(getattr(fit, "segments", None) or []) or len(bounds)
+            if len(bounds) < 2:
+                fit.notes.append("接缝插入：缺少分段锚点，跳过")
+                return
+
+            paths: list[Any] = []
+            for i in range(len(bounds) - 1):
+                p_a = route[bounds[i][1]]
+                p_b = route[bounds[i + 1][0]]
+                straight = float(np.hypot(*(p_b - p_a)))
+                r = client.route([to_wgs(p_a), to_wgs(p_b)],
+                                 costing="pedestrian")
+                if not r.ok or len(r.geometry) < 2:
+                    paths.append(None)
+                    continue
+                # 路径长度与直线距离之比有上限（绕得太远说明选错了锚点）
+                if straight > 50.0 and r.distance_m > straight * 3.0:
+                    paths.append(None)
+                    continue
+                paths.append(np.array([to_merc(p) for p in r.geometry]))
+
+            seam = insert_seams(route, paths, [b[0] for b in bounds],
+                                [b[1] for b in bounds])
+            for note in seam.notes:
+                fit.notes.append("接缝插入：" + note)
+            if seam.ok and seam.points is not None:
+                fit.points = seam.points
+                fit.length_m = seam.length_after_m
+            fit.seam_insert = seam.to_dict()
+
+        except Exception as exc:  # noqa: BLE001
+            fit.notes.append(
+                f"接缝插入未执行（{type(exc).__name__}: {exc}）")
+
+    def _build_route(
         self,
         lonlat_gcj: list[tuple[float, float]],
         constraints: list[Any],
         road_name_fit: dict[str, Any],
     ) -> list[tuple[float, float]] | None:
-        """用用户提供的路名重建轨迹形状。
+        """用用户提供的路名**串出**路线（替换旧的「掰弯直线」）。
 
-        背景：城市级缩放（一张图覆盖 20 公里）时，截图里的骑行轨迹线
-        **本身就是一条直线**——11 公里的骑行只占 ~680 像素，
-        街道锯齿在截图阶段就丢了。所以「位置」可以靠路名修正（起终点锚定，
-        实测准到 300-900 米），但「形状」修不了。
+        背景
+        ----
+        城市级缩放（一张图覆盖 20 公里）时，截图里的骑行轨迹线
+        **本身就是一条直线**——街道锯齿在截图阶段就丢了。
 
-        这里用路名的**真实道路几何**把直线掰回沿路的走向：
-        小木桥路往南 -> 中山南二路往西 -> 肇嘉浜路往北 -> 虹古路往北，
-        也就是用户记忆里那条 Z 字形路线。
+        旧做法（`app/shapefit.py`）是把这条直线**掰弯**到路名上。
+        实测**这条路是错的**（用几何判定，不是肉眼看图）：
 
-        实测效果（同一张城市级截图）：
-          lat 方向反转次数  5 -> 19（直线变锯齿）
-          离首尾直线距离    0.067 -> 0.121
-          轨迹长度          13102 -> 17553 米（真实路径本该比直线长）
-          逐段残差          9333 -> 7021 米
+        | 路名 | 掰弯后接触点数（60 米内）|
+        |---|---|
+        | 小木桥路 | **0**（完全没经过）|
+        | 肇嘉浜路 | **0**（完全没经过）|
+        | 中山南二路 | 131 |
 
-        ⚠️ **重建是「基于路名的推断」**，不是从截图直接读出的。
-        原始轨迹会保留在 `road_name_fit["shape_fit"]["original"]` 里，
-        前端可切换对比。
+        中间有 5.8 公里完全没贴任何路——那还是原始直线。
+        而且旧指标「逐段残差 9333 -> 7021」与「覆盖 99%」都是
+        **假的**：DP 强制把弧长铺满给每条路，所以覆盖率必然接近 100%，
+        它衡量的是「分配了多少弧长」，不是「真的贴在路上」。
+
+        新做法
+        ----
+        用户的路名列表本身就是**路线描述**——「从小木桥路出发，经
+        龙华中路、���厂路、中山南二路……到安龙路」。所以直接把它
+        **串成几何**（`app/routebuild.py`）：
+
+        1. 链式 DP 选空间连贯的实例
+        2. 相邻两条路求最近点对 -> 路口
+        3. 每条路的「进入点」= 与上一条路的路口，「离开点」= 与下一条
+        4. 按主轴方向裁出 entry->exit 的子弧，串成完整路线
+        5. 枚举每条路的正/反方向，取「接触顺序与用户顺序最一致」的
+
+        实测（同一张城市级截图，10 条路名）：
+
+        | | 掰弯直线 | 串路 |
+        |---|---|---|
+        | 路名经过数 | 8/10 | **10/10** |
+        | 顺序一致率 | — | **100%** |
+        | 里程 | 17553 m | **14656 m** |
+        | 端点偏移 | 0 m | 236 m / 188 m |
+
+        独立标尺：10 条路名的 OSM 实例主轴长度之和为 **17308 米**——
+        真实骑行必然接近这个量级。14656 米比 17553 米更接近。
+
+        ⚠️ 这是「基于用户路名推断出来的」路线，不是从截图直接读出的。
+        原始轨迹保留在 `road_name_fit["route_build"]["original"]`，
+        置信度**不上浮**（宁可保守）。
         """
         try:
             import numpy as np
 
-            from .geo.coords import mercator_to_lonlat
+            from .geo.coords import lonlat_to_mercator, mercator_to_lonlat
             from .roadchain import build_candidates, select_chain
-            from .roadname_constraint import _dist_to_segments
-            from .shapefit import _arc, fit_shape, main_axis
+            from .routebuild import build_route
+            from .shapefit import main_axis
 
             traj = np.array(
                 [lonlat_to_mercator(lo, la) for lo, la in lonlat_gcj])
@@ -1180,104 +1307,63 @@ class RidePipeline:
 
             cands = build_candidates(
                 [(c.name, c.segments) for c in constraints])
-            chain = select_chain(cands, traj, arc)
+            # ⚠️ **必须带长度惩罚**：同名路的最长实例未必是骑行的那段。
+            # 实测「中山南二路」最长实例 4963 米（在西南 2.7 公里外），
+            # 惩罚后正确选中 366 米那段（离起点 1302 米）。
+            chain = select_chain(cands, traj, arc, length_penalty=0.5)
             if not chain.ok:
+                road_name_fit.setdefault("notes", []).append(
+                    "路线构建未执行：路名实例无法选出空间连贯的组合")
                 return None
 
-            # 路名与轨迹的**接触点**——外部路由引擎的途经点要用它。
-            #
-            # ⚠️ 不能用「重建后的段末点」当途经点：那批点已经变形了，
-            # 用它们做途经点会让引擎走完全不同的路线
-            # （实测命中从 5/10 掉到 3/10）。
-            #
-            # 单位说明：`contact_points` 只用 arc 记录「接触点在轨迹上的
-            # 位置」，`contact_geo`（真正要用的坐标）与 arc 无关，
-            # 所以这里传米制弧长没问题（反而更合理——`scale_from_chain`
-            # 会拿它跟路名的米制长度比较）。
-            try:
-                from .roadchain import contact_points
-                contact_points(chain, traj, arc)
-            except Exception:  # noqa: BLE001
-                pass
-            self._chain_contact_geo = list(chain.contact_geo)
-
-            polys, arcs, lens, names = [], [], [], []
-            for inst in chain.chosen:
-                poly = main_axis(inst.points)
-                if len(poly) < 2:
-                    return None
-                a = _arc(poly)
-                polys.append(poly)
-                arcs.append(a)
-                lens.append(float(a[-1]))
-                names.append(inst.name)
-            if len(polys) != len(constraints):
-                # 链式 DP 选出的实例数必须与路名数一致，否则无法逐段对应
+            # 每条路的**全部实例**（主轴）。build_route 内部会：
+            #   合并首尾相接的片段 -> 链式 DP 选实例 -> 算路口 -> 裁子弧
+            per_road = []
+            for k in range(len(constraints)):
+                per_road.append([main_axis(i.points) for i in cands[k]])
+            # 每条路至少要有一个长度 >= 2 的实例
+            if any(not any(len(q) >= 2 for q in cands_k)
+                   for cands_k in per_road):
+                road_name_fit.setdefault("notes", []).append(
+                    "路线构建未执行：路名实例几何不足")
                 return None
 
-            def residual(points, idx, spans):
-                """逐段残差：每段只对它自己对应的路名算距离。
-
-                ⚠️ 不能用「到所有路名的残差合计」——重建后该段贴着自己
-                的路名（残差 0）但离其他路名更远，合计值反而变差，
-                会误杀正确的重建（实测 28201 -> 31788）。
-                """
-                total = float(arc[-1]) or 1.0
-                bounds = np.linspace(0.0, total, 120 + 1)
-                tot = 0.0
-                for k, (a, b) in enumerate(spans):
-                    if b < a or k >= len(constraints):
-                        continue
-                    lo, hi = bounds[a], bounds[b + 1]
-                    ii = np.where((arc >= lo) & (arc <= hi))[0]
-                    if len(ii) < 2:
-                        continue
-                    tot += float(np.median(_dist_to_segments(
-                        points[ii], constraints[k].segments)))
-                return tot
-
-            fit = fit_shape(traj, arc, polys, arcs, lens, names,
-                            residual_fn=residual, n_seg=120)
+            fit = build_route(
+                per_road,
+                [c.name for c in constraints],
+                [c.segments for c in constraints],
+                traj[0], traj[-1],
+            )
+            # --- 接缝插入：让相邻路名之间走真实路网，而不是直线跳跃 ---
+            if fit.ok and fit.points is not None:
+                self._insert_seam_paths(fit, constraints)
             info = fit.to_dict()
             info["original"] = [
                 [round(lo, 6), round(la, 6)] for lo, la in lonlat_gcj]
+            road_name_fit["route_build"] = info
+            # 兼容旧字段名（前端两处都读）
             road_name_fit["shape_fit"] = info
-            if not fit.ok or fit.points is None:
-                # ⚠️ **所有 note 都要传出去**：之前只放行含
-                # 「跳过/未改善/放弃」的，OSRM 失败原因（"未采用"）
-                # 被静默吞掉，排查时完全看不到发生了什么。
-                for n in fit.notes:
-                    road_name_fit.setdefault("notes", []).append(
-                        "形状重建：" + n)
-                return None
-            # --- 形状来源的取舍：几何重建 vs OSRM 路线 ---
-            #
-            # 几何重建「逐段精确」（贴住用户说的每条路），但段间是直线跳跃；
-            # OSRM 路线「整体真实」（有正确的路口连接与绕行，形状更像骑行），
-            # 但走的是它自己的最优路，每段可能偏离用户说的那条。
-            #
-            # 判据：**OSRM 命中的用户路名够多才采纳**——
-            # 命中越多说明 OSRM 走的就是用户那条路线。
-            # 实测 OSRM driving 命中 6/10 条（中山南二路、东安路、肇嘉浜路、
-            # 虹桥路、水城路、虹古路），而高德 walking 只命中 1 条。
-            road_name_fit.setdefault("notes", []).append(
-                f"形状重建：已按路名把轨迹掰回沿路走向"
-                f"（覆盖 {fit.covered_ratio:.0%}，"
-                f"逐段残差 {fit.before_m:.0f} -> {fit.after_m:.0f} 米）")
-            # OSRM 只做**交叉验证**，不用它的几何当轨迹（见 _osrm_route 的说明）
-            self._external_verify(fit, constraints, road_name_fit)
-            # ⚠️ **note 要在 OSRM 调用之后才收集**——OSRM 的诊断信息
-            # 是调用时才产生的（之前放在前面，结果被静默吞掉，
-            # 排查时完全看不到 OSRM 为什么没被采纳）。
-            for n in fit.notes:
+            for note in fit.notes:
                 road_name_fit.setdefault("notes", []).append(
-                    "形状重建：" + n)
+                    "路线构建：" + note)
+            if not fit.ok or fit.points is None:
+                return None
+
+            # 外部路网交叉验证（Valhalla）：它只知道起终点，不知道
+            # 用户填了哪些路名，能命中说明用户的记忆与真实路网吻合。
+            self._external_verify(fit, constraints, road_name_fit)
+
             out = [tuple(mercator_to_lonlat(float(x), float(y)))
                    for x, y in fit.points]
+            road_name_fit.setdefault("notes", []).append(
+                f"路线构建：已按路名串出完整路线"
+                f"（经过 {fit.n_hit}/{len(constraints)} 条路名，"
+                f"顺序一致 {fit.order_consistency:.0%}，"
+                f"里程 {fit.length_m:.0f} 米）")
             return out
         except Exception as exc:  # noqa: BLE001
             road_name_fit.setdefault("notes", []).append(
-                f"形状重建未执行（{type(exc).__name__}）")
+                f"路线构建未执行（{type(exc).__name__}）")
             return None
 
     def _collect_alternatives(

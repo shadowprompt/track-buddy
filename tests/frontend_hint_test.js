@@ -90,6 +90,85 @@ out = lowConfidenceHint({
 check(out.includes('缩放级别'), '缩放过低时即使置信度高也要提示');
 check(out.includes('位置'), '区分「位置」与「走向」两个维度');
 
+// ===================================================================
+// 拼接信息块（多图识别）
+//
+// 为什么单独测：用户传了 5 张图却只拼上 2 张时，
+// 页面必须告诉他「哪几张没拼上、重叠是不是不够」，
+// 否则用户只会看到结果不对，却不知道该重截哪几张。
+// ===================================================================
+eval(extract('stitchBlock'));
+
+console.log('\n【场景7】多图拼接成功');
+let s = stitchBlock({
+  ok: true,
+  used: [0, 1, 2],
+  unused: [],
+  canvas_size: [828, 1024],
+  links: [
+    { i: 0, j: 1, inliers: 863, ncc: 0.94 },
+    { i: 1, j: 2, inliers: 870, ncc: 0.99 },
+  ],
+});
+console.log('  ' + s.replace(/<[^>]+>/g, '').slice(0, 200) + '\n');
+check(s.includes('已拼接 3 张'), '显示用了几张图', s.slice(0, 160));
+check(s.includes('828×1024'), '显示画布尺寸');
+check(s.includes('第1↔第2张'), '显示每对图的重叠情况');
+check(!s.includes('重叠偏弱'), '重叠良好时不提示');
+
+console.log('\n【场景8】拼接失败');
+s = stitchBlock({ ok: false, used: [], unused: [0, 1, 2], links: [] });
+console.log('  ' + s.replace(/<[^>]+>/g, '').slice(0, 160) + '\n');
+check(s.includes('未能拼接'), '明确告知拼接失败');
+
+console.log('\n【场景9】有图没拼上 + 重叠偏弱');
+s = stitchBlock({
+  ok: true,
+  used: [0, 1],
+  unused: [2],
+  canvas_size: [828, 1024],
+  links: [{ i: 0, j: 1, inliers: 12, ncc: 0.31 }],
+});
+console.log('  ' + s.replace(/<[^>]+>/g, '').slice(0, 220) + '\n');
+check(s.includes('1 张未用上'), '提示有图没拼上', s.slice(0, 200));
+check(s.includes('重叠偏弱'), '提示重叠偏弱、建议多留重叠');
+check(s.includes('12 内点'), '显示实际内点数');
+
+// --- 场景 10：像素级复核分（回答「拼得对不对」）---
+console.log('\n【场景10】拼接复核分');
+s = stitchBlock({
+  ok: true,
+  used: [0, 1, 2],
+  unused: [],
+  canvas_size: [828, 1024],
+  verify_score: 0.9515,
+  verify: [
+    { index: 0, similarity: 1.0, pixels: 194560 },
+    { index: 1, similarity: 0.9515, pixels: 652288 },
+    { index: 2, similarity: 0.9395, pixels: 457728 },
+  ],
+  shots: [
+    { index: 0, box: [0, 0, 700, 1024] },
+    { index: 1, box: [190, 0, 890, 1024] },
+    { index: 2, box: [380, 0, 1080, 1024] },
+  ],
+  links: [{ i: 0, j: 1, inliers: 863, ncc: 0.94 }],
+});
+console.log('  ' + s.replace(/<[^>]+>/g, '').slice(0, 260) + '\n');
+check(s.includes('拼接复核'), '显示拼接复核行');
+check(s.includes('通过'), '高分判为通过', s.slice(0, 200));
+check(s.includes('0.952'), '显示相似度数值');
+check(s.includes('原图位置'), '提示预览图上的虚线框含义');
+
+console.log('\n【场景11】复核分偏低 -> 判为可疑');
+s = stitchBlock({
+  ok: true, used: [0, 1], unused: [], canvas_size: [828, 1024],
+  verify_score: 0.62, verify: [], shots: [], links: [],
+});
+console.log('  ' + s.replace(/<[^>]+>/g, '').slice(0, 200) + '\n');
+check(s.includes('可疑'), '低分判为可疑');
+check(s.includes('没对齐'), '明确说接缝可能没对齐');
+
 console.log('');
 if (failures.length) {
   console.log('失败 ' + failures.length + ' 项：' + JSON.stringify(failures));

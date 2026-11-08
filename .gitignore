@@ -22,6 +22,7 @@ dist/*.tmp
 data/uploads/
 data/cache/
 data/last_result.json
+data/last_stitch.json
 data/feedback.json
 data/lexicon.json.bak
 

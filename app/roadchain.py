@@ -163,11 +163,31 @@ def select_chain(
     max_jump_m: float = 6000.0,
     jump_penalty: float = 0.35,
     max_candidates: int = 12,
+    length_penalty: float = 0.0,
 ) -> ChainResult:
     """链式 DP：为每条路名选一个空间连贯的实例。
 
     traj:    (N,2) 像素轨迹（未投影）
     arc_px:  (N,)  像素弧长
+
+    length_penalty
+    -------------
+    对「长实例」的惩罚系数（米/米，即每多长 1 米扣多少分）。
+
+    ⚠️ **为什么需要它**（实测踩到的坑）：
+    原来的 DP 只看「实例到轨迹的最近距离」+「相邻实例间的距离」。
+    但同名路的最长实例未必是骑行的那一段——
+
+        中山南二路 4 个实例：
+          121.45649,31.19608 -> 121.46785,31.20083  长 1413 米  离起点 590 米  ← 正确
+          121.43160,31.18164 -> 121.42761,31.18348  长 4963 米  离起点 2676 米 ← 被误选
+
+    4963 米那条在西南方向，离起点 2.7 公里，但因为「离相邻实例更近」
+    而胜出——结果串出的路线里「船厂路→中山南二路」「中山南二路→东安路」
+    「东安路→肇嘉浜路」三条接缝全是 1.5-1.8 公里的**假连接**
+    （那两条路根本不相邻，中间隔着整个街区）。
+
+    加上长度惩罚后，DP 会优先选「离轨迹近」的短实例。
     """
     res = ChainResult()
     n = len(candidates)
@@ -184,7 +204,13 @@ def select_chain(
         costs = []
         for inst in cands[:max_candidates]:
             d, _ = inst.tree.query(traj)
-            costs.append(float(d.min()))
+            c = float(d.min())
+            if length_penalty > 0.0 and inst.n > 1:
+                # 实例越长越可疑：同名路的最长那段未必是骑行的那段
+                seg_len = float(np.linalg.norm(
+                    np.diff(inst.points, axis=0), axis=1).sum())
+                c += length_penalty * seg_len
+            costs.append(c)
         emission.append(np.array(costs))
 
     usable = [i for i in range(n) if emission[i] is not None]

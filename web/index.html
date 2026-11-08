@@ -81,8 +81,17 @@
      下半部分直接裁掉（用户反馈"原始图的下部分总是显示不全"）。
      改为高度自适应，由图片本身撑开。 */
   #preview { position:relative; background:#eee; display:none; width:100%; }
-  #preview img { width:100%; display:block; }
-  #preview canvas { position:absolute; inset:0; width:100%; height:100%; }
+  /* 拼接后的大图往往是**横长**的（如 3 张横排 = 1491×1026，
+     竖排则可达 1260×8160）。按宽度缩放会撑出几千像素高的区域，
+     页面就被撑得很长、看不到全貌。
+     所以限制最大高度，让整图始终能一眼看全——
+     看全貌优先于看清细节（细节可以点开原图）。 */
+  #preview img { width:100%; max-height:70vh; object-fit:contain; display:block; }
+  /* canvas 必须与 img 的**实际显示区域**完全一致。
+     object-fit:contain 时图片可能左右留白（不铺满宽度），
+     所以这里不能用 inset:0 + width/height:100%（那是整个容器），
+     必须由 JS 按图片的实际缩放后尺寸和偏移来定位。 */
+  #preview canvas { position:absolute; left:0; top:0; }
   /* 两个可视化面板上下并排显示（而不是互斥切换）。
      用户预期是「右侧上方是识别到图片，右侧下方是原始图」，
      两者要同时能看到——早期做成标签页互斥切换，
@@ -124,7 +133,21 @@
         <div class="drop" id="drop">
           <div class="big">点击选择，或拖拽图片到此处</div>
           <div class="hint">支持 JPG / PNG / WebP，最大 20MB</div>
-          <input type="file" id="file" accept="image/*" hidden>
+          <input type="file" id="file" accept="image/*" multiple hidden>
+        </div>
+
+        <div class="note" id="multiNote" style="margin-top:10px; display:none;">
+          <b>已选 <span id="fileCount">0</span> 张</b>：
+          <span id="fileNames"></span>
+          <div style="margin-top:6px;">
+            骑行路线较长、一张图盖不下时，可沿路线滑动地图连续截图，
+            相邻两张保持约 1/3 重叠后一起上传——服务端会自动拼成一张大图再识别。
+            街道级截图能看清街道走向，比城市级截图准确得多。
+          </div>
+          <button id="clearFiles" type="button"
+                  style="margin-top:8px; font-size:12px; padding:4px 10px;">
+            清空已选
+          </button>
         </div>
 
         <div class="row">
@@ -173,6 +196,8 @@
         <h2>识别结果</h2>
         <div class="stats" id="stats"></div>
         <a class="dl" id="dl" download="trajectory_gcj02.geojson">↓ 下载 GeoJSON（GCJ-02，腾讯/高德底图）</a>
+        <a class="dl" id="stitchCheck" href="/stitch-check" target="_blank"
+           style="margin-left:14px;">多图拼接核对页（拼接图 + 原图位置框 + 轨迹）</a>
         <a class="dl" id="dlG" style="margin-left:14px; display:none;" download="trajectory_wgs84.geojson">↓ 下载 WGS-84 版本（GPS 设备 / Strava）</a>
         <div class="note" style="margin-top:8px;">
           <b>在腾讯地图 / 高德 / 美团里查看，请用 GCJ-02 版本。</b>
@@ -267,16 +292,39 @@
   drop.ondragleave = () => drop.classList.remove('over');
   drop.ondrop = (e) => {
     e.preventDefault(); drop.classList.remove('over');
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length) {
+      setFiles(Array.from(e.dataTransfer.files));
+    }
   };
-  fileInput.onchange = () => { if (fileInput.files[0]) setFile(fileInput.files[0]); };
+  fileInput.onchange = () => {
+    if (fileInput.files.length) setFiles(Array.from(fileInput.files));
+  };
+  $('clearFiles').onclick = (e) => {
+    e.stopPropagation();
+    fileInput.value = '';
+    setFiles([]);
+  };
 
-  function setFile(f) {
-    picked = f;
-    go.disabled = false;
-    drop.querySelector('.big').textContent = f.name;
-    drop.querySelector('.hint').textContent =
-      (f.size / 1024 / 1024).toFixed(2) + ' MB · 点击可重新选择';
+  function setFiles(list) {
+    picked = list.length ? list : null;
+    go.disabled = !picked;
+    const note = $('multiNote');
+    if (!picked) {
+      note.style.display = 'none';
+      drop.querySelector('.big').textContent = '点击选择，或拖拽图片到此处';
+      drop.querySelector('.hint').textContent = '支持 JPG / PNG / WebP，最大 20MB';
+    } else if (picked.length === 1) {
+      note.style.display = 'none';
+      drop.querySelector('.big').textContent = picked[0].name;
+      drop.querySelector('.hint').textContent =
+        (picked[0].size / 1024 / 1024).toFixed(2) + ' MB · 点击可重新选择';
+    } else {
+      note.style.display = '';
+      $('fileCount').textContent = picked.length;
+      $('fileNames').textContent = picked.map(f => f.name).join('、');
+      drop.querySelector('.big').textContent = '已选择 ' + picked.length + ' 张图片';
+      drop.querySelector('.hint').textContent = '点击可重新选择';
+    }
     hideStatus();
   }
 
@@ -290,10 +338,18 @@
   go.onclick = async () => {
     if (!picked) return;
     go.disabled = true;
-    showStatus('<span class="spin"></span> 正在识别：提取轨迹线、OCR 识别地名、地理配准中…');
+    const multi = picked.length > 1;
+    showStatus(multi
+      ? '<span class="spin"></span> 正在拼接 ' + picked.length + ' 张截图并识别…'
+      : '<span class="spin"></span> 正在识别：提取轨迹线、OCR 识别地名、地理配准中…');
 
     const fd = new FormData();
-    fd.append('file', picked);
+    if (multi) {
+      // 多图：走拼接接口
+      for (const f of picked) fd.append('files', f, f.name);
+    } else {
+      fd.append('file', picked[0], picked[0].name);
+    }
     fd.append('city', $('city').value.trim());
     fd.append('output_crs', $('crs').value);
     fd.append('online', $('online').value);
@@ -302,7 +358,8 @@
 
     let data;
     try {
-      const r = await fetch('/api/recognize', { method: 'POST', body: fd });
+      const r = await fetch(multi ? '/api/recognize_multi' : '/api/recognize',
+                            { method: 'POST', body: fd });
       data = await r.json();
       if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
       lastResult = data;
@@ -411,6 +468,65 @@
     return String(v);
   }
 
+  // 拼接信息块。
+  //
+  // 多图识别时，用户最关心两件事：
+  //   1. 几张图真的拼上了（拼了几张、拼成多大）；
+  //   2. **拼得对不对**——这个必须有客观依据，不能让用户靠肉眼猜。
+  //
+  // 「对不对」的判据是**像素级复核分**：把每张图按算出的变换贴回画布，
+  // 与画布内容逐像素比对，相似度 1.0 = 完全对得上。
+  // 内点少或复核分低说明那几张其实没重叠或对歪了——要提示用户重截。
+  function stitchBlock(st) {
+    if (!st) return '';
+    const used = (st.used || []).length;
+    const unused = (st.unused || []).length;
+    const size = st.canvas_size;
+    let h = '<div class="kv"><span>截图拼接</span><span>';
+    if (st.ok) {
+      h += '已拼接 ' + used + ' 张';
+      if (size) h += ' → ' + size[0] + '×' + size[1] + ' 画布';
+      if (unused) h += '（' + unused + ' 张未用上）';
+    } else {
+      h += '<b style="color:#c2410c">未能拼接</b>';
+    }
+    h += '</span></div>';
+
+    // 像素级复核分——「拼得对不对」的客观依据
+    const vs = st.verify_score;
+    if (typeof vs === 'number' && vs > 0) {
+      const good = vs >= 0.9;
+      h += '<div class="kv"><span>拼接复核</span><span>' +
+        (good ? '通过' : '<b style="color:#c2410c">可疑</b>') +
+        '（像素相似度 ' + vs.toFixed(3) + '）' +
+        (good ? '，接缝对得上' : '，接缝可能没对齐') + '</span></div>';
+    }
+
+    const links = st.links || [];
+    if (links.length) {
+      const weak = links.filter(l => l.inliers < 30 || l.ncc < 0.5);
+      h += '<div class="kv"><span>图间重叠</span><span>';
+      h += links.map(l =>
+        '第' + (l.i + 1) + '↔第' + (l.j + 1) + '张：' +
+        l.inliers + ' 内点 / 相似度 ' + l.ncc
+      ).join('；');
+      h += '</span></div>';
+      if (weak.length) {
+        h += '<div class="kv"><span></span><span style="color:#c2410c">' +
+          '有 ' + weak.length + ' 对图的重叠偏弱，建议相邻两张多留一些重叠再截</span></div>';
+      }
+    }
+
+    // 各原图在画布上的位置（前端会在拼接图上画出这些框）
+    const shots = st.shots || [];
+    if (shots.length > 1) {
+      h += '<div class="kv"><span>原图位置</span><span>' +
+        '预览图上的虚线框即各张原图的位置，' +
+        '框应当首尾相接、彼此略有重叠</span></div>';
+    }
+    return h;
+  }
+
   // 低置信度时给出**可操作**的提示。
   //
   // 为什么必须区分「没填路名」和「填了路名但没生效」：
@@ -498,6 +614,7 @@
       '<div class="kv"><span>锚点反投影偏移</span><span>' + (typeof chk === 'number' && isFinite(chk) && chk >= 0 ? chk.toFixed(0) + ' px' : '—') + '</span></div>' +
       '<div class="kv"><span>OCR 文本框</span><span>' + int(dg.ocr_texts, 0) + '</span></div>' +
       '<div class="kv"><span>耗时</span><span>' + int(d.elapsed_ms, 0) + ' ms</span></div>' +
+      (d.stitch ? stitchBlock(d.stitch) : '') +
       (d.warnings && d.warnings.length
         ? '<ul class="warnlist">' + d.warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>'
         : '') +
@@ -554,16 +671,30 @@
           '），起点锚在「' + esc(af.start_road || '—') +
           '」、终点锚在「' + esc(af.end_road || '—') + '」</span></div>';
       }
-      // 形状重建：城市级截图里的轨迹线本身是直线，
-      // 这里按用户填的路名把它掰回沿路的走向（Z 字形）。
-      const sf = rnf.shape_fit;
+      // 路线构建：城市级截图里的轨迹线本身是直线，
+      // 这里用用户填的路名列表（本身就是路线描述）串出完整路线。
+      const sf = rnf.route_build || rnf.shape_fit;
       if (sf && sf.ok) {
-        html += '<div class="kv"><span>形状重建</span><span>已按路名把轨迹' +
-          '掰回沿路走向（覆盖 ' + Math.round((sf.covered_ratio || 0) * 100) +
-          '%，逐段残差 ' + Math.round(sf.before_m) + ' → <b>' +
-          Math.round(sf.after_m) + ' 米</b>）</span></div>';
+        html += '<div class="kv"><span>路线构建</span><span>按你填的路名' +
+          '串出完整路线：经过 <b>' + (sf.n_hit || 0) + '/' +
+          (sf.n_user_names || sf.n_hit || 0) + '</b> 条路名，顺序一致 <b>' +
+          Math.round((sf.order_consistency || 0) * 100) + '%</b>，里程 ' +
+          Math.round(sf.length_m || 0) + ' 米' +
+          (sf.seam_insert && sf.seam_insert.n_inserted
+            ? '（含 ' + sf.seam_insert.n_inserted + ' 段真实路口连接）'
+            : '') + '</span></div>';
+        // 各路名实际走过的长度——这是「真的经过了」的证据
+        if (sf.segments && sf.segments.length) {
+          const segs = sf.segments.filter(x => x && x.n_touch > 0)
+            .map(x => x.name + ' ' + Math.round((x.to_m - x.from_m)) + 'm')
+            .join('、');
+          if (segs) {
+            html += '<div class="kv"><span>各路走过</span><span>' +
+              esc(segs) + '</span></div>';
+          }
+        }
       } else if (sf && sf.notes && sf.notes.length) {
-        html += '<div class="kv"><span>形状重建</span><span>' +
+        html += '<div class="kv"><span>路线构建</span><span>' +
           esc(sf.notes[sf.notes.length - 1]) + '</span></div>';
       }
       // 外部路网校验：外部引擎只知道起终点、不知道用户填了哪些路名，
@@ -818,29 +949,77 @@
   }
 
   // ---------- 原图叠加 ----------
+  //
+  // 多图识别时，底图必须换成**拼接后的大图**：
+  // 轨迹坐标（track_polyline_px）是在拼接画布上算出来的，
+  // 若底图还是第一张原图，叠加会完全错位（而且用户看到的只是 1/N 张图）。
   function drawPreview(d) {
     const img = $('prevImg');
     img.onload = () => {
       const c = $('prevCanvas');
-      const W = img.clientWidth;
-      const H = img.naturalHeight * (W / img.naturalWidth);
-      // 画布的 CSS 尺寸必须与图片完全一致，否则叠加的轨迹会与原图错位。
-      // 之前只设了 style.height，而 CSS 里 canvas 是 height:100%，
-      // 两者会打架——容器高度变了、画布没跟上，轨迹就画偏了。
-      c.style.width = W + 'px';
-      c.style.height = H + 'px';
-      c.width = Math.round(W * devicePixelRatio);
-      c.height = Math.round(H * devicePixelRatio);
+      // ⚠️ 画布必须与图片的**实际显示区域**完全一致。
+      //
+      // CSS 用了 `object-fit: contain` + `max-height`，
+      // 图片可能比容器窄（左右留白）或比容器矮，
+      // 此时用容器的 width/height 算缩放系数会整体偏移。
+      // 所以这里先算出图片在容器里的真实显示矩形。
+      const box = img.getBoundingClientRect();
+      const cont = $('preview').getBoundingClientRect();
+      const dispW = box.width;
+      const dispH = box.height;
+      const offX = box.left - cont.left;
+      const offY = box.top - cont.top;
+      const scale = Math.min(
+        dispW / img.naturalWidth,
+        dispH / img.naturalHeight
+      );
+      const drawW = img.naturalWidth * scale;
+      const drawH = img.naturalHeight * scale;
+      const padX = offX + (dispW - drawW) / 2;
+      const padY = offY + (dispH - drawH) / 2;
+
+      c.style.left = padX + 'px';
+      c.style.top = padY + 'px';
+      c.style.width = drawW + 'px';
+      c.style.height = drawH + 'px';
+      c.width = Math.round(drawW * devicePixelRatio);
+      c.height = Math.round(drawH * devicePixelRatio);
       const ctx = c.getContext('2d');
       ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-      ctx.clearRect(0, 0, W, H);
+      ctx.clearRect(0, 0, drawW, drawH);
 
       // 识别失败时 image_size 是 [0,0]，除零会得到 NaN 并让整张图消失
       const iw = (d.image_size && d.image_size[0]) || img.naturalWidth;
       const ih = (d.image_size && d.image_size[1]) || img.naturalHeight;
       if (!iw || !ih) { applyPreviewVisibility(); return; }
-      const sx = W / iw;
-      const sy = H / ih;
+      const sx = drawW / iw;
+      const sy = drawH / ih;
+
+      // 各原图在画布上的位置框（多图拼接时给出）。
+      //
+      // 这是让用户判断「拼得对不对」的关键依据：
+      // 框应当整齐地首尾相接、彼此有重叠，
+      // 若某个框飘到一边或大得离谱，说明那一张没对上图。
+      const shots = (d.stitch && d.stitch.shots) || [];
+      if (shots.length > 1) {
+        shots.forEach((s) => {
+          if (!s.box || s.box.length !== 4) return;
+          const x = s.box[0] * sx, y = s.box[1] * sy;
+          const w = (s.box[2] - s.box[0]) * sx;
+          const h = (s.box[3] - s.box[1]) * sy;
+          ctx.strokeStyle = 'rgba(255, 196, 0, .95)';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([7, 5]);
+          ctx.strokeRect(x, y, w, h);
+          ctx.setLineDash([]);
+          // 左上角标号：第几张
+          ctx.fillStyle = 'rgba(255, 196, 0, .95)';
+          ctx.fillRect(x, Math.max(0, y - 18), 26, 18);
+          ctx.fillStyle = '#111';
+          ctx.font = 'bold 12px sans-serif';
+          ctx.fillText(String(s.index + 1), x + 8, Math.max(0, y - 18) + 13);
+        });
+      }
 
       // 轨迹
       const pts = d.track_polyline_px || [];
@@ -876,7 +1055,7 @@
       const ctx = c.getContext('2d');
       if (ctx) ctx.clearRect(0, 0, c.width, c.height);
     }
-    img.src = d.shot_url;
+    img.src = d.stitched_url || d.shot_url;
     applyPreviewVisibility();
   }
 
