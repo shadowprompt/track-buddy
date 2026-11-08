@@ -47,6 +47,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+from .scale import Scale, canvas_pixel_budget
+
 
 @dataclass
 class PairLink:
@@ -272,6 +274,7 @@ def _pick_best_shift(
     if len(d) < 8:
         return None
 
+    zero_tol = Scale.from_image(a).zero_shift_tol
     span = float(d[:, 0].max() - d[:, 0].min())
     if span < 1:
         return None
@@ -300,6 +303,23 @@ def _pick_best_shift(
         n_in = int(inl.sum())
         if n_in < 8:
             continue
+        tx, ty = float(M[0, 2]), float(M[1, 2])
+        # ⚠️ **两张不同视角的截图不可能配出 0 位移**。
+        #
+        # 静止 UI 图标与规则街网会让 SIFT 选出一个「单位变换」假解，
+        # 且它的 NCC 可能与真解非常接近，靠相似度分不出来。若放进 link，
+        # 下游判重或断链都会把真实的相邻关系弄断，整组图裂成两块。
+        # 因此必须在**候选峰层面**排除，而不是事后补救。
+        #
+        # 容差按图短边缩放（不同分辨率的截图，配准残差量级不同）。
+        # 唯一例外：两图像素级近重复（同一视角传了两次）——此时 0 位移
+        # 就是真解，必须保留，否则真正的重复图反而检测不出来。
+        if (
+            abs(tx) < zero_tol
+            and abs(ty) < zero_tol
+            and not _is_near_duplicate(a, b)
+        ):
+            continue
         m3 = np.vstack([M, [0, 0, 1]]).astype(float)
         ncc = _ncc(a, b, m3)
         if ncc <= 0.0:
@@ -318,18 +338,15 @@ def _is_near_duplicate(a: np.ndarray, b: np.ndarray, tol: float = 6.0) -> bool:
     ratio test（要求次优距离大于最优的 1.33 倍）会把它们**全部落选**——
     于是 `_match_pair` 返回 None，重复图就检测不出来了。
 
-    实测：用户上传的 4 张里有 2 张是同一视角，
-    其中一对的配准位移是 (0, 0.3) 像素（另一对走的是 SIFT 路径）。
-
-    ## 判据（两条都要满足）
+    ## 判据（两条都要满足，都是尺度无关的量）
 
     1. 尺寸相同 + **逐像素平均差异**极小（tol=6，容忍 JPEG 压缩噪声）；
-    2. **灰度结构相关** > 0.90。
+    2. **灰度结构相关** > 0.90（归一化相关系数，与分辨率无关）。
 
-    第 2 条是 2026-11-08 倒序上传事故补上的：腾讯淡色底图 90% 面积是
-    浅色背景，**不同区域**的两张截图的平均像素差也可能很小；只看平均差
-    会把「路线两端的两张图」误判成同一视角。加上结构相关后，
-    实测这批图两两 NCC 只有 0.18~0.25，同一视角则接近 1.0。
+    只看第 1 条不够：淡色底图大部分面积是浅色背景，**不同区域**的两张
+    截图平均像素差也可能很小，会把路线两端误判成同一视角。结构相关能
+    把「均值接近但布局不同」区分开。两者都是无量纲/逐像素量，
+    因此不需要随图像尺寸缩放。
     """
     if a.shape != b.shape:
         return False
@@ -404,16 +421,19 @@ def stitch(
     images: list[np.ndarray],
     min_inliers: int = 10,
     min_ncc: float = 0.15,
-    max_pixels: int = 60_000_000,
+    max_pixels: int | None = None,
 ) -> StitchResult:
     """把一组截图拼成一张大图。
 
     参数
     ----
     images         各张截图（顺序无所谓，会自动找相邻关系）
-    min_inliers    两图配准所需的最少内点数
-    min_ncc        配准后的重叠区相似度下限（滤掉错配）
-    max_pixels    画布像素上限，防止拼出超大图把内存吃光
+    min_inliers    两图配准所需的最少内点数（特征数量，与尺度无关）
+    min_ncc        配准后的重叠区相似度下限（归一化量，与尺度无关）
+    max_pixels    画布像素上限。默认 None = 按**内存预算 + 输入总像素**
+                  自适应推导（见 `scale.canvas_pixel_budget`），
+                  而不是写死一个像素数：张数少不浪费预算，张数多也不会
+                  因为超过固定上限就被误判为「画布过大」。
     """
     res = StitchResult()
     n = len(images)
@@ -456,41 +476,23 @@ def stitch(
         res.notes.append("找不到任何可用的重叠关系，无法拼接")
         return res
 
-    # --- 1.5 识别重复图 / 剔除「位移近 0」的错配 ---
+    # --- 1.5 识别重复图 ---
     #
-    # ⚠️ **2026-11-08 倒序上传事故**（用户同一批 4 张图，只是把顺序反过来）：
+    # 判重是**破坏性操作**（会删掉一张图），判据只认「内容一致」：
+    # 两张图逐像素 + 灰度结构都几乎一样（`_is_near_duplicate`）。
     #
-    #   正序：起点图↔终点图 SIFT = inl 37 / ncc 0.02 / t=(183,296) → 被过滤
-    #   倒序：终点图↔起点图 SIFT = inl 13 / ncc 0.18 / t=(0.0, 0.3) → 假匹配！
-    #
-    # 旧逻辑只看「位移 < 6px」就判成同一视角重复，把**含起点的第 4 张丢掉**，
-    # 于是画布上找不到「起」徽章，形状检查又连带把轨迹拦掉，用户看到
-    # 「未检测到起点徽章 + 轨迹形状不合理」，与修复前一模一样。
-    #
-    # 更隐蔽的是：ncc=0.18 还能通过 1.6 的默认可信阈值 0.15，
-    # 就算不判重，这条 link 也会把起点图叠到终点图的位置上。
-    #
-    # 所以判重只认**像素 + 结构都几乎一致**（`_is_near_duplicate`），
-    # 位移近 0 但内容不同的，一律判为错配并断开，不再参与拼接。
+    # ⚠️ **绝不能按「配准位移 ≈ 0」判重或删 link**：单位变换假解与真实
+    # 相邻关系可能共存于同一组图里，按位移处理会误删含徽章的图，
+    # 或切断连接两簇图的唯一一座桥。0 位移假解已在 `_pick_best_shift`
+    # 的候选峰层面排除，这里只做纯粹的重复图检测。
     dup_groups: list[list[int]] = []
     dropped: set[int] = set()
-    bad_links: list[tuple[int, int]] = []
-    for (i, j), link in all_links.items():
-        dx = float(link.matrix[0, 2])
-        dy = float(link.matrix[1, 2])
-        same_view = _is_near_duplicate(images[i], images[j])
-        if same_view:
-            if i not in dropped and j not in dropped:
-                dropped.add(j)
-                dup_groups.append([i, j])
-        elif abs(dx) < 6 and abs(dy) < 6:
-            bad_links.append((i, j))
-            res.notes.append(
-                f"图{i + 1}↔图{j + 1} 位移近 0 但内容不同"
-                f"（内点 {link.inliers}，相似度 {link.ncc:.2f}），判为错配并断开"
-            )
-    for key in bad_links:
-        all_links.pop(key, None)
+    for (i, j) in all_links:
+        if not _is_near_duplicate(images[i], images[j]):
+            continue
+        if i not in dropped and j not in dropped:
+            dropped.add(j)
+            dup_groups.append([i, j])
     for g in dup_groups:
         res.notes.append(
             f"第{'、'.join(str(k + 1) for k in g)} 张是**同一视角的重复**，只保留一张"
@@ -593,9 +595,14 @@ def stitch(
     if W <= 0 or H <= 0:
         res.notes.append("拼出的画布尺寸非法")
         return res
-    if W * H > max_pixels:
+    budget = max_pixels
+    if budget is None:
+        total_input_px = sum(im.shape[0] * im.shape[1] for im in images)
+        budget = canvas_pixel_budget(total_input_px)
+    if W * H > budget:
         res.notes.append(
-            f"拼出的画布过大（{W}×{H}），超过上限 {max_pixels // 10000} 万像素，放弃"
+            f"拼出的画布过大（{W}×{H}，{W * H // 10000} 万像素），"
+            f"超过内存预算 {budget // 10000} 万像素，放弃"
         )
         return res
 
@@ -653,8 +660,8 @@ def stitch(
 
     # --- 6. 裁掉外侧空白 ---
     #
-    # 画布尺寸是所有图的**外接矩形**，但图与图之间可能有空隙
-    # （实测用户 4 张图错位排列，覆盖率只有 75%）。
+    # 画布尺寸是所有图的**外接矩形**，但错位 / 阶梯状排列时，
+    # 外接矩形里会有大量从未被任何图覆盖的区域。
     # 那部分空白对用户毫无意义，只是让图看起来「中间少了一块」。
     #
     # 这里裁到**已覆盖区域的包围盒**——外侧空白全部去掉。
@@ -747,9 +754,12 @@ def _verify_canvas(
         # 只在「这张图独占的区域」上比——重叠区可能被另一张盖住，
         # 比那里会得到偏低的分（不是错，是正常的覆盖关系）。
         own = mask & ~_covered_by_others(used, idx, T, min_x, min_y, (W, H), images)
-        if own.sum() < 500:
+        # 这两个是**统计样本量下限**：归一化互相关需要几百个像素才稳定，
+        # 量纲是「样本数」而非「空间距离」，因此不随分辨率/画布尺度缩放。
+        min_samples, min_valid = 500, 100
+        if own.sum() < min_samples:
             own = mask
-        if own.sum() < 100:
+        if own.sum() < min_valid:
             out.append({"index": idx, "similarity": None, "pixels": 0})
             continue
         a = _gray(canvas)[own].astype(np.float32)

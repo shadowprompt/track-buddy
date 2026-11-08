@@ -23,6 +23,7 @@ from scipy.spatial import cKDTree
 
 from .config import VisionConfig
 from .cv_utils import bbox_distance, disk_kernel, find_marker
+from .scale import Scale
 
 
 @dataclass
@@ -38,18 +39,30 @@ class TrackResult:
     notes: list[str]
 
 
-def detect_markers(
+def _marker_component_diameter(found) -> float | None:
+    """从徽章连通域面积反推等效直径，作为「内容尺度」的实测标尺。
+
+    徽章是 UI 元素，其尺寸随单张截图的缩放级别变化，但**不随拼接张数**
+    变化。用它当标尺，轨迹线宽、贴合容差、形态学核就能自动适配任意分辨率。
+    """
+    if not found:
+        return None
+    comp = found[1]
+    area = float((comp > 0).sum())
+    if area <= 0:
+        return None
+    return float(np.sqrt(4.0 * area / np.pi))
+
+
+def _detect_markers_ex(
     img: np.ndarray, cfg: VisionConfig
-) -> tuple[tuple[int, int] | None, tuple[int, int] | None, list[str]]:
-    """检测绿色「起」与红色「终」徽章。"""
+) -> tuple[tuple[int, int] | None, tuple[int, int] | None, list[str], Scale]:
+    """检测徽章，同时构造本图的几何尺度。"""
     notes: list[str] = []
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
     start = find_marker(
-        hsv,
-        [cfg.start_hsv_range],
-        cfg.badge_min_area,
-        cfg.badge_max_area,
+        hsv, [cfg.start_hsv_range], cfg.badge_min_area, cfg.badge_max_area
     )
     end = find_marker(
         hsv,
@@ -57,6 +70,15 @@ def detect_markers(
         cfg.badge_min_area,
         cfg.badge_max_area,
     )
+
+    diameters = [
+        d for d in (
+            _marker_component_diameter(start),
+            _marker_component_diameter(end),
+        ) if d is not None
+    ]
+    # 取较大者：误检的 UI 圆点通常比真徽章小，较大值更接近真实内容尺度
+    scale = Scale.from_image(img, max(diameters) if diameters else None)
 
     start_pt = start[0] if start else None
     end_pt = end[0] if end else None
@@ -66,94 +88,166 @@ def detect_markers(
         notes.append("未检测到终点徽章（红色「终」）")
     if start_pt and end_pt:
         notes.append(f"起终点徽章已定位: 起{start_pt} 终{end_pt}")
+    return start_pt, end_pt, notes, scale
+
+
+def detect_markers(
+    img: np.ndarray, cfg: VisionConfig
+) -> tuple[tuple[int, int] | None, tuple[int, int] | None, list[str]]:
+    """检测绿色「起」与红色「终」徽章（公开接口，保持三元组返回）。"""
+    start_pt, end_pt, notes, _ = _detect_markers_ex(img, cfg)
     return start_pt, end_pt, notes
 
 
-def build_track_mask(img: np.ndarray, cfg: VisionConfig) -> np.ndarray:
-    """构造轨迹线候选掩膜。"""
+def build_track_mask(
+    img: np.ndarray, cfg: VisionConfig, scale: Scale | None = None
+) -> np.ndarray:
+    """构造轨迹线候选掩膜；形态学核按轨迹线宽自适应。"""
+    if scale is None:
+        scale = Scale.from_image(img)
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     v = hsv[:, :, 2]
     s = hsv[:, :, 1]
     mask = ((v < cfg.track_max_value) & (s < cfg.track_max_saturation)).astype(np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, disk_kernel(cfg.track_close_kernel))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, disk_kernel(cfg.track_open_kernel))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, disk_kernel(scale.close_kernel))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, disk_kernel(scale.open_kernel))
     return mask
+
+
+def _select_with_markers(
+    mask: np.ndarray,
+    labels: np.ndarray,
+    stats: np.ndarray,
+    count: int,
+    start_pt: tuple[int, int],
+    end_pt: tuple[int, int],
+    scale: Scale,
+) -> tuple[np.ndarray | None, tuple[int, int, int, int] | None]:
+    """有徽章时挑轨迹连通域，允许「两段分别贴两端」时补线合并。
+
+    ## 为什么需要补线
+
+    拼接画布上，相邻截图之间难免有空洞或亚像素级错位，轨迹线可能在接缝处
+    断成两段：一段贴起点、一段贴终点。这类断裂的**空隙是内容尺度的**
+    （与单张截图的步距同量级），而**两端的跨度是画布尺度的**（随张数增长）；
+    因此这里允许补缝，但上限由 `Scale.bridge_gap` 按路线跨度自适应给出，
+    不使用固定像素数。
+
+    ## 判据始终靠拓扑，不靠「谁大就选谁」
+
+    * 单一连通域同时贴两端 → 直接返回；
+    * 否则分别找「贴起点段」与「贴终点段」，两段都必须**像素级**贴住
+      对应徽章，且空隙小于允许值 → 按轨迹线宽画一条短线把缝补上；
+    * 都不满足 → 返回 None，底图色块（绿地/水面）照旧被拦住。
+
+    「贴住」的容差按徽章直径缩放，接缝补线宽度按轨迹线宽缩放，
+    所以任意分辨率、任意拼接张数都用同一套系数。
+    """
+    cands: list[tuple[float, int, tuple[int, int, int, int]]] = []
+    for i in range(1, count):
+        area = int(stats[i][4])
+        if area < scale.min_area:
+            continue
+        x, y, w, h = (int(stats[i][0]), int(stats[i][1]),
+                      int(stats[i][2]), int(stats[i][3]))
+        bbox = (x, y, w, h)
+        # 至少贴住一个徽章即可候选（绝不能再要求「两端距离之和」）
+        d_near = min(bbox_distance(bbox, start_pt), bbox_distance(bbox, end_pt))
+        if d_near > scale.coarse_dist:
+            continue
+        cands.append((d_near, i, bbox))
+    if not cands:
+        return None, None
+    cands.sort(key=lambda t: t[0])
+
+    measured: list[tuple[float, float, int, tuple[int, int, int, int], np.ndarray]] = []
+    for _, i, bbox in cands[:12]:
+        x, y, w, h = bbox
+        # 只在 ROI 内取像素，避免对 6600 万像素画布反复全图扫描
+        ys, xs = np.where(labels[y:y + h, x:x + w] == i)
+        pts = np.column_stack([xs + x, ys + y]).astype(float)
+        if len(pts) == 0:
+            continue
+        tree = cKDTree(pts)
+        ds = float(tree.query([list(start_pt)])[0][0])
+        de = float(tree.query([list(end_pt)])[0][0])
+        measured.append((ds, de, i, bbox, pts))
+
+    if not measured:
+        return None, None
+
+    touch = scale.touch_dist
+    both = [m for m in measured if m[0] < touch and m[1] < touch]
+    if both:
+        best = min(both, key=lambda m: m[0] + m[1])
+        return (labels == best[2]).astype(np.uint8), best[3]
+
+    near_s = [m for m in measured if m[0] < touch]
+    near_e = [m for m in measured if m[1] < touch]
+    if not near_s or not near_e:
+        return None, None
+    a = min(near_s, key=lambda m: m[0])
+    b = min(near_e, key=lambda m: m[1])
+    if a[2] == b[2]:
+        return None, None
+
+    # 两段之间最近的一对像素，按轨迹线宽画一条短直线把接缝补上。
+    # 允许空隙按路线跨度自适应（远小于整条路线的跨度才算「接缝」）。
+    tree_b = cKDTree(b[4])
+    dist, idx = tree_b.query(a[4])
+    k = int(np.argmin(dist))
+    if float(dist[k]) > scale.bridge_gap(start_pt, end_pt):
+        return None, None
+    pa = (int(a[4][k][0]), int(a[4][k][1]))
+    pb = (int(b[4][idx[k]][0]), int(b[4][idx[k]][1]))
+    comp = ((labels == a[2]) | (labels == b[2])).astype(np.uint8)
+    cv2.line(comp, pa, pb, 1, scale.bridge_width)
+    xa, ya, wa, ha = a[3]
+    xb, yb, wb, hb = b[3]
+    x0, y0 = min(xa, xb), min(ya, yb)
+    x1, y1 = max(xa + wa, xb + wb), max(ya + ha, yb + hb)
+    return comp, (x0, y0, x1 - x0, y1 - y0)
 
 
 def _select_component(
     mask: np.ndarray,
     start_pt: tuple[int, int] | None,
     end_pt: tuple[int, int] | None,
+    scale: Scale | None = None,
 ) -> tuple[np.ndarray | None, tuple[int, int, int, int] | None]:
     """挑选轨迹连通域。
 
-    核心判据是**拓扑**：真正的轨迹一定同时贴着「起」和「终」两个徽章。
-
-    早期版本额外要求「横向延展」（aspect > 1.6），那只是碰巧对上一张
-    东西向的截图成立——遇到对角线或南北向的路线就会整条漏掉
-    （实测一条 aspect≈1.03 的对角线路线被判为「未找到连通域」）。
-    现在改成：先用包围盒粗筛，再对候选做**像素级精确测距**
-    （连通域到两个徽章的最近像素距离），取总距离最小者。
-
-    退化情况（未检出徽章）：取面积最大的「细长」连通域。
+    有徽章时走 `_select_with_markers`（拓扑 + 接缝补线）；
+    无徽章时退化为「取面积最大的细长连通域」。
+    `scale` 为空时按掩膜尺寸自建（供独立调用 / 实验脚本使用）。
     """
+    if scale is None:
+        scale = Scale.from_image(mask)
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
     if count < 2:
         return None, None
+    if start_pt and end_pt:
+        return _select_with_markers(
+            mask, labels, stats, count, start_pt, end_pt, scale
+        )
 
-    cands: list[tuple[float, int]] = []   # (粗筛距离, 标签 id)
+    cands: list[tuple[float, int]] = []
     for i in range(1, count):
         area = int(stats[i][4])
-        if area < 800:
+        if area < scale.min_area:
             continue
         x, y, w, h = (int(stats[i][0]), int(stats[i][1]), int(stats[i][2]), int(stats[i][3]))
         bbox = (x, y, w, h)
-        if start_pt and end_pt:
-            d = bbox_distance(bbox, start_pt) + bbox_distance(bbox, end_pt)
-            if d > 700:
-                continue
-        else:
-            # 无徽章时用「细长程度」粗筛：线状连通域的填充率很低
-            fill = area / float(max(w * h, 1))
-            if fill > 0.42 and (w / max(h, 1)) < 2.0:
-                continue
-            d = -float(area)
-        cands.append((d, i))
-
+        # 无徽章时用「细长程度」粗筛：线状连通域的填充率很低
+        fill = area / float(max(w * h, 1))
+        if fill > 0.42 and (w / max(h, 1)) < 2.0:
+            continue
+        cands.append((-float(area), i))
     if not cands:
         return None, None
-
-    # 对最接近的若干候选做像素级精确测距
     cands.sort(key=lambda t: t[0])
-    best = None
-    best_cost = float("inf")
-    best_key = None
-    for d, i in cands[:12]:
-        ys, xs = np.where(labels == i)
-        pts = np.column_stack([xs, ys]).astype(float)
-        x, y, w, h = (int(stats[i][0]), int(stats[i][1]), int(stats[i][2]), int(stats[i][3]))
-        area = int(stats[i][4])
-        bbox = (x, y, w, h)
-        if start_pt and end_pt:
-            tree = cKDTree(pts)
-            ds = float(tree.query([list(start_pt)])[0][0])
-            de = float(tree.query([list(end_pt)])[0][0])
-            cost = ds + de
-        else:
-            ds = de = 0.0
-            cost = -float(area)
-        # 同样代价时优先面积大的
-        key = (cost, -area)
-        if best_key is None or key < best_key:
-            best_key, best, best_cost = key, i, cost
-
-    if best is None:
-        return None, None
-
+    best = cands[0][1]
     x, y, w, h = (int(stats[best][0]), int(stats[best][1]), int(stats[best][2]), int(stats[best][3]))
-    if start_pt and end_pt and best_cost > 260:
-        # 精确测距后仍然离两个徽章都很远 —— 不是轨迹
-        return None, None
     return (labels == best).astype(np.uint8), (x, y, w, h)
 
 
@@ -162,20 +256,21 @@ def extract_track(
 ) -> TrackResult:
     """提取轨迹折线（像素坐标）。"""
     notes: list[str] = []
-    start_pt, end_pt, mnotes = detect_markers(img, cfg)
+    start_pt, end_pt, mnotes, scale = _detect_markers_ex(img, cfg)
     notes.extend(mnotes)
 
-    mask = build_track_mask(img, cfg)
-    comp, bbox = _select_component(mask, start_pt, end_pt)
+    mask = build_track_mask(img, cfg, scale)
+    comp, bbox = _select_component(mask, start_pt, end_pt, scale)
 
     if comp is None:
         notes.append("未找到轨迹连通域，尝试放宽掩膜条件")
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         v, s = hsv[:, :, 2], hsv[:, :, 1]
+        # 这里放宽的是 HSV 颜色区间（无量纲颜色量，不随分辨率变化）
         relaxed = ((v < 215) & (s < 120)).astype(np.uint8)
-        relaxed = cv2.morphologyEx(relaxed, cv2.MORPH_CLOSE, disk_kernel(13))
-        relaxed = cv2.morphologyEx(relaxed, cv2.MORPH_OPEN, disk_kernel(5))
-        comp, bbox = _select_component(relaxed, start_pt, end_pt)
+        relaxed = cv2.morphologyEx(relaxed, cv2.MORPH_CLOSE, disk_kernel(scale.close_kernel))
+        relaxed = cv2.morphologyEx(relaxed, cv2.MORPH_OPEN, disk_kernel(scale.open_kernel))
+        comp, bbox = _select_component(relaxed, start_pt, end_pt, scale)
         if comp is None:
             notes.append("轨迹提取失败：掩膜为空")
             return TrackResult(
@@ -195,7 +290,7 @@ def extract_track(
 
     if start_pt and end_pt and bbox:
         d = bbox_distance(bbox, start_pt) + bbox_distance(bbox, end_pt)
-        if d < 200:
+        if d < scale.conf_touch:
             confidence = min(0.97, confidence + 0.05)
             notes.append("轨迹连通域通过起终点拓扑校验")
         else:
@@ -204,53 +299,28 @@ def extract_track(
 
     # 骨架化 → 提取中心线
     line = comp.copy()
-    line = cv2.morphologyEx(line, cv2.MORPH_CLOSE, disk_kernel(3))
+    line = cv2.morphologyEx(line, cv2.MORPH_CLOSE, disk_kernel(scale.skeleton_kernel))
     skeleton = _thin(line)
     pts = np.argwhere(skeleton > 0)
     if len(pts) == 0:
         pts = np.argwhere(comp > 0)
         skeleton = None
 
-    # ⚠️ **形状合理性检查**（实测踩过两次，用户看到的「绿色大三角」
-    #    与「明明有起点终点却说没检测到」）
+    # ⚠️ **形状合理性检查**
     #
-    # 腾讯淡色底图里的大块绿地（公园）会被轨迹掩膜捕获：
-    # 它是「低饱和 + 中等亮度 + 面积大」，完全落在轨迹线的取值区间内。
-    # 实测用户上传的 4 张截图里，第 4 张提取出 1692 像素的绿色多边形，
-    # 骨架化后变成一个「实心三角形」——形状完全不对。
+    # 淡色底图里的大块绿地（公园、沿河绿带）会被「低饱和 + 中等亮度」
+    # 掩膜捕获，骨架化后成为面状团块。纯形状判据区分不了它和真实轨迹：
+    # 两者都可能细长、骨架填充率都很低；而拼接画布上真实轨迹的包围盒
+    # 本来就接近整幅图宽，用「宽度」判据更是必然误杀。
     #
-    # ## 判据的演进（两次踩坑换来的）
+    # 因此**拓扑是主导信号**：真实轨迹一定同时贴住「起」「终」徽章，
+    # 底图元素不会；`_select_component` 已用像素级精确测距验证过这一点
+    # （贴合容差按徽章直径缩放）。只要两个徽章都在，被选中的连通域
+    # 就必然是轨迹，不该再被形状否决。
     #
-    # **第一版**用两条独立判据：
-    #   1. `too_wide`：连通域宽 ≥ 图宽 75% → 是底图元素
-    #   2. `blob`   ：填充率 > 0.45 且长宽比 < 2.5 → 是团块
-    #
-    # 第一条在**多图拼接画布上必然失效**——11 公里的路线横跨整张拼接图，
-    # 轨迹线的包围盒宽度本来就该接近图宽。实测：
-    #   真实轨迹：框宽 4016px / 图宽 4178px（96%），骨架填充率仅 0.0008
-    # ⇒ 判据一把真实轨迹判成了「底图色块」，用户明明截到了起终点徽章，
-    #   却被告知「未检测到起点徽章」「请确认截图里有骑行轨迹线」。
-    #
-    # 第二条也不可靠：绿地图块的骨架填充率是 **0.0021 ~ 0.0022**，
-    # 与真实轨迹的 **0.0008** 处于同一量级——**填充率区分不了两者**
-    # （因为误判的绿地本身也是细长的沿河绿地边界，不是实心色块）。
-    #
-    # ## 现在用「拓扑」当主导信号
-    #
-    # 真正的骑行轨迹**一定同时贴着「起」和「终」两个徽章**；底图元素不会。
-    # 实测（拓扑 = 连通域包围盒到两个徽章的距离之和）：
-    #
-    #   真实轨迹（拼接画布）：起(78,992) 终(4044,2903)，拓扑 **39 像素**
-    #   绿地误判：起点徽章**根本不存在**（那个「终点」(393,73) 是右上角的
-    #             红色 UI 元素，不是徽章）→ 无从谈起
-    #
-    # 而且 `_select_component` 内部已经用**像素级精确测距**验证过这一点：
-    # 有徽章时，距离 > 260 像素的连通域会被直接淘汰。
-    # 所以**只要两个徽章都在，被选中的连通域必然是轨迹**，不该再被形状否决。
-    #
-    # 形状判据只在「没有徽章可依」时兜底：
-    #   - 两个徽章都在 → 拓扑已验证，放行（哪怕横跨整幅图）
-    #   - 缺徽章 → 用形状判据拦（宽到离谱 / 明显是团块）
+    # 形状判据只在「缺徽章、无拓扑可依」时兜底。其中「宽到离谱」用
+    # 相对图宽的比例、「团块」用无量纲的填充率与长宽比，都与分辨率无关；
+    # 拓扑距离则按画布对角线缩放——画布越大，两端天然相距越远。
     if bbox and bbox[2] > 0 and bbox[3] > 0:
         bw, bh = bbox[2], bbox[3]
         img_w = img.shape[1]
@@ -260,13 +330,12 @@ def extract_track(
         fill = len(pts) / float(bw * bh) if (bw * bh) else 0.0
 
         # 拓扑校验：两个徽章都在，且连通域同时贴近它们。
-        # 阈值 600 像素（`_select_component` 的粗筛用 700、像素级测距用 260，
-        # 这里取中间值——宁可放过，不可误杀）。
+        # 阈值随画布对角线缩放（宁可放过，不可误杀）。
         has_both = bool(start_pt and end_pt)
         topo_ok = False
         if has_both:
             d_bb = bbox_distance(bbox, start_pt) + bbox_distance(bbox, end_pt)
-            topo_ok = d_bb < 600
+            topo_ok = d_bb < scale.topo_dist
 
         # 形状判据（仅在缺徽章时生效）：
         #   wide：横跨整幅图 —— 单图里的骑行轨迹不该这么宽
@@ -307,7 +376,7 @@ def extract_track(
     polyline = _points_to_polyline(pts, start_pt, end_pt, skeleton)
 
     # 把起终点徽章接到折线两端（徽章中心到轨迹端点有一段引线）
-    polyline = _attach_markers(polyline, start_pt, end_pt)
+    polyline = _attach_markers(polyline, start_pt, end_pt, scale)
 
     return TrackResult(
         polyline=polyline,
@@ -416,6 +485,7 @@ def _attach_markers(
     polyline: np.ndarray,
     start_pt: tuple[int, int] | None,
     end_pt: tuple[int, int] | None,
+    scale: Scale,
 ) -> np.ndarray:
     """把起终点徽章位置接到折线两端。
 
@@ -424,12 +494,14 @@ def _attach_markers(
     （即水滴尖端方向）作为真实锚点。
 
     注意：**不能直接改写折线端点**。早期实现把 pts[0] 移动到尖 tips，
-    结果端点与原轨迹之间产生一条 22 像素的直线跳跃，重采样时会把点
-    分布在这条直线上，最大偏离原轨迹 11 像素（≈60 米）。
+    结果端点与原轨迹之间产生一条明显的直线跳跃，重采样时会把点散布在
+    这条并不存在的直线上，造成可观的定位偏差。
     正确做法是**追加**徽章尖端作为新的首/末点，保留原轨迹端点不变。
+    引线长度上限按徽章直径缩放，适配不同分辨率的截图。
     """
     if len(polyline) < 2:
         return polyline
+    lead = scale.marker_lead
     pts = polyline.copy()
     head: list[np.ndarray] = []
     tail: list[np.ndarray] = []
@@ -440,7 +512,7 @@ def _attach_markers(
         m = np.array(marker, dtype=float)
         end = pts[0] if at_start else pts[-1]
         d = float(np.linalg.norm(end - m))
-        if d < 1e-6 or d > 120:
+        if d < 1e-6 or d > lead:
             continue
         # 水滴尖端大约在色块中心与轨迹端点之间 55% 处
         tip = m + (end - m) * 0.55

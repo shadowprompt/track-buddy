@@ -60,6 +60,15 @@
 旧去重只看「位移 < 6px」就判成同一视角重复，把含起点的图丢掉；
 而且 ncc=0.18 还能骗过默认可信阈值 0.15，就算不判重也会把两张图叠在一起。
 现在判重只认「像素差 + 灰度结构相关」都一致，位移近 0 但内容不同的直接断开。
+
+## 2026-11-08 12:00 再追加：12 张细截图
+
+同一条路线拆成 12 张后，又出现「掩膜为空」。三个问题叠加：
+0 位移假解删掉图5↔图6 这座唯一的桥（前 5 张被排除）、
+画布 6625 万像素超过旧上限 6000 万、接缝把轨迹切成两段后被
+「两端距离之和 <700」的粗筛全部淘汰。
+修复：在候选峰层面排除 0 位移假解、画布上限提到 1.2 亿像素、
+有徽章时允许「贴起点段 + 贴终点段」补线合并。详见 HANDOVER §22.21.16。
 """
 
 from __future__ import annotations
@@ -85,6 +94,14 @@ USER_4 = [
     "1794096457_5abde3aa",
     "1794096457_63ce03bd",
     "1794096457_d2051989",
+]
+
+# 2026-11-08 12:00 那批：同一条路线拆成 12 张更细的截图（按上传顺序）
+FINE_12 = [
+    "1794110270_3f7842e6", "1794110270_2b7a3086", "1794110270_dd87c35f",
+    "1794110270_dcfee266", "1794110270_0aa85ee7", "1794110270_ace458b1",
+    "1794110270_eaf0f0a3", "1794110270_b9471107", "1794110270_f9899cf0",
+    "1794110270_e6d3d15f", "1794110270_320845a4", "1794110270_0d980f41",
 ]
 
 # 2026-11-06 那批：纯地图截图，没有骑行轨迹线，必须被拦住
@@ -246,12 +263,40 @@ def test_true_duplicate_still_dropped() -> None:
     print("  重复图仍被正确去重")
 
 
+def test_twelve_fine_shots() -> None:
+    """同一条路线拆成 12 张细截图，也必须 12 张全用并提取出完整轨迹。
+
+    锁住 2026-11-08 12:00 的三个叠加问题：
+      1. 0 位移假解把唯一的相邻桥弄断 → 前 5 张被排除、真终点徽章丢失
+      2. 画布 6625 万像素超过旧上限 6000 万 → 直接放弃拼接
+      3. 接缝把轨迹切成两段 → 旧粗筛（两端距离之和 <700）全部淘汰
+    """
+    imgs = _load(FINE_12)
+    if len(imgs) != 12:
+        print("  跳过：没有 12 张细截图样本")
+        return
+    res = stitch(imgs)
+    assert res.ok, res.notes
+    assert res.canvas is not None
+    assert res.used == list(range(12)), (
+        f"细拆分时有图被误删：used={res.used}，notes={res.notes}"
+    )
+    tr = extract_track(res.canvas, CONFIG.vision)
+    assert tr.start_marker is not None, f"起点徽章丢失：{tr.notes}"
+    assert tr.end_marker is not None, f"终点徽章丢失：{tr.notes}"
+    assert len(tr.polyline) > 100, f"轨迹点数异常：{len(tr.polyline)}"
+    assert not any("掩膜为空" in n or "形状不合理" in n for n in tr.notes), tr.notes
+    print(f"  12 张画布 {res.canvas.shape[1]}×{res.canvas.shape[0]} "
+          f"轨迹 {len(tr.polyline)} 点，起 {tr.start_marker} 终 {tr.end_marker}")
+
+
 def main() -> int:
     tests = [
         test_user_four_shots_stitch_and_extract,
         test_wide_trajectory_not_rejected,
         test_reverse_order_same_result,
         test_true_duplicate_still_dropped,
+        test_twelve_fine_shots,
         test_green_still_rejected,
         test_real_samples_not_broken,
     ]
