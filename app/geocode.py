@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -29,9 +30,10 @@ from typing import Any
 
 import requests
 
-from .config import (AppConfig, TIANDITU_MAP_BOUND_DEFAULT,
-                     TIANDITU_SEARCH_URL)
-from .geo.coords import wgs84_to_gcj02
+from .config import AppConfig
+from .geo.coords import lonlat_to_mercator
+from .maps.contracts import Capability
+from .maps.geocoding import build_geocoding_registry, convert_candidates
 
 # 反向子串匹配的长度比下限。
 #
@@ -253,6 +255,56 @@ class Lexicon:
                 f"{max(p[0] for p in keep) + pad_deg:.4f},"
                 f"{max(p[1] for p in keep) + pad_deg:.4f}")
 
+    def in_city_core(
+        self, lon: float, lat: float, city: str,
+        quantile: float = 0.95, factor: float = 1.6,
+        min_radius_m: float = 20000.0,
+    ) -> bool | None:
+        """判断一个点是否落在该城市已核验点的**核心范围**。
+
+        与 ``city_bounds`` 的区别：后者用 min/max 经纬度、外加较宽的
+        padding，适合当「搜索视野」（宁可宽一点）；但个别标错城市的
+        条目会把 min/max 撑到几百公里外，拿它做写回校验等于没校验。
+
+        这里改用「每个已核验点到中位数中心的距离」的分位数派生半径：
+        尾部错条目不影响 95% 分位，连锁品牌的异地同名门店（实测距中心
+        88~130 km）会被挡住，而城市边缘的正常点位仍能沉淀。
+
+        ``quantile`` / ``factor`` 是无量纲统计量，``min_radius_m`` 是物理
+        下限，三者都与城市、截图、厂商无关。返回 ``None`` 表示词典数据
+        不足、无法判断，调用方应放行以免误杀新城市冷启动。
+        """
+        if not city:
+            return None
+        pts: list[tuple[float, float]] = []
+        with self._lock:
+            for entries in self._data.values():
+                for e in entries:
+                    if (e.get("city") or "") != city:
+                        continue
+                    try:
+                        pts.append((float(e["lon"]), float(e["lat"])))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+        if len(pts) < 8:
+            return None
+        xs = sorted(p[0] for p in pts)
+        ys = sorted(p[1] for p in pts)
+        cx, cy = xs[len(xs) // 2], ys[len(ys) // 2]
+        keep = [p for p in pts if abs(p[0] - cx) <= 2.0 and abs(p[1] - cy) <= 2.0]
+        if len(keep) < 8:
+            return None
+        x0, y0 = lonlat_to_mercator(cx, cy)
+        dists: list[float] = []
+        for lo, la in keep:
+            x, y = lonlat_to_mercator(lo, la)
+            dists.append(math.hypot(x - x0, y - y0))
+        dists.sort()
+        radius = max(min_radius_m,
+                     dists[min(len(dists) - 1, int(len(dists) * quantile))] * factor)
+        x, y = lonlat_to_mercator(lon, lat)
+        return math.hypot(x - x0, y - y0) <= radius
+
     def lookup_exact(self, name: str) -> list[dict[str, Any]]:
         """只做**精确**匹配（不做子串扩展）。
 
@@ -342,6 +394,9 @@ class Geocoder:
         # 用于 /api/health 暴露配置问题——静默失败会让人误以为
         # 「在线服务不可用」，而实际是 key 用错了地方。
         self._last_error: str = ""
+        # 厂商实现与调用顺序全部交给能力层；Geocoder 只保留薄适配方法。
+        self.registry, self._impl = build_geocoding_registry(
+            self.cfg, lambda: self._session, self.lexicon)
 
     # ---------- 在线 provider ----------
 
@@ -353,326 +408,53 @@ class Geocoder:
         self._last_call[provider] = time.time()
 
     def probe_online(self) -> dict[str, Any]:
-        """主动探测在线地理编码是否**真的可用**。
+        """主动探测在线地理编码是否真的可用。
 
-        ⚠️ 「有 key」不等于「key 能用」——这是实测踩过的坑。
-        高德 key 绑定平台类型（Web端(JS API) / Web服务 / Android / iOS…），
-        类型不对时接口返回 `USERKEY_PLAT_NOMATCH`（10009），
-        而只检查 key 是否存在会让「配错了」看起来像「服务正常」。
-
-        这里用真实端点打一次，把结果原样报出来。
-        返回 {"amap": {...}, "tmap": {...}, ...}
+        「有 key」不等于「key 能用」：高德 key 绑定平台类型，
+        ``USERKEY_PLAT_NOMATCH``(10009) 表示 Web端(JS API) 的 key 被拿去
+        调 Web服务接口；此外配额超限、签名未关、tk 无效也都会让接口失败。
+        这里遍历能力层注册表真打一次，把结果原样报出来，避免「配错了」
+        看起来像「服务正常」。
         """
-        out: dict[str, Any] = {}
-        if self.cfg.amap_key:
-            out["amap"] = self._probe_amap()
-        if self.cfg.tmap_key:
-            out["tmap"] = self._probe_tmap()
-        if self.cfg.tianditu_key:
-            out["tianditu"] = self._probe_tianditu()
-        return out
+        return self.registry.probe(Capability.GEOCODING)
 
-    def _probe_tianditu(self) -> dict[str, Any]:
-        """用官方 V2 普通搜索真打一次，区分「有 tk」和「tk 能用」。"""
-        key = self.cfg.tianditu_key or ""
-        post = {
-            "keyWord": "北京大学", "queryType": 1, "level": 12,
-            "mapBound": self.cfg.tianditu_map_bound, "start": 0, "count": 3,
-        }
-        params = {"postStr": json.dumps(post, ensure_ascii=False),
-                  "type": "query", "tk": key}
-        try:
-            r = self._session.get(TIANDITU_SEARCH_URL, params=params,
-                                  timeout=self.cfg.http_timeout)
-            data = r.json()
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        status = data.get("status") or {}
-        code = status.get("infocode") if isinstance(status, dict) else None
-        pois = data.get("pois") or []
-        if pois and (code is None or str(code) == "1000"):
-            return {"ok": True, "hits": len(pois),
-                    "sample": pois[0].get("name")}
-        info = (status.get("cndesc") if isinstance(status, dict)
-                else str(status)) or "未知错误"
-        self._last_error = f"天地图 {info}"
-        hint = ""
-        if str(code) in ("2001", "2002", "2003", "2004"):
-            hint = "postStr 参数格式有误"
-        elif str(code) in ("1001", "1002") or "key" in str(info).lower():
-            hint = "检查 tk 是否有效、控制台是否放行了当前 IP / 域名"
-        return {"ok": False, "error": str(info), "hint": hint}
+    # ---------- 在线 provider 薄适配层 ----------
+    #
+    # 真正的 HTTP 请求、解析与 CRS 声明都在
+    # ``app/maps/geocoding/providers.py``。这里保留同名方法有两个作用：
+    #   1. 兼容既有调用与测试注入（替换 g._amap 即可 mock 某个源）；
+    #   2. 把 provider 记录的可读错误同步到 Geocoder._last_error，
+    #      供 /api/health 暴露配置问题。
+    # 调用顺序本身由 ProviderRegistry 决定，见 geocode()。
 
-    def _probe_amap(self) -> dict[str, Any]:
-        key = self.cfg.amap_key or ""
-        params = {"key": key, "keywords": "上海站", "city": "上海",
-                  "citylimit": "true", "extensions": "base"}
+    def _invoke(self, name: str, query: str, city: str) -> list[GeocodeResult]:
+        impl = self._impl.get(name)
+        if impl is None:
+            return []
         try:
-            r = self._session.get(
-                "https://restapi.amap.com/v3/place/text",
-                params=params, timeout=self.cfg.http_timeout)
-            data = r.json()
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        if str(data.get("status")) == "1":
-            pois = data.get("pois") or []
-            return {"ok": True, "hits": len(pois),
-                    "sample": pois[0].get("name") if pois else None}
-        info = str(data.get("info") or "")
-        hint = ""
-        if "USERKEY_PLAT_NOMATCH" in info:
-            hint = ("key 平台类型不匹配：该 key 是「Web端(JS API)」类型，"
-                    "本项目需要「Web服务」类型——请到高德控制台为同一应用"
-                    "添加一个 Web服务 key")
-        elif "INVALID_USER_KEY" in info:
-            hint = "key 无效或已被删除"
-        elif "INVALID_USER_SCODE" in info or "INVALID_USER_SIGNATURE" in info:
-            hint = "key 开启了数字签名，需要按官方算法生成 signature 参数"
-        elif "DAILY_QUERY_OVER_LIMIT" in info or "OVER_LIMIT" in info:
-            hint = "配额已用尽（当天调用次数超限）"
-        return {"ok": False, "error": info or "未知错误", "hint": hint}
-
-    def _probe_tmap(self) -> dict[str, Any]:
-        key = self.cfg.tmap_key or ""
-        params = {"key": key, "keyword": "上海站", "page_size": "5",
-                  "page_index": "1", "output": "json"}
-        try:
-            r = self._session.get(
-                "https://apis.map.qq.com/ws/place/v1/search",
-                params=params, timeout=self.cfg.http_timeout)
-            data = r.json()
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        status = int(data.get("status", -1))
-        if status == 0:
-            return {"ok": True, "hits": len(data.get("data") or [])}
-        return {"ok": False, "error": data.get("message") or "未知错误"}
+            items = impl.search(query, city)
+        except Exception:  # noqa: BLE001 - 单个源失败不能打断回退链
+            return []
+        return convert_candidates(items, GeocodeResult)
 
     def _amap(self, name: str, city: str) -> list[GeocodeResult]:
-        key = self.cfg.amap_key
-        if not key:
-            return []
-        self._throttle("amap", 0.35)
-        params = {"key": key, "keywords": name, "city": city or "", "citylimit": "false", "offset": "10", "page": "1", "extensions": "base"}
-        try:
-            r = self._session.get(
-                "https://restapi.amap.com/v3/place/text",
-                params=params,
-                timeout=self.cfg.http_timeout,
-            )
-            data = r.json()
-        except (requests.RequestException, ValueError):
-            return []
-        if data.get("status") != "1":
-            info = str(data.get("info") or "")
-            # ⚠️ **不要静默吞掉 key 的配置错误**。
-            #
-            # `USERKEY_PLAT_NOMATCH`（错误码 10009）= 「请求 key 与绑定平台不符」：
-            # 用户申请的是 **Web端(JS API)** 的 key，而本项目用的是
-            # **Web服务** 接口（restapi.amap.com/v3/...）。
-            # 两者不能互换——这是高德控制台里「添加 Key」时选的平台类型决定的。
-            #
-            # 实测踩过：key 配了但类型不对，接口返回 status=0，
-            # 代码直接 `return []`，看起来像「在线服务不可用」，
-            # 实际上只要去控制台加一个 Web服务 key 就能立刻用上。
-            #
-            # 所以这里把原因记下来，让 /api/health 能报出来。
-            if info:
-                self._last_error = f"高德 {info}"
-                if "USERKEY_PLAT_NOMATCH" in info:
-                    self._last_error = (
-                        "高德 key 平台类型不匹配（10009）：该 key 是"
-                        "「Web端(JS API)」类型，本项目需要「Web服务」类型。"
-                        "请到高德控制台为应用添加一个 Web服务 key，"
-                        "并写进 .env 的 AMAP_KEY"
-                    )
-            return []
-        out = []
-        for p in data.get("pois", [])[:8]:
-            loc = p.get("location", "")
-            if not loc:
-                continue
-            lon, lat = (float(x) for x in loc.split(","))
-            exact = 1.0 if name in (p.get("name", "") or "") else 0.7
-            out.append(
-                GeocodeResult(name=p.get("name", name), lon=lon, lat=lat,
-                              quality=exact, source="amap",
-                              address=p.get("address", ""),
-                              kind=infer_kind(p.get("name", name), p.get("type", "")))
-            )
+        out = self._invoke("amap", name, city)
+        # 高德的 key 平台类型 / 配额错误必须留下可读原因，不能静默吞掉。
+        if self._impl["amap"].last_error:
+            self._last_error = self._impl["amap"].last_error
         return out
 
     def _tmap(self, name: str, city: str) -> list[GeocodeResult]:
-        key = self.cfg.tmap_key
-        if not key:
-            return []
-        self._throttle("tmap", 0.35)
-        params = {"key": key, "keyword": name, "page_size": "10", "page_index": "1", "output": "json"}
-        if city:
-            params["boundary"] = f"region({city},0)"
-        try:
-            r = self._session.get(
-                "https://apis.map.qq.com/ws/place/v1/search",
-                params=params,
-                timeout=self.cfg.http_timeout,
-            )
-            data = r.json()
-        except (requests.RequestException, ValueError):
-            return []
-        if data.get("status") != 0:
-            return []
-        out = []
-        for p in data.get("data", [])[:8]:
-            loc = p.get("location", {})
-            lon, lat = loc.get("lng"), loc.get("lat")
-            if lon is None or lat is None:
-                continue
-            exact = 1.0 if name in (p.get("title", "") or "") else 0.7
-            out.append(
-                GeocodeResult(name=p.get("title", name), lon=float(lon), lat=float(lat),
-                              quality=exact, source="tmap",
-                              address=p.get("address", ""),
-                              kind=infer_kind(p.get("title", name), p.get("type", "")))
-            )
-        return out
+        return self._invoke("tmap", name, city)
 
     def _baidu(self, name: str, city: str) -> list[GeocodeResult]:
-        key = self.cfg.baidu_key
-        if not key:
-            return []
-        self._throttle("baidu", 0.35)
-        params = {"key": key, "query": name, "region": city or "全国", "output": "json", "scope": "2"}
-        try:
-            r = self._session.get(
-                "https://api.map.baidu.com/place/v2/search",
-                params=params,
-                timeout=self.cfg.http_timeout,
-            )
-            data = r.json()
-        except (requests.RequestException, ValueError):
-            return []
-        if data.get("status") != 0:
-            return []
-        out = []
-        for p in data.get("results", [])[:8]:
-            loc = p.get("location", {})
-            lon, lat = loc.get("lng"), loc.get("lat")
-            if lon is None or lat is None:
-                continue
-            # 百度返回 BD-09，需转 GCJ-02
-            from .geo.coords import bd09_to_gcj02
-
-            glon, glat = bd09_to_gcj02(float(lon), float(lat))
-            out.append(
-                GeocodeResult(name=p.get("name", name), lon=glon, lat=glat,
-                              quality=0.85, source="baidu", address=p.get("address", ""),
-                              kind=infer_kind(p.get("name", name), p.get("type", "")))
-            )
-        return out
+        return self._invoke("baidu", name, city)
 
     def _tianditu(self, name: str, city: str) -> list[GeocodeResult]:
-        """天地图「地名搜索 V2.0」普通搜索（CGCS2000 → 项目内部 GCJ-02）。
-
-        官方格式是 /v2/search?postStr={...}&type=query&tk=...，返回
-        resultType=1 时的 ``pois[].lonlat`` 是 "x,y" 字符串。
-        早期实现误用了地理编码接口的 ``ds={"keyword":...}`` 参数、按
-        ``result.items`` 解析，实测直接 HTTP 400，等于该数据源从未可用。
-
-        天地图返回 CGCS2000（与 WGS-84 在工程精度上等价），而本项目所有
-        锚点、道路与输出都与美团底图一样按 GCJ-02 处理。不做转换会凭空
-        引入约 500-600 米的系统性偏移，因此这里统一转一次。
-        """
-        key = self.cfg.tianditu_key
-        if not key:
-            return []
-        self._throttle("tianditu", 0.35)
-        bound_str, narrow = self._tianditu_bounds(city)
-        try:
-            bx = [float(x) for x in bound_str.split(",")]
-        except ValueError:
-            bx = []
-        post = {
-            "keyWord": name,
-            "queryType": 1,
-            "level": 12,
-            "mapBound": bound_str,
-            "start": 0,
-            "count": 10,
-            "show": 2,
-        }
-        params = {"postStr": json.dumps(post, ensure_ascii=False),
-                  "type": "query", "tk": key}
-        try:
-            r = self._session.get(
-                TIANDITU_SEARCH_URL, params=params,
-                timeout=self.cfg.http_timeout,
-            )
-            data = r.json()
-        except (requests.RequestException, ValueError) as exc:
-            self._last_error = f"天地图 {type(exc).__name__}"
-            return []
-        status = data.get("status") or {}
-        code = status.get("infocode") if isinstance(status, dict) else None
-        if code is not None and str(code) != "1000":
-            info = status.get("cndesc") or "未知错误"
-            self._last_error = f"天地图 {info}"
-            return []
-        if str(data.get("resultType")) != "1":
-            return []
-        out: list[GeocodeResult] = []
-        for p in (data.get("pois") or [])[:8]:
-            ll = str(p.get("lonlat") or "").replace("，", ",").split(",")
-            if len(ll) < 2:
-                continue
-            try:
-                wlon, wlat = float(ll[0]), float(ll[1])
-            except ValueError:
-                continue
-            glon, glat = wgs84_to_gcj02(wlon, wlat)
-            address = p.get("address") or ""
-            # 全国视野会返回异地同名 POI（实测把配准拉到几百公里外、
-            # 路名变成外省高速），必须用城市范围把它们挡在配准之前。
-            # 服务端 mapBound 未必严格过滤，客户端再按坐标校一次。
-            if narrow and len(bx) == 4 and not (
-                bx[0] <= glon <= bx[2] and bx[1] <= glat <= bx[3]
-            ):
-                continue
-            if not narrow and city and address and city not in address:
-                continue
-            title = p.get("name") or name
-            # 天地图普通搜索是「包含关键词」语义，OCR 残片（「生活」、
-            # 「2号线」）会命中几十公里外的同名泛类 POI。这些候选不是
-            # 截图上那个标注点，交给 RANSAC 会直接把尺度算错。
-            # 只保留同名候选；查不到就让下游走词典 / 冷启动兜底。
-            if Lexicon.normalize(title) != Lexicon.normalize(name):
-                continue
-            exact = 1.0
-            out.append(
-                GeocodeResult(
-                    name=title, lon=glon, lat=glat,
-                    quality=0.9 * exact, source="tianditu",
-                    address=address,
-                    kind=infer_kind(title, p.get("typeName") or p.get("typeCode") or ""),
-                )
-            )
-        # 同城候选优先，其余候选仍交给 RANSAC 由几何一致性挑选。
-        if city and out:
-            out.sort(key=lambda r: (0 if city in r.address else 1, -r.quality))
+        out = self._invoke("tianditu", name, city)
+        if self._impl["tianditu"].last_error:
+            self._last_error = self._impl["tianditu"].last_error
         return out
-
-    def _tianditu_bounds(self, city: str) -> tuple[str, bool]:
-        """返回 (视野字符串, 是否已收窄到业务区域)。
-
-        优先用部署方显式配置；否则从词典里该城市的已核验坐标派生。
-        两者都没有时退回全球视野，并按地址里的城市名过滤。
-        """
-        custom = self.cfg.tianditu_map_bound_custom
-        if custom:
-            return custom, True
-        derived = self.lexicon.city_bounds(city)
-        if derived:
-            return derived, True
-        return TIANDITU_MAP_BOUND_DEFAULT, False
 
     # ---------- 对外接口 ----------
 
@@ -682,45 +464,25 @@ class Geocoder:
     ) -> list[GeocodeResult]:
         """地理编码一个地名，返回候选列表（GCJ-02）。
 
-        **优先级（2026-10-30 修正）**：用户确认 > 在线服务 > 本地词典。
+        优先级：用户确认 > 在线服务 > 本地词典 > OSM 冷启动。
+        在线源顺序由 ``MAP_GEOCODING_ORDER``（兼容
+        ``GEOCODE_PROVIDER_ORDER``）配置驱动，任一源返回空就落到下一源。
 
-        早期实现是「词典优先」，只要词典命中就直接返回，永不调用在线服务。
-        这个顺序是错的：词典种子来自 OSM/Nominatim，而美团底图用的是
-        国内官方 POI 数据，两者在同一 POI 上可差 100-300 米。
-        实测长宁新泾一例，锚点因此整体偏北约 245 米，轨迹落到了平行的
-        错误道路族上（用户实骑 新渔路/新渔东路/剑河路/金钟路，
-        而 OSM 归属显示 天山路/北翟路）。
-
-        修正后：配了 AMAP_KEY 时锚点直接来自与底图同源的高德，偏差消失；
-        未配密钥时仍可用本地词典离线跑通，只是绝对精度受限。
-
-        **追加（2026-11-01）**：词典未命中时走 OSM 冷启动检索。
-        换区域（词典没覆盖的地方）时，此前是「0 个锚点 → 配准失败」，
-        而截图上其实印着「安龙小区」「进才实验中学」这类真实地名，
-        OCR 已经读出来了，只是无处可查。
-
-        但冷启动**必须批量调用**（见 ``app/coldstart.py``）：单个地名
-        无法自证位置，需要多个地名的候选互相印证才能锁定区域。
-        因此这里默认关闭（``allow_cold_start=False`` 由 pipeline 统一走
-        批量接口），保留此参数只为单点查询的兼容场景。
+        词典种子来自 OSM/Nominatim，与美团底图同源的国内 POI 数据可差
+        100-300 米，所以在线优先；未配密钥时仍可离线跑通，只是绝对精度
+        受限。冷启动必须批量调用才可靠（见 app/coldstart.py），单点查询
+        仅作兼容保留。
         """
         # 1) 用户确认过的坐标永远优先
         user = self.lexicon.lookup_by_source(name, city, ("user",))
         if user:
             return user
 
-        # 2) 在线服务（顺序可配，默认同源优先：高德→腾讯→百度→天地图）
-        #    任一源返回空（配额耗尽 / key 未配 / 无结果）就自动落到下一源。
+        # 2) 在线服务：顺序来自注册表，不再手写厂商字典
         if allow_online and self.cfg.allow_online:
             online: list[GeocodeResult] = []
-            providers = {
-                "amap": self._amap,
-                "tmap": self._tmap,
-                "baidu": self._baidu,
-                "tianditu": self._tianditu,
-            }
-            for pname in self.cfg.online_provider_order:
-                fn = providers.get(pname)
+            for pname in self.registry.order(Capability.GEOCODING):
+                fn = getattr(self, "_" + pname, None)
                 if fn is None:
                     continue
                 try:
@@ -730,11 +492,11 @@ class Geocoder:
                 if online:
                     break
             if online:
-                # 数据飞轮只沉淀「同名」候选。在线搜索常见的泛匹配结果
-                # （查「生活」返回「生活广场」）写回词典会永久污染锚点，
-                # 而且会被 city_bounds 当成该城市的真实点位。
+                # 数据飞轮只沉淀「同名且坐标落在本城已核验范围」的候选。
                 for r in online[:3]:
                     if Lexicon.normalize(r.name or "") != Lexicon.normalize(name):
+                        continue
+                    if not self._in_city_bounds(r.lon, r.lat, city):
                         continue
                     self.lexicon.remember(
                         r.name or name, r.lon, r.lat, city=city, source=r.source,
@@ -748,12 +510,23 @@ class Geocoder:
             return local
 
         # 4) OSM 冷启动：词典与在线服务都没命中时的最后一道网。
-        #    单点查询（无互证）精度有限，生产路径请走 pipeline 的批量接口。
         if allow_cold_start and allow_online and self.cfg.allow_online and city:
             cold = self._cold_start(name, city)
             if cold:
                 return cold
         return []
+
+    def _in_city_bounds(self, lon: float, lat: float, city: str) -> bool:
+        """写回词典前校验坐标落在该城市已核验点的核心范围。
+
+        连锁品牌 / 高速的异地同名候选（查「红星美凯龙」返回苏州门店）
+        与查询名完全相同，同名护栏挡不住；写进词典后会撑大搜索视野、
+        并可能进入 RANSAC。判据用距离分位数而不是经纬度 min/max，否则
+        个别标错城市的条目会让护栏形同虚设。词典数据不足时放行，
+        避免新城市冷启动被误杀。
+        """
+        verdict = self.lexicon.in_city_core(lon, lat, city)
+        return verdict is not False
 
     # ---------- 冷启动（OSM） ----------
 

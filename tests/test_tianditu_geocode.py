@@ -25,7 +25,8 @@ from app.geocode import Geocoder, Lexicon
 _ENV_NAMES = (
     "AMAP_KEY", "TMAP_KEY", "BAIDU_MAP_KEY",
     "TIANDITU_KEY", "TIANDITU_API_KEY", "TIANDITU_TK",
-    "GEOCODE_PROVIDER_ORDER", "TIANDITU_MAP_BOUND",
+    "GEOCODE_PROVIDER_ORDER", "MAP_GEOCODING_ORDER",
+    "TIANDITU_MAP_BOUND",
 )
 
 
@@ -206,9 +207,18 @@ def test_map_bound_config(tmp_path, monkeypatch):
 
 
 def test_old_ds_format_not_reintroduced():
-    """静态护栏：不要把地理编码接口的 ds/keyword 参数再搬回 V2 搜索。"""
-    src = (ROOT / "app" / "geocode.py").read_text(encoding="utf-8")
-    body = src.split("def _tianditu", 1)[1].split("\n    def ", 1)[0]
-    assert "postStr" in body and "wgs84_to_gcj02" in body
-    assert '"ds"' not in body
+    """静态护栏：不要把地理编码接口的 ds/keyword 参数再搬回 V2 搜索。
+
+    厂商实现已迁入 ``app/maps/geocoding/providers.py``，护栏随之迁移，
+    并额外要求「声明输出坐标系 + 走契约层换算」——漏转会整体偏约 570 m。
+    """
+    src = (ROOT / "app" / "maps" / "geocoding" / "providers.py").read_text(
+        encoding="utf-8")
+    body = src.split("class TiandituProvider", 1)[1].split("\nclass ", 1)[0]
+    assert "postStr" in body and '"ds"' not in body
     assert '.get("items"' not in body
+    assert "CRS.CGCS2000" in body, "必须声明输出坐标系"
+    assert ".gcj02" in body, "坐标必须经契约层统一换算"
+    contracts = (ROOT / "app" / "maps" / "contracts.py").read_text(
+        encoding="utf-8")
+    assert "def to_gcj02" in contracts and "wgs84_to_gcj02" in contracts

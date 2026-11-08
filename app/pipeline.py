@@ -1606,7 +1606,8 @@ class RidePipeline:
         没有密钥时降级为「截图自带标签」：直接把美团地图上印着的路名
         按像素距离归到各段上。这是地图自己说的，命名与用户看到的完全一致。
         """
-        from .roadname import (RoadAttribution, RoadSegment, attribute_by_amap,
+        from .roadname import (RoadAttribution, RoadSegment,
+                                attribute_by_online,
                                 attribute_by_shot_labels, is_road_name)
 
         # 路网精修已经给出每段所属道路——这是最准的来源（几何直接判定）
@@ -1629,7 +1630,8 @@ class RidePipeline:
             )
 
         if allow_online and self.cfg.allow_online:
-            attr = attribute_by_amap(lonlat_gcj, timeout=self.cfg.http_timeout)
+            attr = attribute_by_online(
+                lonlat_gcj, cfg=self.cfg, timeout=self.cfg.http_timeout)
             if attr.segments:
                 return attr
 

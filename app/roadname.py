@@ -33,6 +33,8 @@ from typing import Any
 
 import requests
 
+from .maps.roadname.amap import AMAP_DIRECTION, AMAP_DIRECTION_V3
+
 # 真正的道路名后缀。注意与 ocr_anchor.ROAD_SUFFIXES 区分：那里把
 # 「公园/广场/中心」也算作 road 是为了**排除**它们当锚点；
 # 而路名归属要的是真的马路，公园/购物中心不是路。
@@ -50,8 +52,6 @@ def is_road_name(text: str) -> bool:
     return t.endswith(TRUE_ROAD_SUFFIXES)
 
 
-AMAP_DIRECTION = "https://restapi.amap.com/v4/direction/bicycling"
-AMAP_DIRECTION_V3 = "https://restapi.amap.com/v3/direction/driving"
 
 
 @dataclass
@@ -106,21 +106,11 @@ class RoadAttribution:
 # ---------------------------------------------------------------- 高德
 
 def _amap_key() -> str:
-    for k in ("AMAP_KEY",):
-        v = os.environ.get(k, "").strip()
-        if v:
-            return v
-    # .env
-    env_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"
-    )
-    if os.path.exists(env_path):
-        with open(env_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("AMAP_KEY="):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
-    return ""
+    """凭证解析统一交给能力层；原名保留供旧调用兼容。"""
+    from .config import CONFIG
+    from .maps.credentials import CredentialStore
+
+    return CredentialStore(CONFIG).resolve("AMAP_KEY") or ""
 
 
 def _haversine(a, b) -> float:
@@ -132,76 +122,44 @@ def _haversine(a, b) -> float:
     return 2 * r * math.asin(math.sqrt(x))
 
 
+def attribute_by_online(
+    lonlat: list[tuple[float, float]],
+    cfg: Any | None = None,
+    timeout: float = 12.0,
+) -> RoadAttribution:
+    """按能力层注册表顺序获取官方路名，调用方不出现厂商名。
+
+    顺序由 ``MAP_ROADNAME_ORDER`` 驱动；没有可用凭证时返回空结果，
+    由 pipeline 落到「截图自带路名标签」这条离线兜底。
+    """
+    from .config import CONFIG
+    from .maps.contracts import Capability
+    from .maps.roadname import build_roadname_registry
+
+    reg, impls = build_roadname_registry(cfg or CONFIG)
+    for provider in reg.available(Capability.ROADNAME):
+        attr = provider.attribute(lonlat, timeout=timeout)
+        if attr and attr.segments:
+            return attr
+    return RoadAttribution(source="none", note="无可用在线路名服务")
+
+
 def attribute_by_amap(
     lonlat: list[tuple[float, float]],
     key: str | None = None,
     timeout: float = 12.0,
 ) -> RoadAttribution:
-    """用高德路径规划 API 获取路名序列。
+    """兼容入口：直接调用高德实现。
 
-    高德与美团底图同源，其返回的 `road` 字段是国内官方路名——这正是
-    用户在地图上看到、也会记住的名字。
+    新代码请用 ``attribute_by_online`` —— 它按配置顺序走注册表，
+    不绑定具体厂商；本函数保留给旧调用与显式传 key 的场景。
     """
-    key = key or _amap_key()
-    if not key or len(lonlat) < 2:
-        return RoadAttribution(
-            source="none",
-            note="未配置 AMAP_KEY，无法获取官方路名",
-        )
-    origin = f"{lonlat[0][0]:.6f},{lonlat[0][1]:.6f}"
-    dest = f"{lonlat[-1][0]:.6f},{lonlat[-1][1]:.6f}"
-    last_err = ""
-    for url in (AMAP_DIRECTION, AMAP_DIRECTION_V3):
-        try:
-            resp = requests.get(
-                url,
-                params={"origin": origin, "destination": dest, "key": key,
-                        "extensions": "base", "strategy": "0"},
-                timeout=timeout,
-            )
-            data = resp.json()
-        except Exception as exc:  # 网络/解析异常都降级，不影响主流程
-            last_err = f"{type(exc).__name__}: {exc}"
-            continue
-        if str(data.get("status")) not in ("1", "0"):
-            last_err = str(data.get("info") or data.get("infocode") or "unknown")
-            continue
-        payload = data.get("route") or {}
-        paths = payload.get("paths") or []
-        if not paths:
-            last_err = "route.paths 为空"
-            continue
-        steps = paths[0].get("steps") or []
-        if not steps:
-            last_err = "steps 为空"
-            continue
+    from .config import CONFIG
+    from .maps.credentials import CredentialStore
+    from .maps.roadname.amap import AmapRoadNameProvider
 
-        segs: list[RoadSegment] = []
-        idx = 0
-        for st in steps:
-            road = (st.get("road") or "").strip()
-            if not road:
-                road = _road_from_instruction(st.get("instruction") or "")
-            dist = float(st.get("distance") or 0.0)
-            pts = _decode_polyline(st.get("polyline") or "")
-            n = max(1, len(pts) or 1)
-            segs.append(
-                RoadSegment(
-                    road=road or "（无名道路）",
-                    start_index=idx,
-                    end_index=idx + n,
-                    length_m=dist,
-                    source="amap",
-                    confidence=0.92 if road else 0.5,
-                )
-            )
-            idx += n
-        return RoadAttribution(
-            segments=segs,
-            source="amap",
-            note=f"路名来自高德路径规划（与美团底图同源），共 {len(segs)} 段",
-        )
-    return RoadAttribution(source="none", note=f"高德路径规划调用失败：{last_err}")
+    provider = AmapRoadNameProvider(CONFIG, CredentialStore(CONFIG))
+    return provider.attribute(lonlat, key=key, timeout=timeout)
 
 
 def _road_from_instruction(instr: str) -> str:

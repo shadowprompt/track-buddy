@@ -3935,3 +3935,45 @@ HTTP `/api/recognize` 200 且与离线结果逐字段一致，词典仅新增 1 
 **两点遗留**：① 本图置信度仍显示 0.2，来自 `_score_confidence` 末尾的缩放封顶（`zoom.position_ok=false → min(conf,0.2)`），与精修是否成功无关，本轮不动；② 后台精修是 `refine=True` **重跑整条 pipeline**、会重新取在线锚点，锚点源随配额波动会让同一张图的精修判定不稳定。后续 `app/maps/` 重构应改为复用主请求配准、只补算路网平移。
 
 **本轮改动未提交**，连同 §22.28 天地图改动一起等用户验收。
+
+---
+
+## §22.30 地图能力模块化：阶段 1（骨架 + ①② 接入）
+
+**背景与决策**：用户要求「把需要地图能力的部分模块化，方便拆分和替换服务商」。现状盘点发现六类能力散在 12+ 文件，只有地理编码有顺序回退雏形；CRS 转换靠注释和记忆（天地图漏转偏 570 m 就是这么来的）；`roadname._amap_key()` 自己读 .env 绕开 AppConfig；三份重复的 Overpass 镜像表。用户三项决策：**范围 = 后端四类能力**、**力度 = 完整抽包**、**节奏 = 先验收提交天地图那轮再分阶段**。验收通过后基线固化为 `04b81a0`。
+
+### 阶段 1a：骨架（零行为变更）
+
+新增 `app/maps/` 四个基础模块：`contracts.py`（CRS 枚举、`to_gcj02` 统一换算、`GeoPoint/PlaceCandidate/ProviderMeta/ProbeResult/MapProvider`）、`credentials.py`（唯一一处 env/.env 别名解析）、`registry.py`（按能力装配、`MAP_<CAP>_ORDER` 配置顺序、回退与 probe）、`http.py`（Session/UA/限流/重试/磁盘缓存）。不改任何现有调用点，新增 `tests/test_maps_skeleton.py` 16 项离线测试，全量 166 passed。
+
+**关键设计**：provider 必须声明 `output_crs`，框架统一换算到 GCJ-02。坐标系进契约而不是进人脑，新增厂商不可能漏转。注册表索引改成 `(capability, name)`——高德同时提供地名与路名，只按名字索引会互相覆盖。
+
+### 阶段 1b：①② 接入
+
+**① 地理编码**（`app/maps/geocoding/providers.py`，403 行）：amap/tmap/baidu/tianditu 的 HTTP 请求与解析全部迁出 `app/geocode.py`；`Geocoder` 只保留 `_amap/_tmap/_baidu/_tianditu` 薄适配（兼容既有调用与测试注入）、四级优先级编排和词典。`geocode()` 不再手写厂商字典，顺序来自 `registry.order(GEOCODING)`；`probe_online()` 改为 `registry.probe(GEOCODING)`。四家分别声明 `GCJ02 / GCJ02 / BD09 / CGCS2000`，`PlaceCandidate.lon/lat` 自动是 GCJ-02。
+
+**② 路名**（`app/maps/roadname/amap.py`）：高德路径规划的请求与 steps 解析迁出 `app/roadname.py`；`_amap_key()` 改走 `CredentialStore`；新增通用入口 `attribute_by_online(lonlat, cfg, timeout)`，`pipeline._attribute_roads` 改用它，调用方不再出现厂商名；`attribute_by_amap` 保留为兼容入口。
+
+**health 去硬编码**：`server.health` 原先手写 4 个 `bool(CONFIG.xxx_key)`，现改为遍历 `geocoder.registry.names(GEOCODING)`，额外输出 `order` 与 `roadname` 能力状态。新增服务商时 health 自动多一个键。
+
+**词典写回护栏（含一次自我纠错）**：第一版用 `Lexicon.city_bounds(city)`（min/max 经纬度 + 0.35° padding）校验，HTTP 验收发现**等于没校验**——该词典的视野被个别标错城市的条目撑到 `119.63~122.27°`，苏州/宜兴候选全部落在范围内，仍写回 38 条、其中 9 条标着 `city=上海`。根因是 min/max 对尾部离群点毫无抵抗力，而 `city_bounds` 本来就是为「搜索视野宁可宽」设计的，两种用途不该共用。
+
+改为 `Lexicon.in_city_core()`：取该城市已核验点的中位数中心，算每个点到中心的米制距离，用 **95% 分位 × 1.6**（下限 20 km）作允许半径。分位数不受尾部错条目影响；实测上海核心半径约 68 km，上海动物园 8.5 km / 青浦 54 km 放行，苏州 88.5 km / 宜兴 130 km / 吴江 89 km 拦截。词典不足 8 条时返回 `None`、调用方放行，避免误杀新城市冷启动。回滚词典并重启后，同一张图 HTTP 识别写回的 tianditu 条目为 **0 条、跨市 0 条**。
+
+### 完成判据与验证
+
+判据是「`.env` 从 `tianditu,amap` 改成 `amap,tianditu`，**不改任何 Python 代码**即可切换并正确回退，同一批截图识别结果逐字段一致」。
+
+- `tests/test_maps_geocoding_integration.py` 5 项：新环境变量切换顺序、上游返回空自动回退、旧名 `GEOCODE_PROVIDER_ORDER` 兼容、跨市同名不写回、四家 CRS 声明与 probe 形状。
+- `tests/test_maps_roadname.py` 5 项：注册表按能力隔离同名 provider、`_amap_key` 走凭证层、`attribute_by_online` 走注册表且无 key 降级、health 静态护栏。
+- 静态护栏随实现迁移：`test_old_ds_format_not_reintroduced` 从检查 `geocode.py::_tianditu` 改为检查 `providers.py::TiandituProvider`，额外要求 `CRS.CGCS2000` 声明与契约层换算。
+- **A/B**：`git archive 04b81a0` 导出基线，同一张用户验收图、离线 `refine=False`，两边 `confidence / distance_m / track_points / GCJ-02 首末点 / model / inliers / outliers / rmse_m / scale_ground_m_per_px` 逐字段 **IDENTICAL**（0.2 / 4021.2 m / 221 点 / 121.3873328,31.2142736 / north_up / 9 / 10 / 195.86 m / 4.5802 m·px⁻¹）。
+- 护栏改用 `in_city_core` 后新增 1 项分位数判据测试；最终全量 pytest **177 passed**（2 个既有 PytestReturnNotNone 警告）；`git diff --check` 通过。
+- HTTP 端到端：health 返回 `order: [amap,tmap,baidu,tianditu]`、`roadname.order: [amap]`、`probe.tianditu.ok=true`；`refine=off` 识别 200；默认 `auto` 后台精修 `done` → `road_fit.ok=true`、平移 -40/-350 m、贴路 43→5.7 m、结果正确落盘。词典回滚重启后跨市写回为 0。
+
+### 边界与遗留
+
+- 阶段 1 只覆盖 ①②。**阶段 2**（③④ 道路几何与路线校验、合并三份 Overpass 镜像池 / OSRM·Valhalla 重复缓存并接入统一 HTTP 基座）、**阶段 3**（前端 `MapAdapter` 收敛 15 处 `new TMap.*`）、**阶段 4**（tools 静态地图）本轮一律不做。
+- 路名目前只有一个在线实现，`MAP_ROADNAME_ORDER` 是扩展点而非「已有两家可切换」；完全关闭在线路名通过移除 `AMAP_KEY` 实现（凭证层统一）。
+- `app/maps/http.py` 已就绪但 ①② 仍用各自 Session（为保持 A/B 逐字段一致），阶段 2 统一收敛。
+- §22.29 的两点遗留未动：置信度缩放封顶、后台精修 `refine=True` 重跑整条 pipeline 会重新取在线锚点导致判定随配额波动。后者建议在阶段 2 改为复用主请求配准、只补算路网平移。

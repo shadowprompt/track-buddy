@@ -58,12 +58,23 @@ def health() -> dict[str, Any]:
     所以这里对有 key 的服务做一次**主动探测**（用真实端点打一次），
     把失败原因原样报出来。探测很便宜（一次请求），只在 health 调用时发生。
     """
-    geo: dict[str, Any] = {
-        "amap": bool(CONFIG.amap_key),
-        "tmap": bool(CONFIG.tmap_key),
-        "baidu": bool(CONFIG.baidu_key),
-        "tianditu": bool(CONFIG.tianditu_key),
-        "online_available": CONFIG.has_online_key,
+    from .maps.contracts import Capability
+    from .maps.roadname import build_roadname_registry
+
+    # 配置状态与调用顺序全部由能力层注册表驱动：新增服务商时 health
+    # 会自动多出一个键，不必再在这里补一行硬编码的 key 布尔值。
+    reg = _pipeline.geocoder.registry
+    names = reg.names(Capability.GEOCODING)
+    geo: dict[str, Any] = {}
+    for name in names:
+        provider = reg.get(name, Capability.GEOCODING)
+        geo[name] = bool(provider and provider.is_available())
+    geo["order"] = list(reg.order(Capability.GEOCODING))
+    geo["online_available"] = any(geo[n] for n in names)
+    rn_reg, _ = build_roadname_registry(CONFIG)
+    geo["roadname"] = {
+        "available": bool(rn_reg.available(Capability.ROADNAME)),
+        "order": list(rn_reg.order(Capability.ROADNAME)),
     }
     # 上一次在线调用失败的原因（若已发生过）
     if _pipeline.geocoder._last_error:

@@ -875,12 +875,13 @@ budget = canvas_pixel_budget(总输入像素)   # 内存预算 ∩ 输入规模
 **天地图的三个注意点**：一是控制台变量名写法不统一，
 `TIANDITU_API_KEY` / `TIANDITU_KEY` / `TIANDITU_TK` 都能识别，
 `/api/health` 会主动探测 tk 是否真的可用；二是天地图返回 CGCS2000
-（工程精度上等同 WGS-84），而项目内部锚点按 GCJ-02 处理，
-`app/geocode.py` 会做一次 `wgs84_to_gcj02` 转换——漏掉会整体偏约 570 米；
+（工程精度上等同 WGS-84），而项目内部锚点按 GCJ-02 处理；坐标换算统一由
+`app/maps/contracts.py::to_gcj02` 按 provider 声明的 `output_crs` 完成——
+漏掉会整体偏约 570 米；
 三是普通搜索是「包含关键词」语义，项目只保留同名候选，并从词典里该城市
 的已核验坐标派生搜索视野，过滤异地同名（详见 HANDOVER §22.28）。
-在线源顺序可用 `GEOCODE_PROVIDER_ORDER` 调整（默认同源优先），
-上游配额耗尽或返回空时自动落到下一源。
+在线源顺序可用 `MAP_GEOCODING_ORDER` 调整（旧名 `GEOCODE_PROVIDER_ORDER`
+仍兼容，默认同源优先），上游配额耗尽或返回空时自动落到下一源。
 
 **为什么需要第 4 级（冷启动）**
 
@@ -1007,15 +1008,21 @@ TMAP_KEY=
 BAIDU_MAP_KEY=
 # 天地图 tk 三种变量名都能识别
 TIANDITU_API_KEY=
-# 可选：在线源顺序（默认 amap,tmap,baidu,tianditu）
-# GEOCODE_PROVIDER_ORDER=tianditu,amap
+# 可选：能力层顺序（默认 amap,tmap,baidu,tianditu）
+# MAP_GEOCODING_ORDER=tianditu,amap   # 旧名 GEOCODE_PROVIDER_ORDER 仍兼容
+# MAP_ROADNAME_ORDER=amap             # 路名能力，新增实现后可在这里排序
 # 可选：天地图搜索视野（默认全球；按业务区域收紧可减少异地同名）
 # TIANDITU_MAP_BOUND=<minx>,<miny>,<maxx>,<maxy>
 ```
 
 未配置密钥时自动降级为纯本地词典模式，功能可用但只能识别词典覆盖的区域。
-只想用天地图时，把 `GEOCODE_PROVIDER_ORDER` 设为 `tianditu`（或
-`tianditu,amap` 保留高德兜底），无需改代码。
+只想用天地图时，把 `MAP_GEOCODING_ORDER` 设为 `tianditu`（或
+`tianditu,amap` 保留高德兜底），无需改代码；`.env` 改完即时生效，不必重启。
+
+**能力层约定**：所有外部地图调用都通过 `app/maps/` 的契约、凭证、注册表
+与 HTTP 基座装配。每个 provider 必须声明 `output_crs`，框架统一换算到
+GCJ-02；`/api/health` 的配置状态与调用顺序直接遍历注册表，新增服务商
+不需要改 `server.py`。详见 HANDOVER §22.30。
 
 ---
 
@@ -1081,12 +1088,19 @@ app/
   cv_utils.py    中文路径读写、几何工具（含弧长保真的折线简化）
   track.py       轨迹提取（掩膜、骨架化、图路径追踪）
   ocr_anchor.py  OCR 封装与锚点分级
-  geocode.py     四级地理编码：用户确认 > 在线服务 > 本地词典 > OSM 冷启动
+  geocode.py     四级地理编码编排 + 在线源薄适配（实现在 maps/geocoding/）
   coldstart.py   OSM 冷启动检索（新区域无词典覆盖时的兜底）
   register.py    RANSAC 配准（north_up / similarity / affine）
   roadfit.py     路网约束精修（真实道路几何纠正绝对位置）
-  roadname.py    路名归属
+  roadname.py    路名领域模型 + 通用入口（实现在 maps/roadname/）
   pipeline.py    流水线编排与 GeoJSON 输出
+  maps/          可插拔地图能力层（替换服务商只改 .env）
+    contracts.py    数据契约 / CRS 声明 / 统一换算 to_gcj02
+    credentials.py  env + .env 别名解析（唯一一处「找 key」）
+    registry.py     按能力装配、配置驱动顺序、回退、健康探测
+    http.py         Session / UA / 限流 / 重试 / 磁盘缓存
+    geocoding/      amap | tmap | baidu | tianditu 实现
+    roadname/       amap 实现（后续阶段接入道路几何与路线校验）
   geo/coords.py  坐标转换与投影
   server.py      FastAPI 服务（首页动态渲染，注入地图代理地址）
   tmap_proxy.py 腾讯地图 GL JS 本地代理（鉴权转发，key 不下发浏览器）
