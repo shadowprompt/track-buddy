@@ -45,6 +45,10 @@ app.include_router(
 # 实际监听端口（main() 启动时写入），供页面渲染代理地址用
 _SERVER_PORT: int = 0
 
+# 前端底图适配层（web/js/basemap.js）已注册的服务商。
+# 与前端实现保持同步——新增服务商时两边都要改。
+_BASEMAP_PROVIDERS = ["tmap", "amap"]
+
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
@@ -101,6 +105,12 @@ def health() -> dict[str, Any]:
         "route_validation": {
             "order": list(route_reg.order(Capability.ROUTE_VALIDATION)),
             "available": bool(route_reg.available(Capability.ROUTE_VALIDATION)),
+        },
+        # 前端底图（阶段 3）：适配层选中的服务商与可用实现。
+        # 改 .env 的 BASEMAP_PROVIDER 后这里会立刻变，便于验收确认。
+        "basemap": {
+            "provider": CONFIG.basemap_provider,
+            "available": _BASEMAP_PROVIDERS,
         },
     }
     return {
@@ -657,8 +667,16 @@ def index(request: Request) -> Response:
     # 这些值原本是硬编码在页面里的 __WB_HTTP_PORT__ / __WB_TMAP_SECRET__，
     # 从未被替换过——SDK 因此去请求一个非法地址，鉴权失败，
     # 最终抛出没有上下文的 "Unhandled error. (undefined)"。
+    #
+    # 另外注入底图服务商名与（切高德时的）高德 JS SDK 片段，
+    # 前端适配层据此选择实现，业务代码与服务商解耦。
     html = page.read_text(encoding="utf-8")
-    html = render_page(html, _server_port(request), _TMAP_SECRET)
+    html = render_page(
+        html, _server_port(request), _TMAP_SECRET,
+        basemap_provider=CONFIG.basemap_provider,
+        amap_js_key=CONFIG.amap_js_key,
+        amap_js_security=CONFIG.amap_js_security,
+    )
     return Response(content=html, media_type="text/html")
 
 

@@ -27,6 +27,14 @@ TIANDITU_MAP_BOUND_DEFAULT = "-180,-90,180,90"
 GEOCODE_PROVIDER_ORDER_ENV = "GEOCODE_PROVIDER_ORDER"
 ONLINE_PROVIDERS = ("amap", "tmap", "baidu", "tianditu")
 
+# 网页底图（前端适配层）配置。
+# BASEMAP_PROVIDER 决定前端用哪个底图实现（tmap / amap）；
+# 高德 JS SDK 需要**前端可用**的 key 与安全密钥，与 WebService 的
+# AMAP_KEY 是两套凭据。
+BASEMAP_PROVIDER_ENV = "BASEMAP_PROVIDER"
+AMAP_JS_KEY_ENV = "AMAP_JS_KEY"
+AMAP_JS_SECURITY_ENV = "AMAP_JS_SECURITY"
+
 # 腾讯地图 WebService 端点
 TMAP_PLACE_SEARCH = "https://apis.map.qq.com/ws/place/v1/search"
 TMAP_GEOCODER = "https://apis.map.qq.com/ws/geocoder/v1/"
@@ -261,6 +269,37 @@ class AppConfig:
         地理编码仍需用户自己申请，否则没有配额。
         """
         return self.tmap_key or TMAP_PUBLIC_KEY
+
+    # ---------- 网页底图（前端适配层） ----------
+
+    @property
+    def basemap_provider(self) -> str:
+        """前端底图适配层使用的服务商名。
+
+        前端 ``web/js/basemap.js`` 注册了 ``tmap`` 与 ``amap`` 两个实现，
+        这里只决定**默认用哪个**。改 ``.env`` 里的
+        ``BASEMAP_PROVIDER`` 即可切换，业务代码零改动。
+
+        高德 JS SDK 需要**前端可用的 JS key 与安全密钥**，
+        没有配 ``AMAP_JS_KEY`` / ``AMAP_JS_SECURITY`` 时即使选了 amap
+        也加载不出来——此时自动回退到 tmap，避免页面直接白屏。
+        """
+        raw = (self._env_value(BASEMAP_PROVIDER_ENV) or "").strip().lower()
+        if raw in ("amap", "a_map", "gaode"):
+            if not self.amap_js_key:
+                return "tmap"
+            return "amap"
+        return raw if raw in ("tmap", "qq", "tencent") else "tmap"
+
+    @property
+    def amap_js_key(self) -> str | None:
+        """高德地图 **JS API** 的 key（与 WebService 的 ``AMAP_KEY`` 不同）。"""
+        return self._env_value(AMAP_JS_KEY_ENV)
+
+    @property
+    def amap_js_security(self) -> str | None:
+        """高德 JS API 的安全密钥（``securityJsCode``）。"""
+        return self._env_value(AMAP_JS_SECURITY_ENV)
 
 
 def _read_env_file(env_path: Path) -> dict[str, str]:

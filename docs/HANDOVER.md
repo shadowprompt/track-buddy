@@ -4060,3 +4060,85 @@ md5 缓存键、polyline 解码、路名命中率与顺序一致性，评分口�
   未动：那是**行为修复**而非去重复，混进重构会破坏归因，留作独立改动。
 - 阶段 3（前端 `MapAdapter` 收敛 `new TMap.*`）与阶段 4（tools 静态
   地图）仍按计划分开提交。
+
+## 22.32 阶段 3：前端底图适配层（MapAdapter）
+
+### 问题
+
+腾讯地图 GL JS 的对象模型（`new TMap.Map` / `MultiPolyline` / `MultiMarker` /
+`LatLngBounds`）与业务逻辑混在同一个 `drawMapInner()` 里。后果有三个：
+
+1. 换底图服务商（高德 / 天地图 / Leaflet）必须改业务函数；
+2. 测试只能整体 mock `TMap` 全局对象；
+3. 厂商 API 一旦改名，业务代码跟着炸。
+
+### 做法
+
+新增独立文件 `web/js/basemap.js`（UMD，既能被页面 `<script>` 引入，
+也能被 Node 测试 `require`）。它只暴露一个统一接口：
+
+```
+RideBasemap.create(providerName, { container, zoom })
+  → adapter.setTrack(coords)      // coords: [{ lat, lon }]，GCJ-02
+    adapter.fitBounds(padding)
+    adapter.resize()
+    adapter.onClick(cb)
+    adapter.getPolyline() / getMarkers() / getLastCoords()
+```
+
+每个 provider 只回答 7 个问题：能不能用、怎么建地图、怎么建轨迹、
+怎么更新轨迹、怎么删图层、怎么缩放视野、怎么监听点击。
+
+已注册两个实现：
+
+| provider | SDK | 更新几何 | 删图层 | 视野 |
+|---|---|---|---|---|
+| `tmap` | 腾讯 GL JS | `setGeometries` | `map.removeLayer(id)` | `fitBounds(bounds, {padding})` |
+| `amap` | 高德 JS API 2.0 | `setPath` / `setPosition` | `map.remove(overlay)` | `setFitView(overlays, false, avoid)` |
+
+### 关键设计决定
+
+- **坐标结构统一为 `{ lat, lon }`（GCJ-02）**。腾讯回调给的是
+  `evt.latLng`（`LatLng` 实例）、高德给的是 `evt.lnglat`，
+  两者形状不同，必须在 provider 里抹平，否则业务代码要按厂商分支。
+- **二次渲染仍是「原地更新几何」**。适配层 `setTrack()` 优先
+  `updateTrack()`，失败才 `removeTrack()` + 重建——与阶段 3 之前的
+  语义一致，异步精修仍能真正刷新地图。既有回归项「连续识别移除旧图层」
+  因此改为断言「不再 removeLayer、图层数不堆积、几何确实换新」。
+- **`lastPath` 从 `TMap.LatLng[]` 变成 `{lat,lon}[]`**：字段名由
+  `lng` 变 `lon`，适配层内部再转回厂商类型。
+
+### 服务端配合
+
+- `app/config.py` 新增 `BASEMAP_PROVIDER` / `AMAP_JS_KEY` /
+  `AMAP_JS_SECURITY`；`AppConfig.basemap_provider` 返回当前服务商名。
+  **没配高德 JS key 时即使写 `BASEMAP_PROVIDER=amap` 也自动回退
+  `tmap`**——高德 JS SDK 的鉴权模型就是「前端 key + securityJsCode」，
+  缺 key 会直接白屏。
+- `app/tmap_proxy.py` 的 `render_page()` 新增两个占位符：
+  `__WB_BASEMAP_PROVIDER__`（服务商名）与 `__WB_AMAP_SDK__`
+  （高德 SDK 脚本整段）。不用高德时后者替换成空串。
+- `/api/health` 的 `maps` 段新增 `basemap: { provider, available }`，
+  验收时可直接确认切换是否生效。
+
+### 验证
+
+- 新增 `tests/test_frontend_basemap.py` 13 项：结构层（业务代码不再有
+  `new TMap.*`）、行为层（Node 跑**真实**适配层，只把 TMap 换成桩）、
+  服务端层（占位符注入、缺 key 回退、health 契约）。
+- 新增 `tests/frontend_basemap_test.js`：24 项断言，覆盖原地更新、
+  标记同步、点击回调只绑一次、换 provider 后业务调用不变、
+  provider 异常可诊断。
+- 更新 `tests/frontend_map_refresh_test.js` 与 `tests/test_frontend.py`：
+  两者改为加载真实适配层而非直接 mock `TMap`。
+- `tests/test_frontend.py` 主流程 **25/25 通过**；
+  前端相关 pytest **13 passed**。
+
+### 边界
+
+- 高德 JS SDK **未经真机验证**——本地没有高德 JS key，只验证了
+  契约与代码路径。要启用需在 `.env` 配 `AMAP_JS_KEY` 与
+  `AMAP_JS_SECURITY`，并确认 key 的「JS API」类型与域名白名单。
+- `app/trajmap.py`（对比页）仍直接用 `TMap.*`，未纳入适配层——
+  它是独立页面，改造收益低、风险高，留作独立任务。
+- 阶段 4（tools 静态地图收敛）待做。

@@ -267,23 +267,30 @@
   };
 </script>
 <script src="https://map.qq.com/api/gljs?v=1.exp"></script>
+__WB_AMAP_SDK__
+<script src="/static/js/basemap.js"></script>
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
   const drop = $('drop'), fileInput = $('file'), go = $('go'), status = $('status');
   let picked = null, lastResult = null;
-  let map = null, polyline = null, markers = [];
-  // 当前轨迹的 LatLng 数组，供 fitMapToTrack 缩放视野用
+  // 底图适配层：业务代码只依赖 RideBasemap.Adapter，不再直接碰 TMap.*。
+  // 服务商名由服务端按配置注入（BASEMAP_PROVIDER），改 .env 即可切换。
+  window.__WB_BASEMAP_PROVIDER__ = '__WB_BASEMAP_PROVIDER__';
+  const basemap = RideBasemap.create(window.__WB_BASEMAP_PROVIDER__ || 'tmap',
+                                    { container: 'map', zoom: 14 });
+  // 当前轨迹的坐标数组（{lat, lon}，GCJ-02），供 fitMapToTrack 缩放视野用
   let lastPath = [];
 
   // 调试钩子：暴露内部状态供自动化测试观测。
   // （IIFE 里的变量外部取不到，没有这个钩子就只能靠肉眼截图判断）
   window.__ride = {
-    getMap: () => map,
-    getPolyline: () => polyline,
-    getMarkers: () => markers.slice(),
+    getMap: () => basemap.getMap(),
+    getPolyline: () => basemap.getPolyline(),
+    getMarkers: () => basemap.getMarkers(),
     getLastPath: () => lastPath.slice(),
     getLastResult: () => lastResult,
+    getBasemap: () => basemap,
   };
 
   // ---------- 上传交互 ----------
@@ -908,9 +915,8 @@
     const mapHidden = mapEl.style.display === 'none'
                    || mapEl.clientWidth === 0 || mapEl.clientHeight === 0;
 
-    if (!map) {
+    if (!basemap.getMap()) {
       if (mapHidden) return;          // 容器还不可用，等布局就绪后再画
-      map = new TMap.Map('map', { center: new TMap.LatLng(lat, lon), zoom: 14 });
     }
 
     // ---- 二次渲染必须「原地替换几何」，不能 removeLayer + 重建 ----
@@ -924,73 +930,17 @@
     // 结果就是：左栏置信度 / 贴路距离 / 状态条都变成了精修后的值，
     // **地图上的轨迹仍是精修前的粗配准**，用户看到「精修没生效 / 路线偏北」。
     //
-    // 现在复用已有图层，用 setGeometries() 原地换路径与起终点。
+    // 现在由适配层统一处理：优先 setGeometries() 原地换路径与起终点，
     // 不依赖图层 id，也不会因为重建失败留下旧轨迹。
-    const path = coords.map(c => new TMap.LatLng(c[1], c[0]));
+    const path = coords.map(c => ({ lat: c[1], lon: c[0] }));
     lastPath = path;
-    const trailGeo = [{ id: 'trail', styleId: 'trail', paths: path }];
-    const startGeo = [{ id: 's', styleId: 's', position: path[0] }];
-    const endGeo = [{
-      id: 'e', styleId: 'e', position: path[path.length - 1],
-    }];
-
-    let reused = false;
-    if (polyline && markers.length === 2) {
-      try {
-        polyline.setGeometries(trailGeo);
-        markers[0].setGeometries(startGeo);
-        markers[1].setGeometries(endGeo);
-        reused = true;
-      } catch (e) {
-        console.warn('图层原地更新失败，回退到重建:', e);
-      }
-    }
-
-    if (!reused) {
-      // 首次绘制（或 SDK 不支持 setGeometries）：尽力清掉旧图层再重建。
-      if (polyline) {
-        try { map.removeLayer(polyline.id); } catch (e) { /* 图层可能已失效 */ }
-        polyline = null;
-      }
-      if (markers.length) {
-        markers.forEach(m => {
-          try { map.removeLayer(m.id); } catch (e) { /* 同上 */ }
-        });
-        markers = [];
-      }
-      polyline = new TMap.MultiPolyline({
-        map,
-        styles: {
-          trail: new TMap.PolylineStyle({
-            color: '#534ab7', width: 5, borderWidth: 2, borderColor: '#ffffff', lineCap: 'round',
-          }),
-        },
-        geometries: trailGeo,
-      });
-      const start = new TMap.MultiMarker({
-        map,
-        styles: { s: new TMap.MarkerStyle({ width: 24, height: 24, anchor: { x: 12, y: 12 },
-          color: '#0f6e56', borderWidth: 3, borderColor: '#ffffff' }) },
-        geometries: startGeo,
-      });
-      const end = new TMap.MultiMarker({
-        map,
-        styles: { e: new TMap.MarkerStyle({ width: 24, height: 24, anchor: { x: 12, y: 12 },
-          color: '#d54941', borderWidth: 3, borderColor: '#ffffff' }) },
-        geometries: endGeo,
-      });
-      markers = [start, end];
-    }
+    basemap.setTrack(path, { lat: lat, lon: lon });
 
     // 纠正模式：点击地图选点
-    if (!map.__clickBound) {
-      map.__clickBound = true;
-      map.on('click', (evt) => {
-        if (!correcting) return;
-        const latLng = evt.latLng;
-        submitCorrection(latLng.lng, latLng.lat);
-      });
-    }
+    basemap.onClick((latLng) => {
+      if (!correcting) return;
+      submitCorrection(latLng.lng, latLng.lat);
+    });
 
     // fitBounds 放在最后，用带保护的版本。
     // 容器不可见时跳过——切回「地图」标签页时会补上。
@@ -1130,11 +1080,11 @@
   function ensureMapReady() {
     // 地图还没初始化过（首次识别时容器尺寸为 0），现在才创建。
     // 同时把当前结果画上去——否则是一��空白。
-    if (!map) {
+    if (!basemap.getMap()) {
       if (lastResult) drawMap(lastResult);
       return;
     }
-    map.resize();
+    basemap.resize();
     // 之前在容器尺寸为 0 时跳过了 fitBounds，这里补上——
     // 否则视野还是上一张的范围。
     fitMapToTrack();
@@ -1143,17 +1093,15 @@
   // 把轨迹缩放到视野。容器不可见时跳过（腾讯地图在 0 尺寸容器上
   // 做 fitBounds 会抛 "Unhandled error. (undefined)"）。
   //
-  // 用 lastPath（drawMap 里已构造好的 LatLng 数组）而不是重新解析
+  // 用 lastPath（drawMap 里已构造好的坐标数组）而不是重新解析
   // GeoJSON：少一层依赖，也不会因为 lastResult 与当前图层不同步而画错范围。
   function fitMapToTrack() {
-    if (!map || !lastPath || !lastPath.length) return;
+    if (!basemap.getMap() || !lastPath || !lastPath.length) return;
     const mapEl = $('map');
     if (mapEl.style.display === 'none') return;
     if (mapEl.clientWidth === 0 || mapEl.clientHeight === 0) return;
     try {
-      const bounds = new TMap.LatLngBounds();
-      lastPath.forEach(p => bounds.extend(p));
-      map.fitBounds(bounds, { padding: 40 });
+      basemap.fitBounds(40);
     } catch (e) {
       // 地图渲染失败不应影响识别结果的展示
       console.warn('fitBounds 失败:', e);

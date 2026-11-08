@@ -1017,6 +1017,10 @@ TIANDITU_API_KEY=
 # MAP_ROUTE_VALIDATION_ENABLED=0      # 整体关闭公共路线校验
 # 可选：天地图搜索视野（默认全球；按业务区域收紧可减少异地同名）
 # TIANDITU_MAP_BOUND=<minx>,<miny>,<maxx>,<maxy>
+# 可选：网页底图服务商（默认 tmap 腾讯；改成 amap 需配下面两项）
+# BASEMAP_PROVIDER=tmap
+# AMAP_JS_KEY=                          # 高德 JS API key（不是 AMAP_KEY）
+# AMAP_JS_SECURITY=                     # 高德 JS API 安全密钥
 ```
 
 未配置密钥时自动降级为纯本地词典模式，功能可用但只能识别词典覆盖的区域。
@@ -1032,6 +1036,14 @@ TIANDITU_API_KEY=
 `/api/health` 新增 `maps.road_geometry` 与 `maps.route_validation`
 字段上报装配顺序（只读注册表、不打公共实例），新增服务商不需要改
 `server.py`。详见 HANDOVER §22.30–22.31。
+
+**网页底图**：前端底图走独立适配层 `web/js/basemap.js`，业务代码不直接
+调用 `TMap.*`。已注册 `tmap`（腾讯 GL JS）与 `amap`（高德 JS API 2.0）
+两个实现，改 `.env` 的 `BASEMAP_PROVIDER` 即可切换，无需改代码；
+`/api/health` 的 `maps.basemap.provider` 会显示当前服务商。
+注意高德 JS SDK 用的是**前端 key**（`AMAP_JS_KEY` + `AMAP_JS_SECURITY`），
+与 WebService 的 `AMAP_KEY` 是两套凭据；没配时会自动回退腾讯，避免白屏。
+详见 HANDOVER §22.32。
 
 ---
 

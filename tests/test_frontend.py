@@ -43,9 +43,16 @@ def check(cond: bool, name: str, detail: str = "") -> None:
 # ---- Node 端测试脚本 ----
 NODE_SCRIPT = r"""
 const fs = require('fs');
+const path = require('path');
 const html = fs.readFileSync(process.argv[2], 'utf8');
 const m = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
 const code = m[m.length - 1][1];
+
+// 底图适配层是独立文件（web/js/basemap.js），业务代码不再直接碰 TMap.*。
+// 这里加载**真实**的适配层，只把 TMap 换成桩——
+// 这样测的就是生产路径，而不是一份另写的假实现。
+const adapterPath = path.join(path.dirname(process.argv[2]), 'js', 'basemap.js');
+const RideBasemap = require(adapterPath);
 
 function extract(name) {
   const re = new RegExp('function ' + name + '\\([^)]*\\) \\{[\\s\\S]*?\\n  \\}');
@@ -102,7 +109,12 @@ class TMapStub {
       calls.push('polyline');
       // 真实 SDK 给每个图层实例分配一个 UUID 作为 id
       this.id = 'poly-' + (++layerSeq);
+      this.geometries = [];
       layerRegistry.set(this.id, this);
+    }
+    setGeometries(g) {
+      calls.push('setGeometries');
+      this.geometries = g;
     }
     getGeometries() { return [{ paths: this._paths || [] }]; }
   };
@@ -110,7 +122,12 @@ class TMapStub {
     constructor() {
       calls.push('marker');
       this.id = 'mark-' + (++layerSeq);
+      this.geometries = [];
       layerRegistry.set(this.id, this);
+    }
+    setGeometries(g) {
+      calls.push('setGeometries');
+      this.geometries = g;
     }
   };
   static Map = class {
@@ -139,9 +156,14 @@ class TMapStub {
   };
 }
 
-const factory = new Function('TMap', '$', 'document', `
+// 适配层通过 window.TMap 取 SDK
+global.window = global;
+global.TMap = TMapStub;
+
+const factory = new Function('TMap', '$', 'document', 'RideBasemap', `
   let map = null, polyline = null, markers = [];
   let lastResult = null, correcting = null, lastPath = [];
+  const basemap = RideBasemap.create('tmap', { container: 'map', zoom: 14 });
   ${extract('esc')}
   ${extract('num')}
   ${extract('int')}
@@ -153,8 +175,8 @@ const factory = new Function('TMap', '$', 'document', `
   ${extract('fitMapToTrack')}
   ${extract('ensureMapReady')}
   return { drawMap, fitMapToTrack, ensureMapReady, drawPreview,
-    setResult(d) { lastResult = d; }, getMap() { return map; },
-    getPolyline() { return polyline; }, getLastPath() { return lastPath; } };
+    setResult(d) { lastResult = d; }, getMap() { return basemap.getMap(); },
+    getPolyline() { return basemap.getPolyline(); }, getLastPath() { return lastPath; } };
 `);
 
 const D1 = {
@@ -167,7 +189,7 @@ const out = {};
 
 // 场景1：地图页连续识别两张
 {
-  const api = factory(TMapStub, $, docStub);
+  const api = factory(TMapStub, $, docStub, RideBasemap);
   mapElDisplay = 'block'; mapElW = 800; mapElH = 480;
   calls.length = 0;
   let err = null;
@@ -182,7 +204,7 @@ const out = {};
 //   (a) 有没有在 0 尺寸容器上创建/操作地图
 //   (b) fitBounds 有没有被调用（bug 版本会真的调进去）
 {
-  const api = factory(TMapStub, $, docStub);
+  const api = factory(TMapStub, $, docStub, RideBasemap);
   mapElDisplay = 'block'; mapElW = 0; mapElH = 0;
   calls.length = 0;
   let err = null;
@@ -194,7 +216,7 @@ const out = {};
 
 // 场景3：ensureMapReady 应补 fitBounds
 {
-  const api = factory(TMapStub, $, docStub);
+  const api = factory(TMapStub, $, docStub, RideBasemap);
   mapElDisplay = 'block'; mapElW = 800; mapElH = 480;
   api.setResult(D1);
   calls.length = 0;
@@ -206,7 +228,7 @@ const out = {};
 
 // 场景4：首次识别时容器尺寸为 0（地图从未初始化），布局就绪后应补建
 {
-  const api = factory(TMapStub, $, docStub);
+  const api = factory(TMapStub, $, docStub, RideBasemap);
   mapElDisplay = 'block'; mapElW = 0; mapElH = 0;
   calls.length = 0;
   let err = null;
@@ -237,12 +259,17 @@ out.preview_has_fixed_height = /#preview\s*\{[^}]*height:\s*\d+px/.test(html);
 // 而 lastPath 也没更新 → fitBounds 仍按旧路径定位视野。
 // 结果：左栏数据是新图的，地图上还是上一张的轨迹与视野。
 //
-// 断言三件事：
-//   (a) removeLayer 收到的参数必须是字符串 id
-//   (b) 旧图层必须真的从地图上移除（不能残留）
-//   (c) 第二次识别后 lastPath 必须换成新图的坐标
+// ⚠️ 阶段 3 之后语义变了：底图适配层统一走「**原地更新几何**」
+// （setGeometries），不再 removeLayer + 重建。这样异步精修能真正刷新地图，
+// 也不会出现新旧轨迹叠加。
+//
+// 现在断言：
+//   (a) 第二次识别不触发 removeLayer（避免图层残留/叠加）
+//   (b) 图层数量保持 3 条（1 轨迹 + 2 标记），没有重复堆积
+//   (c) 轨迹几何确实换成了新图的坐标
+//   (d) lastPath 必须换成新图的坐标
 {
-  const api = factory(TMapStub, $, docStub);
+  const api = factory(TMapStub, $, docStub, RideBasemap);
   mapElDisplay = 'block'; mapElW = 800; mapElH = 480;
   layerRegistry.clear();
   calls.length = 0;
@@ -268,13 +295,21 @@ out.preview_has_fixed_height = /#preview\s*\{[^}]*height:\s*\d+px/.test(html);
   const removeArgs = calls.filter(c => c.startsWith('removeLayer:'))
                           .map(c => c.substring('removeLayer:'.length));
   out.s6_removeArgs = removeArgs;
-  out.s6_removeAllStrings = removeArgs.length > 0 && removeArgs.every(a => typeof a === 'string' && a !== '[object Object]');
-  // 第一张建立了 1 条轨迹 + 2 个标记 = 3 个图层，第二次都要移除
+  out.s6_removeAllStrings = removeArgs.every(a => typeof a === 'string' && a !== '[object Object]');
+  // 原地更新语义：第二次识别不应该再 removeLayer
   out.s6_removeCount = removeArgs.length;
   out.s6_layersLeft = layerRegistry.size;
+  out.s6_setGeometriesCalls = calls.filter(c => c === 'setGeometries').length;
+  // 轨迹几何必须已经换成新图的经度
+  const geo = api.getPolyline().geometries;
+  const path = (geo && geo[0] && geo[0].paths) ? geo[0].paths : [];
+  out.s6_pathLen = path.length;
+  out.s6_pathLng = path.length ? path[0].lng : null;
   const lp = api.getLastPath();
   out.s6_lastPathLen = lp.length;
-  out.s6_lastPathLng = lp.length ? lp[0].lng : null;
+  // ⚠️ 阶段 3 后 lastPath 存的是 { lat, lon } 纯对象（适配层的统一坐标结构），
+  //    不再是 TMap.LatLng 实例——字段名由 lng 变成 lon。
+  out.s6_lastPathLng = lp.length ? lp[0].lon : null;
   out.s6_newTrailLng = 121.5520;
 }
 
@@ -290,7 +325,7 @@ out.preview_has_fixed_height = /#preview\s*\{[^}]*height:\s*\d+px/.test(html);
 // 注意必须真的调用 drawPreview（而不是只调 drawMap），
 // 因为显隐逻辑就在 drawPreview 调用的 applyPreviewVisibility 里。
 {
-  const api = factory(TMapStub, $, docStub);
+  const api = factory(TMapStub, $, docStub, RideBasemap);
   mapElDisplay = 'block'; mapElW = 800; mapElH = 480;
   calls.length = 0;
   let err = null;
@@ -474,12 +509,18 @@ def main() -> int:
     check(r["s6_removeAllStrings"] is True,
           "removeLayer 传入的是图层 id 而不是图层对象",
           f"实参: {r['s6_removeArgs']}")
-    check(r["s6_removeCount"] == 3,
-          "第二次识别移除了上一轮的 1 条轨迹 + 2 个标记",
+    check(r["s6_removeCount"] == 0,
+          "第二次识别走原地更新，不再 removeLayer 重建（避免新旧轨迹叠加）",
           f"实删 {r['s6_removeCount']} 个图层")
     check(r["s6_layersLeft"] == 3,
-          "地图上只剩新图画的 3 个图层（无残留）",
+          "地图上只有 3 个图层（1 轨迹 + 2 标记），无重复堆积",
           f"剩余 {r['s6_layersLeft']} 个")
+    check(r["s6_setGeometriesCalls"] == 3,
+          "第二次识别用 setGeometries 原地换几何（轨迹 + 起终点）",
+          f"调用 {r['s6_setGeometriesCalls']} 次")
+    check(abs((r["s6_pathLng"] or 0) - r["s6_newTrailLng"]) < 1e-6,
+          "地图上的轨迹几何已换成新图坐标",
+          f"轨迹首点经度 {r['s6_pathLng']}")
     check(abs((r["s6_lastPathLng"] or 0) - r["s6_newTrailLng"]) < 1e-6,
           "lastPath 已换成新图坐标（fitBounds 视野随之更新）",
           f"首点经度 {r['s6_lastPathLng']}")

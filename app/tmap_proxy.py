@@ -31,6 +31,7 @@ SDK 内部的失败路径是::
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -58,6 +59,10 @@ PROXY_PATHS = {
 # 页面里的占位符 —— 服务端渲染首页时替换
 PLACEHOLDER_PORT = "__WB_HTTP_PORT__"
 PLACEHOLDER_SECRET = "__WB_TMAP_SECRET__"
+# 前端底图适配层用的服务商名（tmap / amap）
+PLACEHOLDER_BASEMAP = "__WB_BASEMAP_PROVIDER__"
+# 高德 JS SDK 的加载配置：整段替换成 <script> 标签
+PLACEHOLDER_AMAP_SDK = "__WB_AMAP_SDK__"
 
 
 def _inject_key(url: str, key: str | None) -> str:
@@ -137,15 +142,51 @@ def create_proxy_router(
     return router
 
 
-def render_page(html: str, port: int, secret: str) -> str:
+def render_page(
+    html: str,
+    port: int,
+    secret: str,
+    basemap_provider: str = "tmap",
+    amap_js_key: str | None = None,
+    amap_js_security: str | None = None,
+) -> str:
     """把占位符替换成实际值。
 
     ``secret`` 是给代理路径用的标记——浏览器请求 ``/_TMapService/_wbt/<secret>/...``，
     服务端据此识别出这是代理流量。真正的腾讯地图 key 不出现在页面里。
+
+    ``basemap_provider`` 告诉前端适配层用哪个底图实现（tmap / amap）。
+    高德 JS SDK 的 key **必须下发到浏览器**（JS SDK 的鉴权模型就是
+    前端 key + securityJsCode），这与腾讯的本地代理模式不同，
+    因此只有真正切到高德时才注入相关脚本。
     """
     html = html.replace(PLACEHOLDER_PORT, str(port))
     html = html.replace(PLACEHOLDER_SECRET, secret)
+    html = html.replace(PLACEHOLDER_BASEMAP, basemap_provider or "tmap")
+    html = html.replace(PLACEHOLDER_AMAP_SDK, _amap_sdk_block(
+        basemap_provider, amap_js_key, amap_js_security))
     return html
+
+
+def _amap_sdk_block(
+    basemap_provider: str | None,
+    amap_js_key: str | None,
+    amap_js_security: str | None,
+) -> str:
+    """生成高德 JS SDK 的加载片段（不用高德时返回空串）。"""
+    if (basemap_provider or "").lower() != "amap":
+        return ""
+    if not amap_js_key:
+        return ""
+    parts = [
+        "<script>window._AMapSecurityConfig = {"
+        + "securityJsCode: %s };</script>" % json.dumps(amap_js_security or "")
+    ]
+    parts.append(
+        "<script src=\"https://webapi.amap.com/maps?v=2.0&key=%s\"></script>"
+        % amap_js_key
+    )
+    return "\n".join(parts)
 
 
 def make_secret() -> str:

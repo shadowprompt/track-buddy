@@ -6,10 +6,15 @@
 // 图层实例未必有公开 id，旧轨迹没被清掉 / 重建直接抛异常，
 // 而 drawMap() 把异常静默吞了，状态条照样报成功。
 //
-// 这个测试用最小 TMap mock 直接跑页面里真实的 drawMapInner()，
-// 覆盖：首次绘制 → 二次渲染（精修 payload）→ 几何是否原地更新。
+// ⚠️ 阶段 3 之后，底图调用已收敛到适配层（web/js/basemap.js），
+//    业务代码只调 basemap.setTrack()，由适配层负责「原地更新几何」。
+//    本测试加载**真实的适配层**（只把 TMap 换成桩），
+//    覆盖：首次绘制 → 二次渲染（精修 payload）→ 几何是否原地更新。
 const fs = require('fs');
-const html = fs.readFileSync(process.argv[2] || 'web/index.html', 'utf8');
+const path = require('path');
+
+const htmlPath = path.resolve(process.argv[2] || 'web/index.html');
+const html = fs.readFileSync(htmlPath, 'utf8');
 const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
 const code = scripts[scripts.length - 1][1];
 
@@ -26,10 +31,11 @@ check(/mapOk = drawMap\(d\);/.test(code),
   'render() 记录地图刷新是否成功');
 check(/function drawMap\(d\) \{[\s\S]{0,700}?return true;[\s\S]{0,300}?return false;/.test(code),
   'drawMap() 不再静默吞异常，返回成功与否');
-check(/polyline\.setGeometries\(trailGeo\)/.test(code),
-  '二次渲染用 setGeometries 原地换几何');
 check(/地图已刷新/.test(code) && /地图刷新失败/.test(code),
   '状态条区分「地图已刷新」与「刷新失败」');
+// 阶段 3：业务代码走适配层，不再直接 new TMap.*
+check(!/new TMap\./.test(code), '业务代码不再直接调用 TMap');
+check(/basemap\.setTrack\(/.test(code), '业务代码通过适配层绘制轨迹');
 
 // --- 动态检查：真的跑两次 drawMapInner ---
 let markerSeq = 0;
@@ -48,20 +54,44 @@ function MultiMarker(opts) {
 const TMap = {
   LatLng, MultiPolyline, MultiMarker,
   PolylineStyle: function () {}, MarkerStyle: function () {},
-  Map: function () { this.__clickBound = false; this.on = () => {}; },
+  LatLngBounds: function () { this.extend = () => {}; },
+  Map: function () {
+    this.__clickBound = false;
+    this.on = () => {};
+    this.fitBounds = () => {};
+    this.resize = () => {};
+  },
 };
-let map = new TMap.Map();
-let polyline = null;
-let markers = [];
-let lastPath = null;
+
+// 载入真实适配层
+global.window = global;
+global.TMap = TMap;
+const adapterPath = path.join(path.dirname(htmlPath), 'js', 'basemap.js');
+const RideBasemap = require(adapterPath);
+
 let correcting = false;
 const submitCorrection = () => {};
-const fitMapToTrack = () => {};
 const $ = () => ({ style: { display: 'block' }, clientWidth: 640, clientHeight: 420 });
 
 const fn = code.match(/function drawMapInner\([^)]*\) \{[\s\S]*?\n  \}/);
 if (!fn) throw new Error('未找到 drawMapInner');
-eval(fn[0]);
+const fitFn = code.match(/function fitMapToTrack\([^)]*\) \{[\s\S]*?\n  \}/);
+if (!fitFn) throw new Error('未找到 fitMapToTrack');
+
+// drawMapInner 依赖闭包里的 basemap / lastPath / correcting / fitMapToTrack，
+// 这里用 new Function 复刻页面里的那几个闭包变量。
+const factory = new Function('RideBasemap', '$', 'submitCorrection', `
+  let lastPath = [];
+  let correcting = false;
+  const basemap = RideBasemap.create('tmap', { container: 'map', zoom: 14 });
+  ${fitFn[0]}
+  ${fn[0]}
+  return { drawMapInner, getPolyline: () => basemap.getPolyline(),
+           getMarkers: () => basemap.getMarkers(),
+           getLastPath: () => lastPath };
+`);
+const api = factory(RideBasemap, $, submitCorrection);
+const { getPolyline, getMarkers, getLastPath } = api;
 
 function payload(shift) {
   return {
@@ -79,13 +109,15 @@ function payload(shift) {
 }
 
 console.log('\n【首次绘制 + 精修后二次绘制】');
-drawMapInner(payload(0));
+api.drawMapInner(payload(0));
+const polyline = getPolyline();
+const markers = getMarkers();
 const firstLat = polyline.geometries[0].paths[0].lat;
 const firstMarkerLat = markers[0].geometries[0].position.lat;
 check(polyline !== null && markers.length === 2, '首次绘制创建线与起终点标记');
 check(Math.abs(firstLat - 31.2100) < 1e-9, '首次几何来自初次识别结果', firstLat);
 
-drawMapInner(payload(0.0025));   // 约 270 米南/东移，模拟精修后的新坐标
+api.drawMapInner(payload(0.0025));   // 约 270 米南/东移，模拟精修后的新坐标
 const secondLat = polyline.geometries[0].paths[0].lat;
 check(polyline.updateCount === 1, '二次渲染复用同一图层（未重建）',
   'updateCount=' + polyline.updateCount);
@@ -95,7 +127,7 @@ check(Math.abs(markers[0].geometries[0].position.lat - firstMarkerLat - 0.0025) 
   '起点标记同步移动');
 check(Math.abs(markers[1].geometries[0].position.lat - 31.2200 - 0.0025) < 1e-9,
   '终点标记同步移动');
-check(Math.abs(lastPath[0].lat - secondLat) < 1e-9, 'fitBounds 用的 lastPath 同步更新');
+check(Math.abs(getLastPath()[0].lat - secondLat) < 1e-9, 'fitBounds 用的 lastPath 同步更新');
 
 console.log('\n' + (failures.length
   ? failures.length + ' 项失败: ' + failures.join('、')
