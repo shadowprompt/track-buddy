@@ -792,6 +792,27 @@ def _ransac(
     return best_m, best_t, best_inliers
 
 
+def is_degenerate(reg: Registration) -> bool:
+    """配准矩阵是否退化到「无法把像素换算成米」。
+
+    `north_up_2pt` 这类兜底模型在锚点地理坐标几乎重合时会估出
+    scale≈0，矩阵变成全零。此时 `ok=True` 是假的：所有像素都被映射到
+    同一个经纬度，里程算出 0，下游对矩阵求逆还会直接抛
+    `LinAlgError` 让接口 500。
+
+    判据与截图尺度无关，只看变换本身是否可逆：矩阵有限、
+    行列式非零、且两轴尺度有物理意义（>1e-3 米/像素）。
+    """
+    m = np.asarray(reg.matrix, dtype=float)
+    if m.shape != (2, 2) or not np.all(np.isfinite(m)):
+        return True
+    if not np.all(np.isfinite(reg.translation)):
+        return True
+    if abs(float(np.linalg.det(m))) < 1e-9:
+        return True
+    return float(reg.scale) < 1e-3
+
+
 def register(
     pairs: list[AnchorPair],
     inlier_m: float = 120.0,
@@ -967,6 +988,19 @@ def register(
         )
 
     reg = best_reg
+    if is_degenerate(reg):
+        # 退化解不能当作成功：矩阵不可逆，输出的所有坐标会是同一个点。
+        # 交给调用方按「配准失败」处理，并给出可操作的重截建议。
+        return Registration(
+            ok=False,
+            inliers=reg.inliers,
+            outliers=reg.outliers,
+            notes=notes + [
+                f"配准尺度退化（{reg.scale:.3g} 米/像素）：可用锚点不足以定出真实比例，"
+                "无法得到坐标。请把地图放大到能看到街道名后重新截图，"
+                "或用多张街道级截图拼接识别。",
+            ],
+        )
     notes.append(
         f"{reg.model} 模型: {len(reg.inliers)} 内点（{best_n_anchor} 个不同锚点，"
         f"{best_key[0]} 个通过留一验证）/ {len(reg.outliers)} 离群，"

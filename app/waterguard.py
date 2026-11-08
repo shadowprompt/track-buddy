@@ -2,30 +2,27 @@
 
 为什么需要
 ----------
-骑行轨迹横穿黄浦江几乎一定是错的。实测案例（上海城市级截图）：
-锚点配准把尺度算大 26%，轨迹被拉长后东端甩过黄浦江，
-起点落在浦东侧（59/417 个点在浦东），路名归属报出
-「打浦路隧道 / 时光印记大道 / 世博大道 / 东岸绿道」——
-用户反馈「我根本没去浦东」。
-
-这个护栏的价值在于**兜底**：即使前面的算法再出 bug，
-也不该输出一条横穿长江的骑行轨迹。
+低缩放截图里，远距离地标的文字标注会让锚点配准把尺度算大，
+轨迹被拉长后可能越过河流、落到对岸街区；这类结果的置信度看起来
+并不低，但物理上不成立。护栏是**兜底**：即使前面的环节有偏差，
+也不该输出一条横穿通航大河的骑行轨迹。
 
 几何依据（重要）
 ----------------
-OSM 的 `way["waterway"="river"]["name"="黄浦江"]` 几何是**岸线**，
-不是河心线——实测该线距西岸艺术中心仅 313 米，而真正的河宽约 2600 米。
-OSM 里也**没有**黄浦江的水面多边形（实测 `natural=water` 查询返回 0 个）。
+OSM 的 `way["waterway"="river"]` 几何常是**岸线**而非河心线，
+河道也不一定有水面多边形。因此判定必须基于岸线的**局部法向**：
+先确定「哪一侧算过江」，再看轨迹点是否落进那侧的河宽范围内；
+不能简单地拿轨迹到中心线的距离当判据。
 
-所以判定必须基于「岸线」而非「中心线」：
-用岸线的**局部法向**算出「河东侧」区域，轨迹落进去才算过江。
+河流清单、侧别与半宽都是外部地理数据（`data/waters.json`），
+本模块不认识任何具体河名。
 
 实现
 ----
 1. 拉取大河岸线（OSM way 几何）
-2. 对每个轨迹点，找最近的岸线点，用该点的**局部法向**判定它在河的哪一侧
-3. 法向符号统一：以「正东」为参考方向，避免法向随河道弯曲翻转 180 度
-4. 连续 N 个点落在「河东侧」即判定横穿
+2. 每个轨迹点找最近岸线点，用该点局部法向判定在河的哪一侧
+3. 法向符号统一：以「正东」为参考，避免随河道弯曲翻转 180 度
+4. 连续 N 个点落在「过江侧」即判定横穿
 
 坐标
 ----
@@ -45,6 +42,7 @@ from typing import Any
 import numpy as np
 
 from .geo.coords import gcj02_to_wgs84, wgs84_to_gcj02
+from .waterdata import fallback_polylines, search_bbox, water_specs
 
 _OVERPASS_MIRRORS = [
     "https://overpass-api.de/api/interpreter",
@@ -53,50 +51,15 @@ _OVERPASS_MIRRORS = [
     "https://overpass.private.coffee/api/interpreter",
 ]
 
-# 河名 -> (查询名, 「过江」侧的判定参数)
-#   half_width: 岸线向对侧延伸多少米算「在江里」
-#   east_side:  True = 该河的「浦东/河东」侧算过江
-#                False = 该河的另一侧算过江（如苏州河北侧）
+# 河流清单、侧别参数与兜底岸线都来自外部地理数据（data/waters.json）。
+# 代码里不内置任何河名、坐标或半宽：换城市只需替换数据文件，
+# 护栏的几何判定逻辑一行都不用改。
 #
-# ⚠️ **半宽的标定依据**（实测）：
-# 黄浦江在市中心段（lat 31.186 附近）西岸到东岸约 2600 米，
-# OSM 的黄浦江 way 是**西岸线**（距西岸艺术中心约 390 米）。
-# 取 1500 米：既能覆盖「骑在江里」，又不会把
-# 「贴着浦西滨江骑」（合法的骑行场景，��离岸线 200-800 米）误判。
-WATER_SPECS: dict[str, tuple[str, float, bool]] = {
-    "黄浦江": ("黄浦江", 1500.0, True),
-    "长江": ("长江", 2500.0, True),
-    "苏州河": ("苏州河", 250.0, False),
-}
-
-
-# 兜底折线（WGS-84）。精度有限，但够判断「是否横穿」。
-#
-# ⚠️ 这些点是从 OSM 真实岸线里挑的**关键控制点**（不是随手编的）：
-# 黄浦江的西岸线在市中心段依次经过
-#   (121.4604, 31.1799) -> (121.4651, 31.1868) -> (121.4719, 31.1899)
-#   -> (121.4733, 31.1905) -> (121.4876, 31.1935) -> (121.4930, 31.1964)
-# 兜底折线必须穿过这些点，否则侧别判定会整体偏掉
-# （实测兜底折线偏离真实岸线 300 多米时，浦西轨迹会被误判成横跨）。
-_FALLBACK: dict[str, list[tuple[float, float]]] = {
-    "黄浦江": [
-        (121.1000, 31.2100), (121.2200, 31.1500), (121.3300, 31.1600),
-        (121.3800, 31.1700), (121.4300, 31.1760), (121.4604, 31.1799),
-        (121.4651, 31.1868), (121.4719, 31.1899), (121.4733, 31.1905),
-        (121.4876, 31.1935), (121.4930, 31.1964), (121.5053, 31.2148),
-        (121.5300, 31.2400), (121.5700, 31.2600), (121.6200, 31.2800),
-        (121.7500, 31.2900), (121.9000, 31.3200),
-    ],
-    "长江": [
-        (121.0000, 31.4000), (121.2000, 31.4000), (121.5000, 31.4000),
-        (121.7000, 31.4000), (121.9000, 31.4000),
-    ],
-    "苏州河": [
-        (121.1900, 31.2500), (121.2400, 31.2400), (121.2800, 31.2300),
-        (121.3200, 31.2400), (121.3600, 31.2450), (121.4000, 31.2450),
-        (121.4400, 31.2450),
-    ],
-}
+# 参数含义：
+#   bank_half_width_m: 岸线向对侧延伸多少米算「在江里」
+#   east_side:         True = 河东/南侧算过江；False = 另一侧
+WATER_SPECS: dict[str, tuple[str, float, bool]] = water_specs()
+_FALLBACK: dict[str, list[tuple[float, float]]] = fallback_polylines()
 
 
 def _cache_path(cache_dir: str, city: str) -> str:
@@ -122,9 +85,13 @@ def _store_cached(cache_dir: str, city: str, data: dict[str, Any]) -> None:
 
 
 def _fetch_water(name: str, timeout: float = 60.0) -> list[list[tuple[float, float]]]:
-    """从 Overpass 拉一条河的岸线（WGS-84 经纬度段列表）。"""
+    """从 Overpass 拉一条河的岸线（WGS-84 经纬度段列表）。
+
+    查询范围来自水系数据文件，不写死某个城市的经纬度框。
+    """
+    s, w, n, e = search_bbox()
     q = (f'[out:json][timeout:{int(timeout)}];'
-         f'way["waterway"="river"]["name"="{name}"](30.5,120.5,32.0,122.0);'
+         f'way["waterway"="river"]["name"="{name}"]({s},{w},{n},{e});'
          f'out geom;')
     for m in _OVERPASS_MIRRORS:
         try:
@@ -173,15 +140,15 @@ def get_waters(
 
     out: dict[str, list[list[tuple[float, float]]]] = {}
     if allow_network:
-        for name in WATER_SPECS:
-            segs = _fetch_water(name, timeout=timeout)
+        for name, (query, _, _) in WATER_SPECS.items():
+            segs = _fetch_water(query, timeout=timeout)
             if segs:
                 out[name] = segs
     if out:
         _store_cached(cache_dir, city, {"ts": time.time(), "waters": out})
         return out
 
-    # 兜底：内置折线（WGS-84）。精度有限，但足以判断是否跨江。
+    # 兜底：数据文件里的岸线折线（WGS-84）。
     return {k: [[(float(lo), float(la)) for lo, la in pl]]
             for k, pl in _FALLBACK.items()}
 

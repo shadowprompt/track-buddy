@@ -418,15 +418,33 @@
           showStatus(
             '<span class="spin"></span> 位置精修完成，正在更新地图…'
           );
+          let mapOk = false;
           try {
-            render(j.payload);
+            mapOk = render(j.payload);
           } catch (e) {
             console.error('精修结果渲染失败:', e);
           }
-          showStatus(
-            '已用真实路网精修位置（贴路中位 ' +
-            num((j.payload.road_fit || {}).median_after_m, 0, '—') + ' 米）'
-          );
+          const rf = j.payload.road_fit || {};
+          if (!mapOk) {
+            // 以前这里只 console.error，状态条照样报「已精修」，
+            // 用户拿到的是没刷新的地图却以为算法没生效。
+            showStatus('精修结果已算出，但地图刷新失败，请刷新页面后重试', 'err');
+          } else if (rf.ok) {
+            // 把平移方向和量写出来：用户能直接对照地图判断轨迹有没有动、
+            // 往哪动了，而不是只看到一个抽象的「贴路中位 5 米」。
+            showStatus(
+              '已用真实路网精修位置（贴路中位 ' +
+              num(rf.median_after_m, 0, '—') + ' 米；相对初次识别整体 东' +
+              num(rf.shift_e_m, 0, '0') + ' 米 / 北' +
+              num(rf.shift_n_m, 0, '0') + ' 米，地图已刷新）'
+            );
+          } else {
+            showStatus(
+              '路网精修未采纳（' +
+              esc(text((rf.notes || [])[0], '位置未改动')) +
+              '），地图保留初次识别位置', 'info'
+            );
+          }
           return;
         }
         if (j.state === 'error') {
@@ -584,6 +602,12 @@
 
   function render(d) {
     currentResult = d;
+    // ⚠️ 异步精修完成后也会调用 render()。若这里不同步 lastResult，
+    // `ensureMapReady()` / `getLastResult()` 拿到的仍是**精修前**的粗结果，
+    // 左栏指标已经是新的、地图与导出却可能还是旧的——用户看到的
+    // 就是「状态说已精修，轨迹却没动」。
+    lastResult = d;
+    let mapOk = false;
     $('resultCard').style.display = 'block';
     $('anchorCard').style.display = 'block';
 
@@ -814,8 +838,8 @@
     $('dlG').href = URL.createObjectURL(blobG);
     $('dlG').style.display = 'inline-block';
 
-    // 地图
-    drawMap(d);
+    // 地图（返回是否真的刷新成功，异步精修要用它决定提示文案）
+    mapOk = drawMap(d);
     drawPreview(d);
 
     // 识别完成后确保地图就绪（已创建 + 视野对准新轨迹）。
@@ -840,6 +864,7 @@
         : '';
       showStatus('未能得到坐标结果，请查看下方诊断信息。' + why, 'err');
     }
+    return mapOk;
   }
 
   // ---------- 腾讯地图 ----------
@@ -847,10 +872,15 @@
     // 整个地图绘制包在 try 里：腾讯地图 SDK 在鉴权失败、容器尺寸为 0
     // 等情况下会抛出没有上下文的错误（例如 "Unhandled error. (undefined)"）。
     // 地图画不出来不该影响识别结果的展示——GeoJSON 已经拿到了。
+    //
+    // 但**不能静默吞掉**：异步精修的场景下，「指标已更新、地图没刷新」
+    // 会让用户以为精修无效。所以把成功与否返回给调用方。
     try {
       drawMapInner(d);
+      return true;
     } catch (e) {
       console.error('地图绘制失败:', e);
+      return false;
     }
   }
 
@@ -883,55 +913,74 @@
       map = new TMap.Map('map', { center: new TMap.LatLng(lat, lon), zoom: 14 });
     }
 
-    // ---- 关键：必须先彻底清掉上一轮的图层，再画新的 ----
+    // ---- 二次渲染必须「原地替换几何」，不能 removeLayer + 重建 ----
     //
-    // 腾讯地图 GL JS 的 map.removeLayer(t) 内部是 `this._layers[t]`，
-    // **参数必须是图层实例的 id 字符串**，不是图层对象本身。
+    // ⚠️ 异步路网精修会带着新 payload 再调一次 render() → drawMapInner()。
+    // 早期这里用 `map.removeLayer(polyline.id)` 删旧图层再重建，但
+    // `map.removeLayer(t)` 内部是 `this._layers[t]`，要求的是**图层 id 字符串**；
+    // MultiPolyline 实例未必对外暴露 `.id`，传 undefined 时 SDK 什么也不删，
+    // 新图层叠上去、旧图层还在，甚至直接抛
+    // "Unhandled error. (undefined)" 中断整个 drawMapInner。
+    // 结果就是：左栏置信度 / 贴路距离 / 状态条都变成了精修后的值，
+    // **地图上的轨迹仍是精修前的粗配准**，用户看到「精修没生效 / 路线偏北」。
     //
-    // 早期实现传的是 MultiPolyline 对象，SDK 查不到、抛
-    // "Unhandled error. (undefined)"，异常直接中断 drawMapInner，
-    // 于是**新轨迹根本没被绘制**——地图上留着上一张的轨迹，
-    // 而左栏数据照常更新（外层 catch 只 console.error）。
-    // 这正是用户看到的「轨迹图没有更新」。
-    //
-    // 正确做法：传 layer.id。
-    if (polyline) {
-      try { map.removeLayer(polyline.id); } catch (e) { /* 图层可能已失效 */ }
-      polyline = null;
-    }
-    if (markers.length) {
-      markers.forEach(m => {
-        try { map.removeLayer(m.id); } catch (e) { /* 同上 */ }
-      });
-      markers = [];
-    }
-
+    // 现在复用已有图层，用 setGeometries() 原地换路径与起终点。
+    // 不依赖图层 id，也不会因为重建失败留下旧轨迹。
     const path = coords.map(c => new TMap.LatLng(c[1], c[0]));
     lastPath = path;
-    polyline = new TMap.MultiPolyline({
-      map,
-      styles: {
-        trail: new TMap.PolylineStyle({
-          color: '#534ab7', width: 5, borderWidth: 2, borderColor: '#ffffff', lineCap: 'round',
-        }),
-      },
-      geometries: [{ id: 'trail', styleId: 'trail', paths: path }],
-    });
+    const trailGeo = [{ id: 'trail', styleId: 'trail', paths: path }];
+    const startGeo = [{ id: 's', styleId: 's', position: path[0] }];
+    const endGeo = [{
+      id: 'e', styleId: 'e', position: path[path.length - 1],
+    }];
 
-    const start = new TMap.MultiMarker({
-      map,
-      styles: { s: new TMap.MarkerStyle({ width: 24, height: 24, anchor: { x: 12, y: 12 },
-        color: '#0f6e56', borderWidth: 3, borderColor: '#ffffff' }) },
-      geometries: [{ id: 's', styleId: 's', position: new TMap.LatLng(path[0].lat, path[0].lng) }],
-    });
-    const end = new TMap.MultiMarker({
-      map,
-      styles: { e: new TMap.MarkerStyle({ width: 24, height: 24, anchor: { x: 12, y: 12 },
-        color: '#d54941', borderWidth: 3, borderColor: '#ffffff' }) },
-      geometries: [{ id: 'e', styleId: 'e',
-        position: new TMap.LatLng(path[path.length - 1].lat, path[path.length - 1].lng) }],
-    });
-    markers.push(start, end);
+    let reused = false;
+    if (polyline && markers.length === 2) {
+      try {
+        polyline.setGeometries(trailGeo);
+        markers[0].setGeometries(startGeo);
+        markers[1].setGeometries(endGeo);
+        reused = true;
+      } catch (e) {
+        console.warn('图层原地更新失败，回退到重建:', e);
+      }
+    }
+
+    if (!reused) {
+      // 首次绘制（或 SDK 不支持 setGeometries）：尽力清掉旧图层再重建。
+      if (polyline) {
+        try { map.removeLayer(polyline.id); } catch (e) { /* 图层可能已失效 */ }
+        polyline = null;
+      }
+      if (markers.length) {
+        markers.forEach(m => {
+          try { map.removeLayer(m.id); } catch (e) { /* 同上 */ }
+        });
+        markers = [];
+      }
+      polyline = new TMap.MultiPolyline({
+        map,
+        styles: {
+          trail: new TMap.PolylineStyle({
+            color: '#534ab7', width: 5, borderWidth: 2, borderColor: '#ffffff', lineCap: 'round',
+          }),
+        },
+        geometries: trailGeo,
+      });
+      const start = new TMap.MultiMarker({
+        map,
+        styles: { s: new TMap.MarkerStyle({ width: 24, height: 24, anchor: { x: 12, y: 12 },
+          color: '#0f6e56', borderWidth: 3, borderColor: '#ffffff' }) },
+        geometries: startGeo,
+      });
+      const end = new TMap.MultiMarker({
+        map,
+        styles: { e: new TMap.MarkerStyle({ width: 24, height: 24, anchor: { x: 12, y: 12 },
+          color: '#d54941', borderWidth: 3, borderColor: '#ffffff' }) },
+        geometries: endGeo,
+      });
+      markers = [start, end];
+    }
 
     // 纠正模式：点击地图选点
     if (!map.__clickBound) {

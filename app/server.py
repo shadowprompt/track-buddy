@@ -251,7 +251,18 @@ async def recognize_multi(
     payload = _build_payload_from(result, shot_id, f"/api/shots/{shot_id}{shot_path.suffix}")
     payload["stitch"] = stitch_info
     payload["n_shots"] = len(imgs)
-    payload["warnings"] = list(result.warnings) + list(stitch_info.get("notes") or [])
+    warns = list(result.warnings)
+    # 多图接口不启动后台精修：拼接画布动辄几千万像素，重跑一遍
+    # pipeline 的成本远高于收益。pipeline 里那条通用提示在这里会
+    # 让用户以为「后台还在算」而一直等，必须换成准确说明。
+    if len(imgs) > 1 and want_refine and not do_sync_refine:
+        warns = [
+            ("多图模式不执行后台路网精修（大画布重跑成本过高）；"
+             "需要贴路校正请改用单图，或显式传 refine=on")
+            if "跳过路网精修" in w else w
+            for w in warns
+        ]
+    payload["warnings"] = warns + list(stitch_info.get("notes") or [])
 
     # 拼接后的画布存一份，供前端叠加显示。
     #
@@ -338,18 +349,9 @@ async def recognize(
     payload = _build_payload_from(result, shot_id, f"/api/shots/{shot_id}{ext}")
     _persist_last_result(payload)
 
-    # 需要后台精修吗？
-    #
-    # 判据：尺度大（低缩放）且路网精修还没跑过。低缩放下路网精修的价值
-    # 最大（贴路中位 432m → 58m，落点修正近 1 公里），但耗时也最长。
-    scale = float(result.diagnostics.get("scale_ground_m_per_px") or 0.0)
-    need_bg = (
-        want_refine
-        and not do_sync_refine
-        and scale > 8.0
-        and not (result.road_fit or {}).get("ok")
-    )
-    if need_bg:
+    # 需要后台精修吗？判据见 `_need_background_refine`：
+    # 只看「配准有没有出坐标 + 是否还没精修过」，不再用尺度门槛。
+    if _need_background_refine(result, want_refine, do_sync_refine):
         # ⚠️ 必须把 road_names 传进去：后台精修会**重跑整个 pipeline**，
         # 不传的话用户的路名约束（以及基于它的起终点锚定）全部丢失，
         # 精修后的结果反而比主流程更差（实测尺度会退回被污染的 15.73）。
@@ -364,6 +366,42 @@ async def recognize(
 
 _refine_jobs: dict[str, dict[str, Any]] = {}
 _refine_lock = threading.Lock()
+
+
+def _need_background_refine(
+    result: Any, want_refine: bool, sync_refine: bool
+) -> bool:
+    """是否要在后台补跑一次路网精修。
+
+    ⚠️ **不能用尺度当门槛**（这里踩过一次）：`pipeline._road_refine` 按
+    配置项 `cfg.road_fit_low_zoom_m_per_px` 分两种模式——
+
+      * 尺度小于分界 → **修正模式**：保持尺度与朝向，平移轨迹使
+        贴路距离最小，用来消除 POI 文字标注带来的整体道路偏移。
+      * 尺度大于分界 → **校验 + 命名模式**：只算贴路距离和路名，
+        不做平移（低缩放下平移会过拟合到平行主干道）。
+
+    旧代码把后台触发条件也写成「尺度必须大于同一个分界值」，把**分界值
+    误当成触发门槛**，恰好把落在修正模式、最需要平移的那一类图全部排除，
+    只给城市级图跑一个不会平移的校验。
+
+    所以判据只看**状态**，不看尺度：用户允许精修、这次没跑过、
+    已经配准出真实坐标、且 `road_fit` 尚未成功。采用哪种模式、
+    耗时多长由 `_road_refine` 自己按配置决定，异步执行不阻塞主请求。
+    验证用例覆盖分界两侧的通用尺度，见 `tests/test_server_refine.py`。
+    """
+    if not want_refine or sync_refine:
+        return False
+    if (result.road_fit or {}).get("ok"):
+        return False
+    diag = result.diagnostics or {}
+    if float(diag.get("scale_ground_m_per_px") or 0.0) <= 0.0:
+        return False
+    if result.track_points <= 0:
+        return False
+    feats = (result.geojson or {}).get("features") or []
+    coords = (feats[0].get("geometry") or {}).get("coordinates") if feats else None
+    return bool(coords)
 
 
 def _build_payload(result: Any, shot_id: str, shot_path: Path) -> dict[str, Any]:
@@ -408,6 +446,22 @@ def _run_refine(
         payload = _build_payload(result, shot_id, shot_path)
         with _refine_lock:
             _refine_jobs[shot_id] = {"state": "done", "payload": payload}
+        # 精修结果同样要落盘，否则用户刷新页面 / 打开对照页会退回
+        # 主流程那份未贴路的粗结果。两个条件都要满足：
+        #   1) 精修确实被采纳（road_fit.ok）——若护栏判定「疑似贴到
+        #      别的路上」而未采纳，落盘只会把未采纳的诊断信息写进
+        #      用户当前看到的结果；
+        #   2) 这张图仍是最近一次识别——避免精修期间用户又上传新图
+        #      后被旧任务覆盖。
+        if (payload.get("road_fit") or {}).get("ok"):
+            try:
+                prev = json.loads(
+                    (DATA_DIR / "last_result.json").read_text(encoding="utf-8")
+                )
+                if prev.get("shot_id") == shot_id:
+                    _persist_last_result(payload)
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
     except Exception as exc:  # noqa: BLE001
         with _refine_lock:
             _refine_jobs[shot_id] = {"state": "error", "message": str(exc)}

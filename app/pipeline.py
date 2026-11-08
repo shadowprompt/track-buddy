@@ -17,10 +17,6 @@ from .ocr_anchor import Anchor, build_anchors, classify_text, ocr_texts
 from .register import AnchorPair, Registration, apply_to_polyline, register
 from .track import TrackResult, extract_track
 
-# 路网精修的适用尺度上限（米/像素）。超过这个尺度说明截图是城市级
-# 概览图，路网既拉不动（数据量过大）也约束不了（像素精度不足）。
-_ROAD_FIT_MAX_M_PER_PX = 8.0
-
 # 能作为「强约束」的锚点类型。地铁线号（transit）与高架路（road）
 # 天然指向一段线或一条路，与标注点的对应关系很弱；它们不匹配不代表
 # 定位失败，不该计入置信度的分母。
@@ -1439,7 +1435,7 @@ class RidePipeline:
         if not self.cfg.road_fit_enabled:
             return {"ok": False, "notes": ["路网精修已关闭"]}, None
 
-        low_zoom = reg.scale > _ROAD_FIT_MAX_M_PER_PX
+        low_zoom = reg.scale > self.cfg.road_fit_low_zoom_m_per_px
         # 路网等级：**主干道 + 次干道 + 三级路 + 居住路**，
         # 但排除 service / footway / path 之类的细碎小路。
         #
@@ -1511,7 +1507,26 @@ class RidePipeline:
             fit = self._road_verify(reg, track, net)
             return fit.to_dict(), net
 
-        fit = refine_with_roads(reg, track.polyline, roads)
+        # 以可靠锚点的「地理真值 - 当前配准预测」作为额外证据。
+        # 传入残差向量而不是图片/文件信息，规则因此与样本无关。
+        anchor_residuals = []
+        for a in reg.inliers:
+            if a.kind not in ("poi", "station", "icon", "district"):
+                continue
+            if a.lon is None or a.lat is None:
+                continue
+            target = np.array(lonlat_to_mercator(a.lon, a.lat), dtype=float)
+            pred = np.array(reg.pixel_to_mercator(a.px, a.py), dtype=float)
+            anchor_residuals.append(target - pred)
+        fit = refine_with_roads(
+            reg, track.polyline, roads,
+            max_shift_m=float(self.cfg.road_fit_max_shift_m),
+            shift_span_ratio=float(self.cfg.road_fit_shift_span_ratio),
+            anchor_points_m=np.asarray(anchor_residuals, dtype=float),
+            anchor_guard_m=float(self.cfg.road_fit_anchor_guard_m),
+            anchor_worsen_m=float(self.cfg.road_fit_anchor_worsen_m),
+            anchor_worsen_ratio=float(self.cfg.road_fit_anchor_worsen_ratio),
+        )
         if fit.ok:
             # 把平移量并入配准矩阵（墨卡托 y 轴向上，北为正）
             reg.translation = reg.translation + np.array(
@@ -1650,7 +1665,16 @@ class RidePipeline:
         if not reg.ok or not reg.inliers:
             return 0.0, notes
 
-        inv = np.linalg.inv(reg.matrix)
+        # 自校验只是**诊断**，绝不能因为矩阵退化把整次识别打成 500。
+        # register 出口已经把退化解标成 ok=False；这里再兜一层，
+        # 保证任何来源的 Registration 都不会让求逆抛异常。
+        mat = np.asarray(reg.matrix, dtype=float)
+        if mat.shape != (2, 2) or not np.all(np.isfinite(mat)):
+            return 0.0, ["绝对位置自校验跳过：配准矩阵无效"]
+        try:
+            inv = np.linalg.inv(mat)
+        except np.linalg.LinAlgError:
+            return 0.0, ["绝对位置自校验跳过：配准矩阵不可逆"]
         offsets: list[float] = []
         for a in reg.inliers:
             if a.lon is None or a.lat is None:

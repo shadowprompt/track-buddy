@@ -298,6 +298,9 @@ class RoadFit:
     roads: list[str] = field(default_factory=list)
     segments: list[dict[str, Any]] = field(default_factory=list)
     source: str = "none"
+    # 可选的锚点一致性证据（米）；用于解释为什么采纳/拒绝平移。
+    anchor_before_m: float | None = None
+    anchor_after_m: float | None = None
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -310,6 +313,10 @@ class RoadFit:
             "roads": self.roads,
             "segments": self.segments,
             "source": self.source,
+            "anchor_before_m": (round(self.anchor_before_m, 1)
+                                 if self.anchor_before_m is not None else None),
+            "anchor_after_m": (round(self.anchor_after_m, 1)
+                                if self.anchor_after_m is not None else None),
             "notes": self.notes,
         }
 
@@ -397,12 +404,30 @@ def refine_with_roads(
     coarse_step_m: float = 25.0,
     fine_step_m: float = 5.0,
     sample_m: float = 6.0,
+    shift_span_ratio: float = 0.15,
+    anchor_points_m: np.ndarray | None = None,
+    anchor_guard_m: float = 100.0,
+    anchor_worsen_m: float = 80.0,
+    anchor_worsen_ratio: float = 2.5,
 ) -> RoadFit:
     """在保持尺度与朝向的前提下平移轨迹，使其贴路距离最小。
 
-    reg           配准结果（提供 pixel→墨卡托 的换算）
-    polyline_px   像素坐标折线
-    roads         [(路名, 经纬点串), ...]
+    reg               配准结果（提供 pixel→墨卡托 的换算）
+    polyline_px       像素坐标折线
+    roads             [(路名, 经纬点串), ...]
+    shift_span_ratio  允许位移 / 轨迹总长度 的上限（无量纲）
+
+    为什么要按轨迹尺度限幅
+    ----------------------
+    早期只用一个绝对上限（±800 米）+「贴路中位变小」作为采纳判据。
+    这在长轨迹上是合理的，但对短轨迹会过拟合：路网是稀疏的平行线族，
+    把一条几百米的轨迹整体搬几百米，一样能压在**另一条**平行道路上，
+    贴路距离从 100 米降到 5 米，判据全部满足，位置却彻底错了。
+    位移超过轨迹自身长度的一定比例时，这已经不是「微调」而是「搬家」。
+
+    所以搜索半径与采纳上限都取
+    ``min(max_shift_m, shift_span_ratio × 轨迹米制长度)``，
+    与截图分辨率、城市、具体样本都无关。
 
     返回的 shift_n_m 为**正表示向北**（几何意义上）。
     施加方式：``reg.translation += [shift_e_m, shift_n_m]``。
@@ -428,32 +453,89 @@ def refine_with_roads(
     before = median_dist(0.0, 0.0)
     result.median_before_m = before
 
-    # 粗搜
-    best = (before, 0.0, 0.0)
-    steps = int(max_shift_m / coarse_step_m)
-    for i in range(-steps, steps + 1):
-        dx = i * coarse_step_m
-        for j in range(-steps, steps + 1):
-            dy = j * coarse_step_m
-            m = median_dist(dx, dy)
-            if m < best[0]:
-                best = (m, dx, dy)
+    # 轨迹自身的米制长度 → 本次允许的位移上限（见函数说明）
+    span_m = float(np.linalg.norm(np.diff(traj, axis=0), axis=1).sum())
+    shift_limit_m = min(max_shift_m, shift_span_ratio * span_m)
+    shift_limit_m = max(shift_limit_m, coarse_step_m)
 
-    # 局部精修
-    bx, by = best[1], best[2]
+    # 只在允许的位移范围内收集候选，避免「搬到下一条平行路」进入解集
+    candidates: list[tuple[float, float, float]] = [(before, 0.0, 0.0)]
+
+    def consider(dx: float, dy: float) -> None:
+        if float(np.hypot(dx, dy)) > shift_limit_m:
+            return
+        candidates.append((median_dist(dx, dy), dx, dy))
+
+    # 粗搜
+    steps = max(1, int(shift_limit_m / coarse_step_m))
+    for i in range(-steps, steps + 1):
+        for j in range(-steps, steps + 1):
+            consider(i * coarse_step_m, j * coarse_step_m)
+
+    # ⚠️ 贴路距离并列时必须选**位移最小**的解。
+    # 道路常有长直段：沿道路方向平移不改变贴路距离，若用「严格小于
+    # 才更新最优」，网格边界上任意大的 dx 会和真正需要的 dy 一起入选，
+    # 凭空造出几百米的横向位移。这里用「距离在最优值 + 容差内，
+    # 取欧氏位移最小者」消除这种自由度。
+    tol = max(1.0, before * 0.01)
+
+    def pick_min_shift():
+        min_m = min(c[0] for c in candidates)
+        near = [c for c in candidates if c[0] <= min_m + tol]
+        return min(near, key=lambda c: float(np.hypot(c[1], c[2])))
+
+    _, bx, by = pick_min_shift()
+
+    # 局部精修（同样不许越出限幅）
     for i in range(-6, 7):
         for j in range(-6, 7):
-            dx = bx + i * fine_step_m
-            dy = by + j * fine_step_m
-            m = median_dist(dx, dy)
-            if m < best[0]:
-                best = (m, dx, dy)
+            consider(bx + i * fine_step_m, by + j * fine_step_m)
 
-    after, dx, dy = best
+    after, dx, dy = pick_min_shift()
     result.shift_e_m = dx
     result.shift_n_m = dy
     result.median_after_m = after
     result.source = "osm"
+
+    # 锚点是截图与地理世界之间的直接对应证据，优先级高于「最近 OSM
+    # 道路距离」。如果当前配准已经能解释可靠锚点，单纯贴路距离下降
+    # 不足以证明整体平移正确；平行道路会让这种优化产生假阳性。
+    if anchor_points_m is not None and len(anchor_points_m):
+        pts = np.asarray(anchor_points_m, dtype=float)
+        before_anchor = float(np.median(np.linalg.norm(pts, axis=1)))
+        after_anchor = float(
+            np.median(np.linalg.norm(pts - np.array([dx, dy]), axis=1))
+        )
+        result.anchor_before_m = before_anchor
+        result.anchor_after_m = after_anchor
+        anchor_bad = (
+            before_anchor <= anchor_guard_m
+            and after_anchor > before_anchor + anchor_worsen_m
+        ) or (
+            before_anchor > 0
+            and after_anchor > before_anchor * anchor_worsen_ratio
+            and after_anchor > anchor_guard_m
+        )
+        if anchor_bad:
+            result.notes.append(
+                f"路网精修未采纳（可靠锚点残差 {before_anchor:.0f}m → "
+                f"{after_anchor:.0f}m，平移会破坏截图锚点一致性）"
+            )
+            result.shift_e_m = result.shift_n_m = 0.0
+            result.median_after_m = before
+            result.ok = False
+            return result
+
+    # 位移超过轨迹尺度允许的范围：贴路距离变小也不能采纳。
+    # 这类解几乎一定是把轨迹搬到了另一条平行道路上。
+    if float(np.hypot(dx, dy)) > shift_limit_m + fine_step_m:
+        result.notes.append(
+            f"路网精修未采纳（需平移 {float(np.hypot(dx, dy)):.0f}m，"
+            f"超过该轨迹尺度允许的 {shift_limit_m:.0f}m，疑似贴到别的路上）"
+        )
+        result.shift_e_m = result.shift_n_m = 0.0
+        result.median_after_m = before
+        return result
 
     # 只有明显改善才采纳；否则说明路网覆盖不足，不动配准
     if after > before * 0.9 or after > 60.0:

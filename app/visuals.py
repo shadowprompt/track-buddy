@@ -9,10 +9,12 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import sys
+from collections import Counter
 
 import cv2
 import numpy as np
@@ -24,15 +26,37 @@ from .ocr_anchor import build_anchors, ocr_texts
 from .pipeline import RidePipeline
 from .register import register
 
-# 用户实骑道路（2026-10-30 由用户确认）
-FIVE_ROADS = {
-    "安龙路": (0, 140, 255),
-    "新渔东路": (255, 130, 0),
-    "新渔路": (255, 0, 255),
-    "剑河路": (0, 255, 255),
-    "金钟路": (0, 220, 0),
-    "北翟路": (0, 0, 255),
-}
+# 路网验证图的配色：按路名稳定映射，代码不认识任何具体道路。
+# 避开白/黑（识别轨迹）、绿/红（起终点徽章）这些已占用的颜色。
+_ROAD_PALETTE = (
+    (0, 140, 255), (255, 130, 0), (255, 0, 255), (0, 255, 255),
+    (0, 220, 0), (0, 0, 255), (180, 105, 255), (255, 190, 60),
+    (60, 180, 120), (220, 80, 160), (120, 120, 220), (255, 100, 100),
+)
+
+# 验证图里最多给几条路着色：纯展示上限，与任何输入样本无关。
+MAX_VERIFY_ROADS = 8
+
+
+def _road_color(name: str) -> tuple[int, int, int]:
+    """路名 -> 稳定颜色。内置 hash() 受 PYTHONHASHSEED 影响，必须用摘要。"""
+    digest = hashlib.blake2b(name.encode("utf-8"), digest_size=4).digest()
+    return _ROAD_PALETTE[int.from_bytes(digest, "big") % len(_ROAD_PALETTE)]
+
+
+def _roads_to_draw(res: dict, raw_roads) -> dict[str, None]:
+    """挑要着色的道路：优先识别结果里归属的路名。
+
+    归属路名与 OSM 命名对不上时（不同数据源常见），退化为取出现次数
+    最多的若干条命名道路——任何城市、任何截图走的是同一条规则。
+    """
+    attributed = (res.get("road_attribution") or {}).get("roads") or []
+    present = {nm for nm, pts in raw_roads if nm and pts}
+    picked = [nm for nm in attributed if isinstance(nm, str) and nm in present]
+    if picked:
+        return dict.fromkeys(picked[:MAX_VERIFY_ROADS])
+    counts = Counter(nm for nm, pts in raw_roads if nm and pts)
+    return dict.fromkeys(nm for nm, _ in counts.most_common(MAX_VERIFY_ROADS))
 
 
 def _normalize(res):
@@ -52,10 +76,8 @@ def _normalize(res):
     }
 
 
-def _tag(sample: str) -> str:
-    """输出文件名前缀：不同样本不互相覆盖。"""
-    base = os.path.splitext(os.path.basename(sample))[0]
-    return "" if base == "meituan_ride_shanghai" else base + "_"
+# 三张 PNG 用固定文件名；不同样本的隔离由调用方传入的 out_dir 负责。
+# 不按文件名做分支：输入叫什么，不该影响产出的命名规则。
 
 
 def _registration(res: dict, sample: str):
@@ -125,17 +147,18 @@ def build_overlay(res, sample: str, out_dir: str) -> str:
         cv2.putText(vis, t, (42, 58 + i * 30), cv2.FONT_HERSHEY_SIMPLEX,
                     0.58, (25, 25, 25), 2, cv2.LINE_AA)
 
-    out = os.path.join(out_dir, _tag(sample) + "overlay_result.png")
+    out = os.path.join(out_dir, "overlay_result.png")
     imwrite_unicode(out, vis)
     return out
 
 
 def build_road_verify(res, sample: str, out_dir: str) -> str:
-    res = _normalize(res)
-    """把 OSM 的用户实骑道路投影回截图，与识别轨迹叠放。
+    """把 OSM 道路几何投影回截图，与识别轨迹叠放。
 
-    这是「路名归属是否可信」的直接证据：轨迹应精确骑在这些道路的中心线上。
+    这是「路名归属是否可信」的直接证据：轨迹应精确骑在对应道路的中心线上。
+    画哪些路由 `_roads_to_draw` 按识别结果决定，不预设任何道路名单。
     """
+    res = _normalize(res)
     img, reg = _registration(res, sample)
     from app.roadfit import fetch_roads
     gcj_all = res["geojson_gcj02"]["features"][0]["geometry"]["coordinates"]
@@ -154,9 +177,10 @@ def build_road_verify(res, sample: str, out_dir: str) -> str:
     def to_px(merc):
         return np.column_stack([(merc[:, 0] - tx) / s, -(merc[:, 1] - ty) / s])
 
+    chosen = _roads_to_draw(res, raw_roads)
     per: dict[str, list] = {}
     for nm, pts in raw_roads:
-        if nm not in FIVE_ROADS:
+        if nm not in chosen:
             continue
         arr = []
         for lo, la in pts:
@@ -166,12 +190,15 @@ def build_road_verify(res, sample: str, out_dir: str) -> str:
             per.setdefault(nm, []).extend(arr)
 
     vis = img.copy()
-    for nm, col in FIVE_ROADS.items():
-        if nm not in per:
-            continue
+    # 只画同一条路的相邻点：跨屏跳变（不同路段被拼进同一名字）不连线。
+    # 阈值按图像短边派生，不写死像素数。
+    jump_limit = max(50, int(min(img.shape[:2]) * 0.2))
+    for nm in sorted(per):
+        col = _road_color(nm)
         q = to_px(np.array(per[nm])).astype(int)
         for i in range(len(q) - 1):
-            if abs(q[i + 1][0] - q[i][0]) < 400 and abs(q[i + 1][1] - q[i][1]) < 400:
+            if (abs(q[i + 1][0] - q[i][0]) < jump_limit
+                    and abs(q[i + 1][1] - q[i][1]) < jump_limit):
                 cv2.line(vis, tuple(q[i]), tuple(q[i + 1]), col, 4, cv2.LINE_AA)
 
     gcj = res["geojson_gcj02"]["features"][0]["geometry"]["coordinates"]
@@ -179,7 +206,7 @@ def build_road_verify(res, sample: str, out_dir: str) -> str:
         reg.mercator_to_pixel(*lonlat_to_mercator(lo, la))
         for lo, la in gcj
     ])
-    # 轨迹用「白 + 黑边」：路网配色里已经有黄色（剑河路），若轨迹也用黄，
+    # 轨迹用「白 + 黑边」：路网配色里可能也有亮色，若轨迹用同色系，
     # 用户无法分辨哪条是识别结果、哪条是道路。
     for i in range(len(rec) - 1):
         cv2.line(vis, tuple(rec[i].astype(int)), tuple(rec[i + 1].astype(int)),
@@ -192,7 +219,7 @@ def build_road_verify(res, sample: str, out_dir: str) -> str:
     cv2.circle(vis, tuple(rec[-1].astype(int)), 26, (0, 0, 235), -1)
     cv2.circle(vis, tuple(rec[-1].astype(int)), 27, (255, 255, 255), 3)
 
-    legend = [(nm, FIVE_ROADS[nm]) for nm in FIVE_ROADS if nm in per]
+    legend = [(nm, _road_color(nm)) for nm in sorted(per)]
     rows = [("识别轨迹", (255, 255, 255), True)] + \
            [(nm, col, False) for nm, col in legend]
     _bh = 56 + 24 * len(rows)
@@ -210,7 +237,7 @@ def build_road_verify(res, sample: str, out_dir: str) -> str:
         cv2.putText(vis, nm, (94, y), cv2.FONT_HERSHEY_SIMPLEX, 0.52,
                     (25, 25, 25), 1, cv2.LINE_AA)
 
-    out = os.path.join(out_dir, _tag(sample) + "road_verify.png")
+    out = os.path.join(out_dir, "road_verify.png")
     imwrite_unicode(out, vis)
     return out
 
@@ -376,7 +403,7 @@ def build_chart(res, sample: str, out_dir: str) -> str:
         prop=FontProperties(fname=r"C:\Windows\Fonts\msyh.ttc", size=11.5))
 
     fig.tight_layout(rect=(0, 0, 1, 0.90))
-    out = os.path.join(out_dir, _tag(sample) + "trajectory_chart.png")
+    out = os.path.join(out_dir, "trajectory_chart.png")
     fig.savefig(out, facecolor="white")
     plt.close(fig)
     return out

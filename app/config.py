@@ -106,6 +106,23 @@ class AppConfig:
     # 100-300 米；道路几何没有这个问题，因此用它做最终校正。
     road_fit_enabled: bool = True
     road_fit_max_shift_m: float = 800.0
+    # 允许的平移量还受「轨迹自身空间尺度」约束：位移超过轨迹总长度的
+    # 这个比例，就不是「让轨迹贴上它本来的路」，而是把它整体搬到了
+    # 另一条平行路上（路网稀疏时贴路距离一样会变小）。无量纲系数，
+    # 与截图分辨率、城市、样本都无关。实际上限取
+    # min(road_fit_max_shift_m, road_fit_shift_span_ratio × 轨迹长度)。
+    road_fit_shift_span_ratio: float = 0.15
+    # 路网精修的模式分界（米/像素，**物理单位**，不是针对某张图调的像素数）：
+    # 低于它时贴路平移的像素精度足够，可做「整体平移纠正」；高于它只做
+    # 校验与路名归属——城市级概览图里主干道稀疏，整体平移几公里照样能
+    # 压在另一条平行主干道上。部署方可按底图精度调整。
+    road_fit_low_zoom_m_per_px: float = 8.0
+    # 当可靠锚点已经自洽时，不允许路网优化把轨迹整体搬走。
+    # 这是通用的「证据优先级」护栏：路网只能修正明显的系统性偏差，
+    # 不能用更低的 OSM 贴路距离覆盖已经较好的截图锚点。
+    road_fit_anchor_guard_m: float = 100.0
+    road_fit_anchor_worsen_m: float = 80.0
+    road_fit_anchor_worsen_ratio: float = 2.5
     # .env 文件位置（改完不用重启服务就能生效，见 _env_value）
     env_path: Path = ROOT / ".env"
     # .env 解析结果的缓存（按 mtime 失效）
