@@ -119,3 +119,28 @@ class HttpClient:
             return self.get_json(url, params=params, cache=cache)
         except Exception:  # noqa: BLE001 - 回退链路由调用方决定
             return None
+
+    def request_json(
+        self, url: str, *, params: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> tuple[int, Any]:
+        """GET 并返回 ``(status_code, JSON)``，供需要区分 HTTP 状态的客户端用。
+
+        OSRM / Valhalla 的公共实例会返回非 200 但带可解析 body 的错误页，
+        ``get_json`` 把状态丢掉了，调用方只能笼统报「请求失败」。这里保留
+        状态码，由上层决定「换实例」还是「报 HTTP 错误」，同时复用同一套
+        Session / UA / 限流 / 重试。
+        """
+        host = self._host(url)
+        last_exc: Exception | None = None
+        for _ in range(self.retries + 1):
+            self._throttle(host)
+            try:
+                response = self._session.get(
+                    url, params=params, timeout=timeout or self.timeout
+                )
+                status = int(getattr(response, "status_code", 200))
+                return status, response.json()
+            except (requests.RequestException, ValueError) as exc:
+                last_exc = exc
+        raise RuntimeError(f"HTTP 请求失败: {url} ({last_exc})")

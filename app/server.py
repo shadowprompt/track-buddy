@@ -60,6 +60,8 @@ def health() -> dict[str, Any]:
     """
     from .maps.contracts import Capability
     from .maps.roadname import build_roadname_registry
+    from .maps.roads import build_road_geometry_registry
+    from .maps.routing import build_route_validation_registry
 
     # 配置状态与调用顺序全部由能力层注册表驱动：新增服务商时 health
     # 会自动多出一个键，不必再在这里补一行硬编码的 key 布尔值。
@@ -86,10 +88,26 @@ def health() -> dict[str, Any]:
             geo["probe"] = _pipeline.geocoder.probe_online()
         except Exception:
             geo["probe"] = {"error": "探测失败"}
+
+    # 后端四类能力统一上报：只查装配与顺序，不打公共实例，
+    # 避免 health 被 Overpass / OSRM 的偶发超时拖住。
+    road_reg, _ = build_road_geometry_registry(CONFIG)
+    route_reg, _ = build_route_validation_registry(CONFIG)
+    maps_status = {
+        "road_geometry": {
+            "order": list(road_reg.order(Capability.ROAD_GEOMETRY)),
+            "available": bool(road_reg.available(Capability.ROAD_GEOMETRY)),
+        },
+        "route_validation": {
+            "order": list(route_reg.order(Capability.ROUTE_VALIDATION)),
+            "available": bool(route_reg.available(Capability.ROUTE_VALIDATION)),
+        },
+    }
     return {
         "status": "ok",
         "version": app.version,
         "geocoding": geo,
+        "maps": maps_status,
         "lexicon": _pipeline.lexicon.stats(),
     }
 

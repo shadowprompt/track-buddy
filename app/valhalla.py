@@ -38,17 +38,23 @@ Valhalla 则**原生支持多种 costing**（bicycle / pedestrian / auto），
 
 from __future__ import annotations
 
-import hashlib
 import json
-import math
-import time
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import requests
+
+from .maps.http import HttpClient
+from .maps.routing.common import (
+    RouteCache,
+    decode_polyline as _decode_polyline,
+    match_ratio as _shared_match_ratio,
+    order_consistency as _order_consistency,
+    polyline_length as _polyline_length,
+    stable_key,
+)
 
 # Valhalla 公共实例（按顺序探测，第一个可用的就用）
 DEFAULT_HOSTS: tuple[str, ...] = (
@@ -90,41 +96,11 @@ def _thin_locations(
     return dedup
 
 
-def decode_polyline(encoded: str, precision: int = 6) -> list[tuple[float, float]]:
-    """解码 Valhalla 的 encoded polyline（precision 6）。
-
-    Valhalla 的 `leg.shape` 默认是这种编码格式，不是 GeoJSON。
-    编码规则与 Google 相同：ASCII 63 基准、5 位一组、低位在高位，
-    每组最高位表示符号。
-    """
-    if not encoded:
-        return []
-    coords: list[tuple[float, float]] = []
-    index = 0
-    lat = 0.0
-    lon = 0.0
-    factor = float(10 ** precision)
-    n = len(encoded)
-    while index < n:
-        for axis in range(2):
-            shift = 0
-            result = 0
-            while True:
-                if index >= n:
-                    return coords
-                b = ord(encoded[index]) - 63
-                index += 1
-                result |= (b & 0x1F) << shift
-                shift += 5
-                if b < 0x20:
-                    break
-            delta = ~(result >> 1) if result & 1 else (result >> 1)
-            if axis == 0:
-                lat += delta
-            else:
-                lon += delta
-        coords.append((lon / factor, lat / factor))
-    return coords
+def decode_polyline(
+    encoded: str | None, precision: int = 6,
+) -> list[tuple[float, float]]:
+    """解码 Valhalla 的 encoded polyline（实现统一在能力层）。"""
+    return _decode_polyline(encoded, precision)
 
 
 @dataclass
@@ -174,30 +150,39 @@ class ValhallaClient:
         hosts: tuple[str, ...] = DEFAULT_HOSTS,
         enabled: bool = True,
     ):
-        self.cache_dir = Path(cache_dir)
+        self.cache_dir = str(cache_dir)
         self.timeout = timeout
         self.hosts = hosts
         self.enabled = enabled
-        self._session = requests.Session()
-        self._session.headers.update({"User-Agent": "meituan-ride/0.1 (+local)"})
-        self._last_call: dict[str, float] = {}
+        # Session / UA / 0.35s 限流 / 重试统一由能力层的 HttpClient 提供；
+        # 缓存文件名与字段沿用旧格式，既有缓存继续命中。
+        self.http = HttpClient(
+            timeout=timeout, user_agent="meituan-ride/0.1 (+local)",
+            min_interval=0.35,
+        )
+        self.cache = RouteCache(self.cache_dir, "valhalla", ttl_s=0.0)
+
+    @property
+    def _session(self):
+        """兼容外部注入假 session 的既有用法。"""
+        return self.http.session
+
+    @_session.setter
+    def _session(self, value) -> None:
+        self.http._session = value
 
     # ---------- 缓存 ----------
 
     def _cache_key(self, costing: str, points: list[tuple[float, float]]) -> str:
         raw = costing + "|" + ";".join("%.6f,%.6f" % p for p in points)
-        return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
+        return stable_key(raw)
 
     def _cache_path(self, key: str) -> Path:
-        return self.cache_dir / ("valhalla_%s.json" % key)
+        return self.cache.path(key)
 
     def _load_cache(self, key: str) -> ValhallaRoute | None:
-        p = self._cache_path(key)
-        if not p.exists():
-            return None
-        try:
-            d = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        d = self.cache.read(key)
+        if d is None:
             return None
         r = ValhallaRoute()
         r.ok = bool(d.get("ok"))
@@ -214,29 +199,22 @@ class ValhallaClient:
         return r
 
     def _store_cache(self, key: str, r: ValhallaRoute) -> None:
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            self._cache_path(key).write_text(json.dumps({
-                "ok": r.ok,
-                "error": r.error,
-                "costing": r.costing,
-                "distance_m": r.distance_m,
-                "duration_s": r.duration_s,
-                "road_names": r.road_names,
-                "geometry": [list(p) for p in r.geometry],
-                "legs": [[list(p) for p in leg] for leg in r.legs],
-            }, ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            pass
+        self.cache.write(key, {
+            "ok": r.ok,
+            "error": r.error,
+            "costing": r.costing,
+            "distance_m": r.distance_m,
+            "duration_s": r.duration_s,
+            "road_names": r.road_names,
+            "geometry": [list(p) for p in r.geometry],
+            "legs": [[list(p) for p in leg] for leg in r.legs],
+        })
 
     # ---------- 请求 ----------
 
     def _throttle(self, key: str, min_interval: float = 0.35) -> None:
-        last = self._last_call.get(key, 0.0)
-        wait = min_interval - (time.time() - last)
-        if wait > 0:
-            time.sleep(wait)
-        self._last_call[key] = time.time()
+        """保留旧接口；实际限流已在 ``HttpClient.request_json`` 内完成。"""
+        self.http._throttle(key)
 
     def route(
         self,
@@ -287,15 +265,13 @@ class ValhallaClient:
                 f"https://{host}/route?json="
                 + urllib.parse.quote(json.dumps(payload, ensure_ascii=False))
             )
-            self._throttle(host)
             try:
-                resp = self._session.get(url, timeout=self.timeout)
-                if resp.status_code != 200:
-                    last_err = f"HTTP {resp.status_code}"
-                    continue
-                data = resp.json()
-            except (requests.RequestException, ValueError) as exc:
+                status, data = self.http.request_json(url)
+            except Exception as exc:  # noqa: BLE001 - 换下一个实例
                 last_err = f"{type(exc).__name__}"
+                continue
+            if status != 200:
+                last_err = f"HTTP {status}"
                 continue
 
             if data.get("error"):
@@ -327,52 +303,17 @@ class ValhallaClient:
 
 
 def order_consistency(
-    road_names: list[str],
-    user_names: list[str],
+    road_names: list[str], user_names: list[str],
 ) -> tuple[float, list[str]]:
-    """用户填的路名在路线里的**相对顺序**是否一致。
-
-    返回 (一致率, 命中的路名按路线出现顺序排列)。
-
-    ⚠️ 这比「命中数」更有价值：命中的路名**顺序也对**，说明用户
-    记忆里的路线与真实路网结构吻合，而不只是「这几个名字都存在」。
-
-    判定用「子串双向匹配」：`"中山南二路"` 能匹配 `"中山南二路"`，
-    `"虹桥路"` 也能匹配 `"虹桥路1829弄"`。
-    """
-    seq: list[tuple[str, int]] = []
-    for u in user_names:
-        best_idx: int | None = None
-        for i, rn in enumerate(road_names):
-            if u in rn or rn in u:
-                best_idx = i
-                break
-        if best_idx is not None:
-            seq.append((u, best_idx))
-    if len(seq) < 2:
-        return 0.0, [u for u, _ in seq]
-    ok = sum(1 for i in range(1, len(seq)) if seq[i][1] > seq[i - 1][1])
-    return ok / (len(seq) - 1), [u for u, _ in seq]
+    """用户路名在路线里的相对顺序是否一致（实现统一在能力层）。"""
+    return _order_consistency(road_names, user_names)
 
 
 def match_ratio(road_names: list[str], user_names: list[str]) -> float:
-    """命中用户路名的比例。"""
-    if not user_names:
-        return 0.0
-    hits = sum(
-        1 for u in user_names
-        if any(u in rn or rn in u for rn in road_names)
-    )
-    return hits / len(user_names)
+    """命中用户路名的比例（实现统一在能力层）。"""
+    return _shared_match_ratio(road_names, user_names)
 
 
 def polyline_length(points: list[tuple[float, float]]) -> float:
-    """折线长度（米），按 WGS-84 经纬度近似。"""
-    if len(points) < 2:
-        return 0.0
-    total = 0.0
-    for i in range(1, len(points)):
-        dx = (points[i][0] - points[i - 1][0]) * 95160.0
-        dy = (points[i][1] - points[i - 1][1]) * 111320.0
-        total += math.hypot(dx, dy)
-    return total
+    """折线长度（米），按 WGS-84 经纬度近似（实现统一在能力层）。"""
+    return _polyline_length(points)

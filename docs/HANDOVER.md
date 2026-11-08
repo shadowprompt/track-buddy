@@ -3977,3 +3977,86 @@ HTTP `/api/recognize` 200 且与离线结果逐字段一致，词典仅新增 1 
 - 路名目前只有一个在线实现，`MAP_ROADNAME_ORDER` 是扩展点而非「已有两家可切换」；完全关闭在线路名通过移除 `AMAP_KEY` 实现（凭证层统一）。
 - `app/maps/http.py` 已就绪但 ①② 仍用各自 Session（为保持 A/B 逐字段一致），阶段 2 统一收敛。
 - §22.29 的两点遗留未动：置信度缩放封顶、后台精修 `refine=True` 重跑整条 pipeline 会重新取在线锚点导致判定随配额波动。后者建议在阶段 2 改为复用主请求配准、只补算路网平移。
+
+---
+
+## 22.31 阶段 2：③ 道路几何 / ④ 路线校验接入，收敛重复基础设施
+
+### ③ 道路几何：三份 Overpass 实现合成一份
+
+过去 `roadfit.py`、`roadname_constraint.py`、`waterguard.py` 各维护一份
+镜像列表与轮换逻辑：三份表不一致，`waterguard.py:50` 还有
+`interparser` 拼写错误（同一个 private.coffee 实例被重复列两次），
+改一处的超时策略另外两处不会跟着变。
+
+新建 `app/maps/roads/`：
+
+- `overpass.py` 是**唯一**镜像表 + 请求实现。提供 `overpass_raw()`
+  （返回文本）与 `overpass_query()`（返回 dict）。主镜像拿完整超时，
+  备用镜像拿 `max(10, timeout/镜像数)`；网关返回的 HTML 错误页与
+  畸形 JSON 都在循环内被当作失败，继续换下一个镜像。需要「每个镜像
+  都拿完整超时」的水系查询通过 `per_mirror_timeout` 显式指定。
+- `provider.py` 的 `OsmRoadGeometryProvider` 声明
+  `capability=ROAD_GEOMETRY` / `output_crs=WGS84`（OSM 经纬度不是
+  GCJ-02，漏换算就是约 500 m 系统偏移）。公共 Overpass 无凭证，
+  `probe()` 因此只做静态声明，**不在 `/api/health` 里打公共实例**，
+  避免 health 被偶发超时拖住几十秒。
+- 三个调用点改为委托：`roadfit._fetch_overpass` 用 `overpass_raw`
+  （UA `meituan-ride/0.1`、失败不 sleep）；`roadname_constraint._overpass`
+  用 `overpass_query`（失败等 0.8 s）；`waterguard._fetch_water` 逐镜像
+  调用 `overpass_query(mirrors=(m,))`，保留「拿到 JSON 但岸线为空也要
+  换下一个实例」的原有语义，拼写错误的镜像随之消失。
+
+### ④ 路线校验：两份客户端共用一套基座
+
+`osrm.py` 与 `valhalla.py` 原先各写了一遍 Session/UA、磁盘缓存、
+md5 缓存键、polyline 解码、路名命中率与顺序一致性，评分口径容易漂移。
+
+- `app/maps/routing/common.py` 收敛纯函数：`decode_polyline`、
+  `match_ratio`、`polyline_length`、`order_consistency`、`stable_key`，
+  以及 `RouteCache`。缓存**沿用旧文件名（`osrm_*` / `valhalla_*`）与
+  字段格式**，避免重构后既有缓存一夜失效、把公共实例打爆；TS 字段
+  缺失的历史 Valhalla 缓存视为有效，带 ts 的 OSRM 缓存仍按 7 天过期。
+- `app/maps/http.py` 新增 `request_json()` 返回 `(status_code, JSON)`，
+  让上层能区分「HTTP 错误」与「换实例」，同时复用同一套 Session / UA /
+  限流 / 重试。两个客户端不再自建 `requests.Session()`；Valhalla 的
+  0.35 s 限流改由 `HttpClient(min_interval=0.35)` 统一执行。
+- `app/osrm.py` / `app/valhalla.py` 保留所有公共名称（数据类、客户端、
+  四个工具函数）为薄导出，业务调用点与既有测试零改动；`_session`
+  保留可注入 property，测试仍可替换假会话。
+- `providers.py` 注册 `osrm` / `valhalla` 两个
+  `Capability.ROUTE_VALIDATION` provider，`WGS84` 声明一致；
+  `MAP_ROUTE_VALIDATION_ORDER` 可改顺序，
+  `MAP_ROUTE_VALIDATION_ENABLED=0` 可整体关闭。
+
+### health 与配置
+
+`/api/health` 顶层新增 `maps.road_geometry` 与 `maps.route_validation`，
+上报 `order` / `available`；两者只遍历注册表、不发网络请求。
+新增环境变量见 README 配置段：`MAP_ROAD_GEOMETRY_ORDER`、
+`MAP_ROUTE_VALIDATION_ORDER` 与两个 `*_ENABLED` 开关。
+
+### 完成判据与验证
+
+判据是「行为不变前提下去重复」：镜像轮换的超时分配、UA、失败等待、
+缓存文件名与字段、公共函数签名全部逐一对照原实现；新增服务商只改
+`.env` 顺序、不改 Python 代码。
+
+- 新增 `tests/test_maps_stage2.py` 13 项离线测试：镜像表唯一且无拼写
+  错误、网关 HTML / 畸形 JSON 轮换、全镜像失败抛错、三个调用方委托
+  关系、provider 的 CRS 声明与开关、顺序由配置驱动、
+  `request_json` 保留状态码、缓存旧格式兼容、两个客户端共享基座、
+  工具函数导出一致。全部用假 opener / 假 session，不发网络。
+- 专项 `test_maps_stage2.py + test_valhalla.py + test_maps_skeleton.py`
+  **42 passed**；`compileall app` 通过。
+
+### 边界与遗留
+
+- ①② 的可注入 `session_getter` 保持原样：它是既有测试注入契约，且
+  geocoding 基类的限流/UA 本就只有一份。HttpClient 已在 ③④ 落地，
+  后续把 ①② 接上属于纯机械改动，但会改变请求侧行为，需要另做一次
+  逐字段 A/B，本阶段不冒险动刚验收通过的链路。
+- 后台精修 `refine=True` 重跑整条 pipeline、锚点源随配额波动的遗留
+  未动：那是**行为修复**而非去重复，混进重构会破坏归因，留作独立改动。
+- 阶段 3（前端 `MapAdapter` 收敛 `new TMap.*`）与阶段 4（tools 静态
+  地图）仍按计划分开提交。

@@ -42,14 +42,11 @@ from typing import Any
 import numpy as np
 
 from .geo.coords import gcj02_to_wgs84, wgs84_to_gcj02
+from .maps.roads import OVERPASS_MIRRORS, overpass_query
 from .waterdata import fallback_polylines, search_bbox, water_specs
 
-_OVERPASS_MIRRORS = [
-    "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.private.coffee/api/interparser",
-    "https://overpass.private.coffee/api/interpreter",
-]
+# 镜像表统一在能力层。旧表里的 ``interparser`` 是拼写错误，且把同一个
+# private.coffee 实例重复列了两次；收敛后这两个问题一并消失。
 
 # 河流清单、侧别参数与兜底岸线都来自外部地理数据（data/waters.json）。
 # 代码里不内置任何河名、坐标或半宽：换城市只需替换数据文件，
@@ -93,15 +90,14 @@ def _fetch_water(name: str, timeout: float = 60.0) -> list[list[tuple[float, flo
     q = (f'[out:json][timeout:{int(timeout)}];'
          f'way["waterway"="river"]["name"="{name}"]({s},{w},{n},{e});'
          f'out geom;')
-    for m in _OVERPASS_MIRRORS:
+    for m in OVERPASS_MIRRORS:
         try:
-            req = urllib.request.Request(
-                m, data=urllib.parse.urlencode({"data": q}).encode(),
-                headers={"User-Agent": "track-buddy/0.1"})
-            txt = urllib.request.urlopen(req, timeout=timeout).read().decode()
-            if txt.lstrip()[:1] != "{":
-                continue
-            data = json.loads(txt)
+            # 水系查询一次只打一个镜像：拿到 JSON 但岸线为空时也要继续
+            # 试下一个实例，这与原先的轮换语义一致。
+            data = overpass_query(
+                q, timeout=timeout, user_agent="track-buddy/0.1",
+                mirrors=(m,), per_mirror_timeout=timeout, retry_pause=0.8,
+            )
             segs: list[list[tuple[float, float]]] = []
             for e in data.get("elements", []):
                 g = e.get("geometry") or []
@@ -109,8 +105,8 @@ def _fetch_water(name: str, timeout: float = 60.0) -> list[list[tuple[float, flo
                     segs.append([(p["lon"], p["lat"]) for p in g])
             if segs:
                 return segs
-        except Exception:
-            time.sleep(0.8)
+        except Exception:  # noqa: BLE001 - 换下一个镜像
+            continue
     return []
 
 

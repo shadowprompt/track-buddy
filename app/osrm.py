@@ -35,16 +35,15 @@ OSRM 返回的 `legs` 数组天然对应「起点→途经点1→…→终点」
 """
 from __future__ import annotations
 
-import hashlib
-import json
-import math
-import os
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
 
-import requests
+from .maps.http import HttpClient
+from .maps.routing.common import (
+    RouteCache,
+    match_ratio as _shared_match_ratio,
+    stable_key,
+)
 
 
 @dataclass
@@ -79,12 +78,26 @@ class OsrmClient:
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
         self.profile = profile or "driving"
-        self.cache_dir = Path(cache_dir)
+        self.cache_dir = str(cache_dir)
         self.timeout = timeout
         self.enabled = enabled and bool(self.base_url)
         self.last_error = ""
-        self._session = requests.Session()
-        self._session.headers.update({"User-Agent": "meituan-ride/0.1 (+local)"})
+        # Session / UA / 限流 / 重试统一由能力层提供；磁盘缓存格式沿用
+        # 旧文件名与字段，避免重构后既有缓存失效、重新打公共实例。
+        self.http = HttpClient(
+            timeout=timeout, user_agent="meituan-ride/0.1 (+local)",
+            min_interval=0.0,
+        )
+        self.cache = RouteCache(self.cache_dir, "osrm", ttl_s=7 * 86400.0)
+
+    @property
+    def _session(self):
+        """兼容外部注入假 session 的既有用法。"""
+        return self.http.session
+
+    @_session.setter
+    def _session(self, value) -> None:
+        self.http._session = value
 
     # ------------------------------------------------------------------
     def route(
@@ -107,14 +120,13 @@ class OsrmClient:
                "?overview=full&geometries=geojson&steps=true")
         t0 = time.time()
         try:
-            r = self._session.get(url, timeout=self.timeout)
-            if r.status_code != 200:
-                res.error = f"HTTP {r.status_code}"
-                self.last_error = res.error
-                return res
-            body = r.json()
+            status, body = self.http.request_json(url)
         except Exception as exc:  # noqa: BLE001
             res.error = f"{type(exc).__name__}: {exc}"
+            self.last_error = res.error
+            return res
+        if status != 200:
+            res.error = f"HTTP {status}"
             self.last_error = res.error
             return res
         if body.get("code") != "Ok" or not body.get("routes"):
@@ -149,28 +161,16 @@ class OsrmClient:
 
     # ------------------------------------------------------------------
     def _cache_key(self, points: list[tuple[float, float]]) -> str:
-        """稳定的缓存键。
-
-        ⚠️ **不能用内置 hash()**：Python 对 str 的 hash 受 PYTHONHASHSEED
-        随机化影响，**每次进程启动都不一样**——缓存路径每次都变，
-        缓存永远不命中，于是每次识别都重新请求公共 OSRM 服务器
-        （实测端到端耗时从 150 秒涨到 528 秒）。
-        """
+        """稳定的缓存键（不能用内置 hash，见 ``routing.common.stable_key``）。"""
         raw = ";".join("%.5f,%.5f" % (p[0], p[1]) for p in points)
-        return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
+        return stable_key(raw)
 
-    def _cache_path(self, key: str) -> Path:
-        return self.cache_dir / ("osrm_%s.json" % key)
+    def _cache_path(self, key: str):
+        return self.cache.path(key)
 
     def _read_cache(self, key: str) -> OsrmRoute | None:
-        p = self._cache_path(key)
-        if not p.exists():
-            return None
-        try:
-            d = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if time.time() - float(d.get("ts", 0)) > 7 * 86400:
+        d = self.cache.read(key)
+        if d is None:
             return None
         r = OsrmRoute(ok=True)
         r.distance_m = float(d.get("distance", 0))
@@ -182,27 +182,16 @@ class OsrmClient:
         return r
 
     def _write_cache(self, key: str, r: OsrmRoute) -> None:
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            self._cache_path(key).write_text(json.dumps({
-                "ts": time.time(),
-                "distance": r.distance_m,
-                "duration": r.duration_s,
-                "legs": r.legs,
-                "leg_names": r.leg_names,
-                "geometry": r.geometry,
-            }, ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            pass
+        self.cache.write(key, {
+            "ts": time.time(),
+            "distance": r.distance_m,
+            "duration": r.duration_s,
+            "legs": r.legs,
+            "leg_names": r.leg_names,
+            "geometry": r.geometry,
+        })
 
 
 def match_ratio(leg_names: list[str], user_names: list[str]) -> float:
-    """路线上的路名与用户路名的命中率（按去重后的路名集合算）。"""
-    if not leg_names or not user_names:
-        return 0.0
-    on_path = {n for n in leg_names if n}
-    hit = 0
-    for u in user_names:
-        if any(u in n or n in u for n in on_path):
-            hit += 1
-    return hit / max(1, len(user_names))
+    """路线上的路名与用户路名的命中率（实现统一在能力层）。"""
+    return _shared_match_ratio(leg_names, user_names)

@@ -1011,6 +1011,10 @@ TIANDITU_API_KEY=
 # 可选：能力层顺序（默认 amap,tmap,baidu,tianditu）
 # MAP_GEOCODING_ORDER=tianditu,amap   # 旧名 GEOCODE_PROVIDER_ORDER 仍兼容
 # MAP_ROADNAME_ORDER=amap             # 路名能力，新增实现后可在这里排序
+# MAP_ROAD_GEOMETRY_ORDER=osm         # 道路几何（公共 Overpass）
+# MAP_ROUTE_VALIDATION_ORDER=osrm,valhalla
+# MAP_ROAD_GEOMETRY_ENABLED=0         # 整体关闭公共路网
+# MAP_ROUTE_VALIDATION_ENABLED=0      # 整体关闭公共路线校验
 # 可选：天地图搜索视野（默认全球；按业务区域收紧可减少异地同名）
 # TIANDITU_MAP_BOUND=<minx>,<miny>,<maxx>,<maxy>
 ```
@@ -1018,11 +1022,16 @@ TIANDITU_API_KEY=
 未配置密钥时自动降级为纯本地词典模式，功能可用但只能识别词典覆盖的区域。
 只想用天地图时，把 `MAP_GEOCODING_ORDER` 设为 `tianditu`（或
 `tianditu,amap` 保留高德兜底），无需改代码；`.env` 改完即时生效，不必重启。
+③ 道路几何与 ④ 路线校验用的是公共 OSM 服务、无需密钥，可用上面两个
+`*_ENABLED=0` 开关整体关闭。
 
-**能力层约定**：所有外部地图调用都通过 `app/maps/` 的契约、凭证、注册表
-与 HTTP 基座装配。每个 provider 必须声明 `output_crs`，框架统一换算到
-GCJ-02；`/api/health` 的配置状态与调用顺序直接遍历注册表，新增服务商
-不需要改 `server.py`。详见 HANDOVER §22.30。
+**能力层约定**：后端四类能力（① 地理编码 / ② 路名 / ③ 道路几何 /
+④ 路线校验）都通过 `app/maps/` 的契约、凭证、注册表与 HTTP 基座装配。
+每个 provider 必须声明 `output_crs`，框架统一换算到 GCJ-02；Overpass
+镜像表与轮换、Session/UA/限流/重试、路由结果磁盘缓存各只有一份实现。
+`/api/health` 新增 `maps.road_geometry` 与 `maps.route_validation`
+字段上报装配顺序（只读注册表、不打公共实例），新增服务商不需要改
+`server.py`。详见 HANDOVER §22.30–22.31。
 
 ---
 

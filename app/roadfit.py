@@ -48,17 +48,14 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from .geo.coords import lonlat_to_mercator, wgs84_to_gcj02
+from .maps.roads import OVERPASS_MIRRORS, overpass_raw
 
 # --- 数据获取 -------------------------------------------------------------
 
 OSM_API = "https://api.openstreetmap.org/api/0.6/map"
-# Overpass 公共镜像。主站经常繁忙/限流，轮换几个镜像更稳。
-OVERPASS_MIRRORS = [
-    "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.private.coffee/api/interpreter",
-    "https://overpass.osm.ch/api/interpreter",
-]
+# Overpass 镜像表与轮换逻辑统一维护在 app/maps/roads/overpass.py。
+# 这里保留同名导出（OVERPASS_MIRRORS），兼容既有调用与测试；要加镜像、
+# 改超时策略只需改能力层一处，不会再出现三份列表各改各的情况。
 
 
 def _fetch_osm_api(bbox: tuple[float, float, float, float], timeout: float) -> str:
@@ -77,24 +74,9 @@ def _fetch_overpass(
         filt = ""
     q = ('[out:json][timeout:180];way["highway"%s]["name"](%.6f,%.6f,%.6f,%.6f);out geom;'
          % (filt, bbox[1], bbox[0], bbox[3], bbox[2]))
-    data = urllib.parse.urlencode({"data": q}).encode()
-    last: Exception | None = None
-    # 主站最可靠，给足超时；备用镜像常年不稳定，各给较短超时，
-    # 快速失败换下一个而不是死等。
-    for i, mirror in enumerate(OVERPASS_MIRRORS):
-        per = timeout if i == 0 else max(10.0, timeout / len(OVERPASS_MIRRORS))
-        req = urllib.request.Request(mirror, data=data,
-                                     headers={"User-Agent": "meituan-ride/0.1"})
-        try:
-            text = urllib.request.urlopen(req, timeout=per).read().decode("utf-8")
-            # Overpass 繁忙时返回的是 HTML 网关错误页而不是 JSON，
-            # 直接 json.loads 会抛 JSONDecodeError，看不出真实原因。
-            if text.lstrip()[:1] != "{":
-                raise ValueError("响应不是 JSON")
-            return text
-        except Exception as exc:  # noqa: BLE001 — 换下一个镜像
-            last = exc
-    raise RuntimeError(f"Overpass 全部镜像失败：{last}")
+    # 镜像轮换、超时分配、网关错误页拦截都在能力层，行为与原先一致：
+    # 主镜像拿完整 timeout，备用镜像拿 max(10, timeout/4)，失败不 sleep。
+    return overpass_raw(q, timeout=timeout, user_agent="meituan-ride/0.1")
 
 
 def fetch_roads(

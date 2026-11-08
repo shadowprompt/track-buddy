@@ -50,15 +50,9 @@ from typing import Any
 import numpy as np
 
 from .geo.coords import gcj02_to_wgs84, lonlat_to_mercator
+from .maps.roads import overpass_query
 
-# Overpass 公共镜像。主站繁忙时轮换，且每个镜像给较短超时，
-# 快速失败换下一个而不是死等。
-_OVERPASS_MIRRORS = [
-    "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.private.coffee/api/interpreter",
-    "https://overpass.osm.ch/api/interpreter",
-]
+# Overpass 镜像表、轮换与超时策略统一在能力层维护，本模块不再自带一份。
 
 # 全市检索用的粗 bbox 会在调用处按城市给定；这里只放兜底值。
 _DEFAULT_BBOX = (120.85, 30.65, 121.60, 31.55)
@@ -144,23 +138,11 @@ def _cache_store(path: str, key: str, value: dict[str, Any]) -> None:
 
 
 def _overpass(query: str, timeout: float = 90.0) -> dict[str, Any]:
-    data = urllib.parse.urlencode({"data": query}).encode()
-    last: Exception | None = None
-    for i, mirror in enumerate(_OVERPASS_MIRRORS):
-        per = timeout if i == 0 else max(10.0, timeout / len(_OVERPASS_MIRRORS))
-        req = urllib.request.Request(
-            mirror, data=data, headers={"User-Agent": "track-buddy/0.1"}
-        )
-        try:
-            txt = urllib.request.urlopen(req, timeout=per).read().decode()
-            # Overpass 繁忙时返回的是 HTML 网关错误页而不是 JSON
-            if txt.lstrip()[:1] != "{":
-                raise ValueError("响应不是 JSON")
-            return json.loads(txt)
-        except Exception as exc:  # noqa: BLE001 — 换下一个镜像
-            last = exc
-            time.sleep(0.8)
-    raise RuntimeError(f"Overpass 全部镜像失败：{last}")
+    # 行为与原先一致：主镜像拿完整 90s，备用镜像 max(10, 90/4)，
+    # 每次失败后等 0.8s 再换下一个。实现统一在 app/maps/roads/。
+    return overpass_query(
+        query, timeout=timeout, user_agent="track-buddy/0.1", retry_pause=0.8
+    )
 
 
 def fetch_road_name(
