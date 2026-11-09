@@ -123,6 +123,8 @@ class StitchResult:
     unused: list[int] = field(default_factory=list)
     links: list[PairLink] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # 可选：位姿图全局平差的统计（默认关闭时为空 dict）
+    pose_graph: dict[str, Any] = field(default_factory=dict)
     # 独立复核：把每张图 warp 回画布后，与画布内容逐像素比对的结果。
     #
     # 为什么需要它：SIFT + RANSAC 求出的变换**理论上**对，
@@ -141,6 +143,7 @@ class StitchResult:
             "unused": self.unused,
             "links": [l.to_dict() for l in self.links],
             "notes": self.notes,
+            "pose_graph": self.pose_graph,
             "verify": self.verify,
             "verify_score": round(self.verify_score, 4),
             "canvas_size": (
@@ -422,6 +425,7 @@ def stitch(
     min_inliers: int = 10,
     min_ncc: float = 0.15,
     max_pixels: int | None = None,
+    pose_graph: bool | None = None,
 ) -> StitchResult:
     """把一组截图拼成一张大图。
 
@@ -434,6 +438,8 @@ def stitch(
                   自适应推导（见 `scale.canvas_pixel_budget`），
                   而不是写死一个像素数：张数少不浪费预算，张数多也不会
                   因为超过固定上限就被误判为「画布过大」。
+    pose_graph     None = 读 POSE_GRAPH_ENABLED 配置；True/False 显式覆盖。
+                   开启后用全部重叠边做全局平差，分摊链式累积漂移。
     """
     res = StitchResult()
     n = len(images)
@@ -576,6 +582,50 @@ def stitch(
                 T[i] = T[cur] @ link.matrix
                 order.append(i)
                 queue.append(i)
+
+    # --- 3.5 位姿图全局平差（可选） ---
+    #
+    # BFS 只用生成树边，链长 10 时配准噪声会线性累积；而其余重叠边
+    # （图 1 与图 4 也重叠）被完全丢弃，本来可以拿来闭环平差。
+    # 这里用全部边做加权最小二乘，把漂移分摊到各图。
+    # ⚠️ 只改**平移**，不动旋转/尺度，也不影响后续地理配准。
+    from .config import CONFIG  # 局部导入，避免与 server 的模块级循环
+
+    use_pg = CONFIG.pose_graph_enabled if pose_graph is None else pose_graph
+    if use_pg and len(T) >= 3:
+        from .posegraph import PoseEdge, optimize_translations
+
+        ids = sorted(T)
+        local = {k: idx for idx, k in enumerate(ids)}
+        edges: list[PoseEdge] = []
+        for (i, j), link in link_map.items():
+            if i not in local or j not in local:
+                continue
+            # m 把 i 映射到 j：T_i = T_j · m
+            # ⇒ b_j − b_i = −A_j · t_m
+            A_j = T[j][:2, :2]
+            t_m = np.asarray(link.matrix[:2, 2], dtype=float)
+            d = -(A_j @ t_m)
+            edges.append(PoseEdge(
+                i=local[i], j=local[j],
+                dx=float(d[0]), dy=float(d[1]),
+                weight=max(1.0, float(link.inliers))
+                * max(0.05, float(link.ncc)),
+            ))
+        init_p = np.asarray([T[k][:2, 2] for k in ids], dtype=float)
+        pg = optimize_translations(len(ids), edges, init_p,
+                                   root=local.get(root, 0))
+        res.pose_graph = pg.to_dict()
+        if pg.ok:
+            for li, k in enumerate(ids):
+                T[k][0, 2] += pg.deltas[li][0]
+                T[k][1, 2] += pg.deltas[li][1]
+            res.notes.append(
+                f"位姿图全局平差：{pg.n_edges} 条重叠边，"
+                f"边残差 {pg.residual_before:.1f} → {pg.residual_after:.1f}px"
+                "（链式累积漂移已分摊到各图）")
+        else:
+            res.notes.append(f"位姿图优化跳过：{pg.reason}")
 
     # --- 4. 画布尺寸 ---
     corners: list[np.ndarray] = []

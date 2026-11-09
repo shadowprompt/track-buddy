@@ -247,6 +247,16 @@ class AppConfig:
         return file_val
 
     @property
+    def pose_graph_enabled(self) -> bool:
+        """多图拼接是否启用位姿图全局平差（默认关闭）。
+
+        ``POSE_GRAPH_ENABLED=1`` 时把链式累积漂移按全部重叠边分摊，
+        只改拼接画布内各图的平移，不改地理配准结果。
+        """
+        raw = (self._env_value("POSE_GRAPH_ENABLED") or "").strip().lower()
+        return raw in ("1", "true", "yes", "on")
+
+    @property
     def map_match_enabled(self) -> bool:
         """是否输出 HMM 地图匹配的**备选显示层**（默认关闭）。
 
