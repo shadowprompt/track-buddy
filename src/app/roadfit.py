@@ -283,10 +283,16 @@ class RoadFit:
     # 可选的锚点一致性证据（米）；用于解释为什么采纳/拒绝平移。
     anchor_before_m: float | None = None
     anchor_after_m: float | None = None
+    # 被护栏否决时，**保留归零前搜索出的最优平移**，交给前端用另一种
+    # 颜色画出「未采纳的精修路线」：用户可以自己对照截图判断护栏拒得
+    # 对不对，而不是只看到一句「未采纳」。采纳成功时保持 None。
+    candidate_shift_e_m: float | None = None
+    candidate_shift_n_m: float | None = None
+    candidate_median_after_m: float | None = None
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "ok": self.ok,
             "shift_e_m": round(self.shift_e_m, 1),
             "shift_n_m": round(self.shift_n_m, 1),
@@ -301,6 +307,18 @@ class RoadFit:
                                 if self.anchor_after_m is not None else None),
             "notes": self.notes,
         }
+        # 只在否决时输出：旧调用方对 to_dict() 的键集有静态契约，
+        # 采纳成功的结果必须保持原样。
+        if self.candidate_shift_e_m is not None:
+            out.update({
+                "candidate_shift_e_m": round(self.candidate_shift_e_m, 1),
+                "candidate_shift_n_m": round(self.candidate_shift_n_m or 0.0, 1),
+                "candidate_median_after_m": (
+                    round(self.candidate_median_after_m, 1)
+                    if self.candidate_median_after_m is not None else None
+                ),
+            })
+        return out
 
 
 class RoadNetwork:
@@ -495,6 +513,21 @@ def refine_with_roads(
     result.median_after_m = after
     result.source = "osm"
 
+    def _reject(note: str) -> RoadFit:
+        """护栏否决：输出位移归零，但把搜索到的候选解保留下来。
+
+        三道护栏（锚点一致性 / 位移限幅 / 改善不足）都要走这里，
+        否则「未采纳的路线」只在一种失败原因下才画得出来。
+        """
+        result.notes.append(note)
+        result.candidate_shift_e_m = dx
+        result.candidate_shift_n_m = dy
+        result.candidate_median_after_m = after
+        result.shift_e_m = result.shift_n_m = 0.0
+        result.median_after_m = before
+        result.ok = False
+        return result
+
     # 锚点是截图与地理世界之间的直接对应证据，优先级高于「最近 OSM
     # 道路距离」。如果当前配准已经能解释可靠锚点，单纯贴路距离下降
     # 不足以证明整体平移正确；平行道路会让这种优化产生假阳性。
@@ -527,35 +560,25 @@ def refine_with_roads(
             )
         )
         if anchor_bad:
-            result.notes.append(
+            return _reject(
                 f"路网精修未采纳（可靠锚点残差 {before_anchor:.0f}m → "
                 f"{after_anchor:.0f}m，平移会破坏截图锚点一致性）"
             )
-            result.shift_e_m = result.shift_n_m = 0.0
-            result.median_after_m = before
-            result.ok = False
-            return result
 
     # 位移超过轨迹尺度允许的范围：贴路距离变小也不能采纳。
     # 这类解几乎一定是把轨迹搬到了另一条平行道路上。
     if float(np.hypot(dx, dy)) > shift_limit_m + fine_step_m:
-        result.notes.append(
+        return _reject(
             f"路网精修未采纳（需平移 {float(np.hypot(dx, dy)):.0f}m，"
             f"超过该轨迹尺度允许的 {shift_limit_m:.0f}m，疑似贴到别的路上）"
         )
-        result.shift_e_m = result.shift_n_m = 0.0
-        result.median_after_m = before
-        return result
 
     # 只有明显改善才采纳；否则说明路网覆盖不足，不动配准
     if after > before * 0.9 or after > 60.0:
-        result.notes.append(
+        return _reject(
             f"路网精修未采纳（贴路中位 {before:.0f}m → {after:.0f}m，"
             f"改善不足或路网覆盖不足）"
         )
-        result.shift_e_m = result.shift_n_m = 0.0
-        result.median_after_m = before
-        return result
 
     # 归属路名（对原始骨架折线）
     result.segments = net.segments(reg, polyline_px, (dx, dy))

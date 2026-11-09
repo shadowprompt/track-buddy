@@ -31,6 +31,35 @@ def _mean_lat(points: list[tuple[float, float]]) -> float:
     return sum(p[1] for p in points) / len(points)
 
 
+def _candidate_shift_px(reg: Registration,
+                        road_fit: dict[str, Any]) -> dict[str, Any]:
+    """把「被否决的精修平移量」换算成截图上的像素位移。
+
+    配准是 ``f(p) = M·p + t``。精修想让同一条像素轨迹对应到
+    ``f(p) + d`` 的地理位置；以截图底图为固定参照，这个候选位置应当
+    画在 ``p + M⁻¹·d``。前端把主轨迹每个像素点加上该增量即可画出
+    未采纳的路线，不必知道尺度、旋转或坐标系，也不必再传一份折线。
+
+    没有候选位移或配准矩阵退化时返回空字典（前端就不画线）。
+    """
+    de = road_fit.get("candidate_shift_e_m")
+    dn = road_fit.get("candidate_shift_n_m")
+    matrix = getattr(reg, "matrix", None)
+    if de is None or dn is None or matrix is None:
+        return {}
+    try:
+        dpx, dpy = np.linalg.solve(
+            np.asarray(matrix, dtype=float),
+            np.array([float(de), float(dn)], dtype=float),
+        )
+    except (np.linalg.LinAlgError, ValueError, TypeError):
+        return {}
+    if not np.all(np.isfinite([dpx, dpy])):
+        return {}
+    return {"candidate_shift_px": [round(float(dpx), 2),
+                                   round(float(dpy), 2)]}
+
+
 @dataclass
 class PipelineResult:
     """流水线结果。"""
@@ -1627,12 +1656,16 @@ class RidePipeline:
             anchor_worsen_ratio=float(self.cfg.road_fit_anchor_worsen_ratio),
             eval_budget=int(getattr(self.cfg, "road_fit_eval_budget", 2000)),
         )
+        fit_dict = fit.to_dict()
+        # 否决时把候选平移换算成截图像素位移，前端据此画第二种颜色。
+        # 采纳时 fit_dict 没有 candidate 字段，这里自然返回空。
+        fit_dict.update(_candidate_shift_px(reg, fit_dict))
         if fit.ok:
             # 把平移量并入配准矩阵（墨卡托 y 轴向上，北为正）
             reg.translation = reg.translation + np.array(
                 [fit.shift_e_m, fit.shift_n_m], dtype=float
             )
-        return fit.to_dict(), net
+        return fit_dict, net
 
     def refine_existing(
         self,

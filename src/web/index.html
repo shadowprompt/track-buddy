@@ -259,8 +259,11 @@
         <div id="map"></div>
       </div>
       <div class="vis-block">
-        <div class="vis-title"><b>原始截图</b><span class="hint">绿色为识别出的轨迹，黄色为锚点</span></div>
-        <div id="preview"><img id="prevImg"><canvas id="prevCanvas"></canvas></div>
+        <div class="vis-title"><b>原始截图</b><span class="hint">绿色为识别出的轨迹，黄色为锚点；橙色虚线为未采纳的路网精修位置</span></div>
+        <div id="preview">
+          <img id="prevImg"><canvas id="prevCanvas"></canvas>
+          <div id="fitLegend" style="display:none; position:absolute; left:8px; top:8px; z-index:3; max-width:90%; background:rgba(17,17,17,.86); color:#ffb066; padding:5px 9px; border-radius:5px; font-size:12px; line-height:1.4; pointer-events:none;"></div>
+        </div>
       </div>
       <div class="note" id="mapNote">
         底图使用腾讯地图。若轨迹位置明显偏离，可回到左侧查看锚点明细并提交纠正——
@@ -846,6 +849,14 @@ __WB_AMAP_SDK__
         html += '<div class="kv"><span>贴路中位距离</span><span>' +
           Math.round(rf.median_before_m) + ' m → <b>' +
           Math.round(rf.median_after_m) + ' m</b></span></div>';
+      } else if (rf.candidate_shift_px) {
+        // 护栏否决了平移：把「本来想挪到哪」说清楚，并指向橙色虚线。
+        const de = Number(rf.candidate_shift_e_m || 0);
+        const dn = Number(rf.candidate_shift_n_m || 0);
+        html += '<div class="kv"><span>路网精修</span><span>未采纳；候选位置（东 ' +
+          (de >= 0 ? '+' : '') + Math.round(de) + ' m / 北 ' +
+          (dn >= 0 ? '+' : '') + Math.round(dn) +
+          ' m）见原始截图上的橙色虚线</span></div>';
       }
       $('roadSummary').innerHTML = html;
       $('roadRows').innerHTML = ra.segments.map(x =>
@@ -903,8 +914,14 @@ __WB_AMAP_SDK__
     }
 
     if (d.ok) {
+      // 同步 refine=on 被护栏否决时不会启动轮询，这条信息只藏在
+      // warnings 里页面上完全看不出精修被拒，必须在这里点一句。
+      const rf0 = d.road_fit || {};
+      const fitHint = (!rf0.ok && rf0.candidate_shift_px)
+        ? ' 路网精修未采纳，候选位置已在原始截图上用橙色虚线标出。'
+        : '';
       showStatus('识别完成。置信度 ' + (d.confidence * 100).toFixed(0) +
-        '%，输出 ' + d.track_points + ' 个轨迹点。', 'info');
+        '%，输出 ' + d.track_points + ' 个轨迹点。' + fitHint, 'info');
     } else {
       // 失败时把后端给的 warnings 直接摆出来——它们才是可操作的诊断
       const why = (d.warnings && d.warnings.length)
@@ -995,6 +1012,9 @@ __WB_AMAP_SDK__
   // 若底图还是第一张原图，叠加会完全错位（而且用户看到的只是 1/N 张图）。
   function drawPreview(d) {
     const img = $('prevImg');
+    // 换图先隐藏候选线图例：没有候选位移时不能残留上一条结果。
+    const legend = $('fitLegend');
+    if (legend) { legend.style.display = 'none'; legend.innerHTML = ''; }
     img.onload = () => {
       const c = $('prevCanvas');
       // ⚠️ 画布必须与图片的**实际显示区域**完全一致。
@@ -1073,6 +1093,35 @@ __WB_AMAP_SDK__
           i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
         });
         ctx.stroke();
+      }
+
+      // 未采纳的路网精修路线：橙色虚线。
+      // 配准是 f(p)=M·p+t，候选平移 d 对应截图上的像素增量 M⁻¹·d；
+      // 服务端已换算好，这里只需把主轨迹整条平移过去。
+      // 只在护栏否决（road_fit.ok=false）且确实算出了候选解时才有该字段，
+      // 多图默认 verify 档不会画线。
+      const rf = d.road_fit || {};
+      const cs = (!rf.ok && rf.candidate_shift_px) || null;
+      if (cs && cs.length === 2 && pts.length > 1) {
+        ctx.strokeStyle = '#ff8a3d';
+        ctx.lineWidth = 2.5;
+        ctx.lineJoin = 'round';
+        ctx.setLineDash([9, 6]);
+        ctx.beginPath();
+        pts.forEach((p, i) => {
+          const x = (p[0] + cs[0]) * sx, y = (p[1] + cs[1]) * sy;
+          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+        const de = Number(rf.candidate_shift_e_m || 0);
+        const dn = Number(rf.candidate_shift_n_m || 0);
+        if (legend) {
+          legend.innerHTML = '橙色虚线 = 未采纳的路网精修位置（东 ' +
+            (de >= 0 ? '+' : '') + Math.round(de) + ' m / 北 ' +
+            (dn >= 0 ? '+' : '') + Math.round(dn) + ' m）';
+          legend.style.display = 'block';
+        }
       }
 
       // 锚点
