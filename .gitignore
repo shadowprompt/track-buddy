@@ -25,6 +25,8 @@ data/last_result.json
 data/last_stitch.json
 data/feedback.json
 data/lexicon.json.bak
+# 由含真实轨迹的评测样本离线拟合，属运行/个人数据，不入库
+data/confidence_calibration.json
 
 # 仓库内技能安装不需要 vendor 的内核副本：scripts/recognize.py 会优先命中
 # 仓库里的 src/app/。完整自包含的版本在 dist/*.zip。

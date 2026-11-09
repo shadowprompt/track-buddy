@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from .calibration import apply_calibration
 from .config import AppConfig
 from .cv_utils import resample_polyline, simplify_polyline
 from .geocode import Geocoder, Lexicon
@@ -172,6 +173,10 @@ DIAG_KEYS: tuple[str, ...] = (
     "lexicon",
     "alternatives",
     "zoom",
+    # 置信度是否被真值校准过；以及本轮词典写入的防毒审计。
+    # 失败路径也必须带这两个键（前端统一遍历 diagnostics）。
+    "confidence_calibration",
+    "lexicon_write_guard",
 )
 
 
@@ -181,6 +186,32 @@ def _base_diagnostics(**over: Any) -> dict[str, Any]:
     dg["lexicon"] = {}
     dg.update(over)
     return dg
+
+
+def _result_is_self_consistent(diag: dict[str, Any]) -> bool:
+    """本轮识别结果是否「自洽到可以反哺词典」。
+
+    只看**独立于配准**的证据，不用贴路距离或锚点残差——它们在整体
+    平移到平行道路时同样会变好（§22.38），拿来做门槛等于放行假解。
+
+    四项一票否决：低信息量直线输入、截图里程与几何里程量级不符、
+    锚点残差方向高度相干（系统性基准偏移）、低缩放且位置未被修正。
+    缺省字段一律按「无证据反对」处理，避免因版本差异误杀冷启动。
+    """
+    iq = diag.get("input_quality") or {}
+    scale_check = diag.get("scale_check") or {}
+    bias = diag.get("anchor_bias") or {}
+    zoom = diag.get("zoom") or {}
+    if iq.get("level") == "reject":
+        return False
+    if not bool(scale_check.get("consistent", True)):
+        return False
+    if bool(bias.get("systematic", False)):
+        return False
+    if bool(zoom.get("zoom_too_low", False)) and not bool(
+            zoom.get("position_ok", True)):
+        return False
+    return True
 
 
 def _track_straightness(polyline_px: Any) -> float:
@@ -249,6 +280,10 @@ class RidePipeline:
         self.cfg = cfg
         self.lexicon = Lexicon(cfg.lexicon_path)
         self.geocoder = Geocoder(cfg, self.lexicon)
+        # 最近一次 _score_confidence 的校准状态，写进 diagnostics。
+        self._last_calibration: dict[str, Any] = {
+            "enabled": False, "status": "uncalibrated", "n_samples": 0,
+        }
         # 大模型是**可选增强**：没配 LLM_BASE_URL/LLM_API_KEY 就完全跳过，
         # 现有行为一字不变。
         self.llm = None
@@ -260,6 +295,51 @@ class RidePipeline:
             self.llm = None
 
     def run(
+        self,
+        img: np.ndarray,
+        city: str = "",
+        allow_online: bool = True,
+        output_crs: str = "WGS-84",
+        refine: bool = True,
+        road_names: list[str] | None = None,
+    ) -> PipelineResult:
+        """识别入口：外层只负责「词典写入会话」的生命周期。
+
+        在线地理编码 / 冷启动发生在**配准之前**，那时还不知道这次识别
+        准不准。若低置信、低信息量的结果也照单全收，错误坐标会一次次
+        加权，形成「越用越偏」的词典中毒（交接文档 §22.40）。
+
+        因此本轮所有**自动**写入先排队，等 ``_run_impl()`` 算出最终
+        置信度与自洽诊断后再统一裁决落盘；用户显式纠正不排队、立即写。
+        """
+        self._last_calibration = {
+            "enabled": False, "status": "uncalibrated", "n_samples": 0,
+            "note": "本次未计算置信度（早退路径）",
+        }
+        self.lexicon.begin_capture()
+        try:
+            result = self._run_impl(
+                img, city=city, allow_online=allow_online,
+                output_crs=output_crs, refine=refine, road_names=road_names,
+            )
+        except BaseException:
+            self.lexicon.discard_capture()
+            raise
+
+        diag = dict(result.diagnostics or {})
+        iq = diag.get("input_quality") or {}
+        guard = self.lexicon.flush_capture(
+            confidence=result.confidence,
+            self_consistent=_result_is_self_consistent(diag),
+            input_ok=bool(iq.get("usable", True)),
+        )
+        diag["lexicon_write_guard"] = guard
+        diag["confidence_calibration"] = self._last_calibration
+        diag["lexicon"] = self.lexicon.stats()
+        result.diagnostics = diag
+        return result
+
+    def _run_impl(
         self,
         img: np.ndarray,
         city: str = "",
@@ -2289,7 +2369,17 @@ class RidePipeline:
         if zoom and not zoom.get("position_ok", True):
             conf = min(conf, 0.2)
 
-        return round(min(0.99, max(0.0, conf)), 3)
+        # --- 真值校准（最后一步，默认不启用）---
+        #
+        # 上面所有乘子仍是「自洽分」。只有真的用 (截图, GPX) 做过评测、
+        # 拟合出 data/confidence_calibration.json，才把分数映射到经验
+        # 成功率；文件不存在/样本不足/损坏时原样返回（安全降级）。
+        raw = round(min(0.99, max(0.0, conf)), 3)
+        # 单元测试会用 RidePipeline.__new__ 造裸对象直接调本方法；
+        # 取不到 cfg 时按全局默认路径处理（无模型则原样返回）。
+        adjusted, status = apply_calibration(raw, getattr(self, "cfg", None))
+        self._last_calibration = status
+        return adjusted
 
 
 def _anchor_dict(a: AnchorPair) -> dict[str, Any]:

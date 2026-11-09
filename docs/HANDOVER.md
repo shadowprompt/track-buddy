@@ -4728,3 +4728,143 @@ python -m pytest tests/test_waterguard.py -q                       # 6 passed（
   只在 health 展示）；② 在线路名归属仍只有高德实现；`app/trajmap.py` 仍直接用
   `TMap.*`；同步 `refine=on` 大画布仍是分钟级（只有后台路径复用了中间结果）；
   高德 JS 底图未经真机验证；`waterguard` 缓存覆写问题见上节。
+
+---
+
+## §22.40 准确率优化轮：从「自洽分」到「可证伪指标」+ 数据飞轮防毒（2026-11-10）
+
+### 这轮为什么不是继续调 RANSAC
+
+用户的问题是「这个功能能继续从哪些方向深挖吗，提高识别准确率吗」，
+随后明确指令：「**那你按你罗列的开始一步一步优化吧，完成一步就提交下代码，
+直到全部优化完成**」。
+
+先纠正方向：配准本身在街道级截图上已比较准，继续调 RANSAC 迭代数、
+KD 树阈值、贴路权重属于边际收益饱和，而且**无法证伪**。§22.38 的反例是：
+把一条起终点直线整体平移到平行主干道后，贴路中位距离 78→6.4 m、
+锚点残差和 confidence 一起变好，真实位置却更错。所有自洽指标都会
+奖励这个假解。因此第一步不是改算法，是建**外部真值**。
+
+### 八个阶段与提交清单
+
+| 任务 | 提交 | 内容 |
+|---|---|---|
+| #64 | `ee892ce` | `src/app/eval.py`（起终点误差 / 离散 Fréchet / 里程相对误差 / 合成基准）、`src/tools/eval_accuracy.py`、`tests/test_eval_metrics.py`；产出 `output/eval_baseline_p0.json` |
+| #65 | `30b77e0` | `src/app/anchor_quality.py`：剔除 OCR 残片 road 锚点、`rmse_reliable_m` 只由点状锚点计算、`systematic_bias()` 输出残差方向相干性 |
+| #66 | `b48a3f8` | `GeocodeResult.source` / `AnchorPair.source` / 词典条目 source 贯通；跨源同名候选 >200 m 只降 `match_quality` 不删；`src/tools/check_lexicon_sources.py` 按源偏差报告（真实词典发现 11 组跨源冲突，near/far 分类） |
+| #67 | `611fbc8` | `src/app/input_quality.py`：截图里程 vs 几何里程、外部路由轻权乘子、`assess_input_quality()`；缺失外部证据一律不惩罚 |
+| #68 | `14a449b` | 前端上传前分辨率/大小预检、结果页展示尺度/路由/输入质量；`node --check` 校验内联脚本 |
+| #69 | `580d315` | `src/app/mapmatch.py`：默认关闭的 HMM 备选显示层，低信息量 / 吸附距离 / 长度剧变三道护栏 |
+| #70 | `f5cfedf` | `src/app/posegraph.py`：默认关闭的位姿图全局平差，用全部重叠边加权最小二乘替代 BFS 链式累积 |
+| #71 | 本提交 | 置信度校准 + 词典防毒 + 文档与全量回归（详见下） |
+
+### A/B 证据（同一 seed0，合成基准 P50）
+
+| 指标 | p0 基线 | p1 内点清洗后 | p2 源统一后 | 方向 |
+|---|---:|---:|---:|---|
+| `center_error_m` | 13.813 | **11.505** | 11.505 | 越小越好 |
+| `precision` | 0.778 | **1.000** | 1.000 | 越大越好 |
+| `recall` | 1.000 | 1.000 | 1.000 | 持平 |
+| `start_m` / `end_m` | 14.949 / 13.374 | **13.308 / 12.460** | 13.308 / 12.460 | 越小越好 |
+| `frechet_m` | 20.054 | **17.898** | 17.898 | 越小越好 |
+| `scale_rel_error` | 0.004 | 0.002 | 0.002 | 越小越好 |
+
+p2 与 p1 完全一致，说明「锚点源贯通 + 跨源降权」在合成基准上**无退化**；
+它的收益体现在真实词典的基准一致性诊断上，不是合成噪声能覆盖的。
+`eval_accuracy.py --compare` 里 `precision/recall` 属于越高越好指标，
+完全相等输出「持平」而不是「变差」。
+
+### 阶段 #71-A：置信度校准（`src/app/calibration.py`）
+
+- 每个真值样本 = `(raw_confidence, label)`；`label_from_metrics()` 只用
+  `start_m / end_m / frechet_m / length_rel_error` 四个外部误差，
+  门槛默认 300 m / 300 m / 400 m / 0.30。缺任一指标 = 0（宁可保守）。
+- PAVA 保序回归得到单调不减的分段经验率，分段间线性插值、端点外常数外推；
+  再与原始分做收缩混合 `w = n / (n + 20)`，样本少时校准影响自然变小。
+- **安全降级是硬契约**：文件不存在 / 样本 < 8 / JSON 损坏 / version 不符 /
+  折点非单调 → `load_calibration()` 返回 `None`，
+  `apply_calibration()` **逐值原样返回**。没做过真值评测的部署，
+  置信度与改动前完全一致，不会因缺文件被偷偷改写。
+- `CalibrationStore` 按 `(mtime_ns, size)` 热加载，改模型不用重启服务。
+- 接入点：`pipeline._score_confidence()` 最后一步；`diagnostics.
+  confidence_calibration` 给出 `enabled / status / n_samples / path`。
+- CLI `src/tools/calibrate_confidence.py`：`--case "pred.json|truth.gpx"`
+  （用 `|` 分隔，避开 Windows 盘符里的冒号）或 `--cases` 清单；
+  样本不足时不写文件并返回 1；`--show` 查看当前状态。
+  `data/confidence_calibration.json` 已加进 `.gitignore`（由含真实轨迹的
+  样本派生，属个人数据）。
+
+### 阶段 #71-B：词典防毒（`src/app/lexicon_guard.py` + `Lexicon` 会话）
+
+问题：在线地理编码 / OSM 冷启动在**配准之前**就写 `data/lexicon.json`，
+那时还不知道这次识别准不准。原来的 `remember()` 只按坐标近似累加
+`weight/count`，低置信错误结果会一次次加权，形成「越用越偏」。
+
+设计（纯函数 `evaluate_write()` + `Lexicon` 会话）：
+
+1. `pipeline.run()` 外层 `begin_capture()`；所有**自动**写入只排队不落盘，
+   等 `_run_impl()` 返回后用最终 `confidence` 和自洽诊断 `flush_capture()`
+   统一裁决；异常路径 `discard_capture()`。用户 `/api/feedback` 的
+   `source="user"` 不排队、立即写、标记 `verified`。
+2. 自洽判据 `_result_is_self_consistent()` 只用独立证据：
+   `input_quality.level != reject`、`scale_check.consistent`、
+   `anchor_bias.systematic == False`、低缩放且 `position_ok == False` 否决。
+   **不看贴路距离/锚点残差**（§22.38 的假解上它们同样变好）。
+3. 其余否决：置信度 < 0.35；地名不像地名（长度 < 2 / 无文字 /
+   「3公里内免费」这类 UI 文案）；坐标非有限或越界；与已核验或高权重的
+   **异源**条目相距 200 m~10 km（>10 km 视为同名异地，保留多候选）。
+4. 未核验条目权重封顶 3.0；`lookup().quality = weight/5` 因此永远 < 1.0，
+   自动候选盖不过用户核验点位。用户纠正把条目升级 `verified=true`
+   并解除上限；自动写入命中已核验条目时不加权也不封顶拉低。
+5. 非流水线调用（无最终置信度）不直接丢弃：boost 压到 0.2 且同样封顶，
+   冷启动仍可积累但积累慢、权重有限。
+6. `diagnostics.lexicon_write_guard` 记录 `pending / written / rejected /
+   reasons / confidence / self_consistent / input_ok`；`stats()` 新增
+   `verified_points / auto_points`。
+
+> 兼容性代价：会话期间排队的坐标不会立刻出现在 `lookup()` 里，
+> 同一识别内同名锚点可能多打一次在线请求。项目里 `targets` 按名字去重，
+> 影响有限；换来的是「错误结果根本不进词典」，比回滚式写入更不容易出错。
+>
+> **存量词典迁移**：旧的 `data/lexicon.json` 条目没有 `verified` 字段，
+> 一律按「未核验」看待（`stats().auto_points`），但已有 `weight` **不会被
+> 回溯下调**；只有新的自动写入才受 3.0 封顶。用户在地图上纠正一次，
+> 该条目即升级为 `verified`。存量里 weight ≥ 3 的条目在近距异源冲突判据里
+> 按「高权重」处理，会拦下新候选——这是刻意的保守方向，宁可不沉淀也不要
+> 引入基准不一致。
+
+### 开关与诊断字段
+
+| 开关 / 字段 | 默认 | 说明 |
+|---|---|---|
+| `MAP_MATCH_ENABLED` | 关 | HMM 备选显示层 `map_matched`，不改主结果 |
+| `POSE_GRAPH_ENABLED` | 关 | 多图拼接全局平差，只改拼接画布平移 |
+| `RIDE_CONFIDENCE_CALIBRATION` | 词典同目录 | 校准模型路径，文件缺失 = 未校准 |
+| `diagnostics.confidence_calibration` | `uncalibrated` | 校准状态与样本数 |
+| `diagnostics.lexicon_write_guard` | 每轮一份 | 本轮词典写入裁决审计 |
+
+前两个开关走 `.env` 热读，默认 `False`，保证既有线上验收结果不变；
+低信息量直线输入仍由三道护栏强制跳过。
+
+### 本轮改动的文件
+
+新增：`src/app/eval.py`、`src/app/anchor_quality.py`、
+`src/app/input_quality.py`、`src/app/mapmatch.py`、`src/app/posegraph.py`、
+`src/app/calibration.py`、`src/app/lexicon_guard.py`、
+`src/tools/eval_accuracy.py`、`src/tools/calibrate_confidence.py`、
+`src/tools/check_lexicon_sources.py`、
+`tests/test_eval_metrics.py`、`tests/test_anchor_quality.py`、
+`tests/test_anchor_sources.py`、`tests/test_input_quality.py`、
+`tests/test_frontend_input_quality.py`、`tests/test_mapmatch.py`、
+`tests/test_posegraph.py`、`tests/test_confidence_calibration.py`、
+`tests/test_lexicon_guard.py`。
+修改：`src/app/pipeline.py`、`src/app/register.py`、`src/app/geocode.py`、
+`src/app/config.py`、`src/app/multishot.py`、`src/web/index.html`、
+`README.md`、`.gitignore`、`docs/HANDOVER.md`。
+
+### 运行副作用（提交纪律不变）
+
+`data/lexicon.json`（tracked 但按约定不提交）、`data/last_result.json`、
+`data/last_stitch.json`、`data/uploads/`、`data/cache/`、
+`data/confidence_calibration.json`（本轮新增，已 gitignore）、`output/`。
+每次只 `git add` 明确的源码 / 测试 / 文档路径，不 `git add -A`。

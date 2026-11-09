@@ -84,6 +84,8 @@ python -m pytest tests/test_waterguard.py -q   # 单项
 > 把该文件改名备份后重跑，会走 `data/waters.json` 的兜底折线（详见交接文档 §22.39）。
 > 另外 `data/lexicon.json` 是识别时的词典自学习产物，**按约定不提交**，
 > 所以识别后工作区出现它的 diff 属正常现象。
+> `data/confidence_calibration.json` 由真值样本离线拟合（含个人轨迹信息），
+> 已 gitignore，不进提交。
 
 > **为什么要单独测前端**：有些 bug 只发生在浏览器里，后端日志全是 200。
 > 典型例子：腾讯地图 GL JS 在 0 尺寸容器上做 `fitBounds` 会抛
@@ -91,6 +93,47 @@ python -m pytest tests/test_waterguard.py -q   # 单项
 > 被 `catch` 捕获，显示成「识别失败」。后端测试永远发现不了这类问题。
 > `tests/test_frontend.py` 把 `index.html` 里的函数抽出来配一个会复现
 > 真实腾讯地图行为的桩，逐场景断言。
+
+---
+
+## 准确率评测与置信度校准
+
+「贴路距离变小、锚点残差变小、confidence 变高」都只是**自洽指标**：把一条
+起终点直线整体平移到平行主干道，三者会一起变好，真实位置却更错（§22.38）。
+所以这一轮优化先用外部真值把「准不准」变成可证伪的量，再谈提升。
+
+```bash
+# 合成真值基准：带已知变换 / 噪声 / 离群点 / OCR 残片，CI 可直接跑
+python src/tools/eval_accuracy.py --synthetic 20 --out output/eval_baseline.json
+
+# 真实样本：识别结果 JSON + 真值 GPX / GeoJSON
+python src/tools/eval_accuracy.py --pred data/last_result.json \
+    --truth samples/truth.gpx
+
+# 与基线比 P50（同一 --seed0 才有意义）
+python src/tools/eval_accuracy.py --synthetic 20 \
+    --compare output/eval_baseline.json
+
+# 用 ≥8 组 (识别结果, 真值) 拟合置信度校准曲线
+python src/tools/calibrate_confidence.py \
+    --case "data/result_a.json|samples/truth_a.gpx" \
+    --case "data/result_b.json|samples/truth_b.gpx" \
+    --out data/confidence_calibration.json
+python src/tools/calibrate_confidence.py --show     # 看当前校准状态
+```
+
+指标：起终点误差、离散 Fréchet 距离、里程相对误差、配准尺度/中心误差、
+内点 precision/recall。校准用 PAVA 保序回归 + 收缩混合，把启发式
+confidence 映射到「达到误差门槛的经验成功率」。
+
+> **没有真值就没有校准**：模型文件缺失、样本不足 8 组、内容损坏或非单调时，
+> 服务端**原样返回**原置信度，`diagnostics.confidence_calibration.status`
+> 显示 `uncalibrated`。模型路径可用 `RIDE_CONFIDENCE_CALIBRATION` 覆盖，
+> 改完文件无需重启（按 mtime 热加载）。
+>
+> 同理，`data/lexicon.json` 的自动写入要等识别结果出来、通过置信度与
+> 自洽门槛才落盘；`diagnostics.lexicon_write_guard` 会记录本轮通过/否决
+> 数量与原因。详见交接文档 §22.40。
 
 ---
 
@@ -1014,6 +1057,24 @@ wgs = gcj02_to_wgs84(lon, lat)   # GCJ-02 → WGS-84（不动点迭代，精确�
 冷启动城市没有词典时，靠在线地理编码兜底，但通用 API 对冷门地名覆盖很差。
 这时置信度会降低，前端应主动请用户配合，而不是假装很准。
 
+### 数据飞轮的防毒门槛（否则「越用越偏」）
+
+在线地理编码 / 冷启动发生在配准**之前**，那时还不知道这次识别准不准。
+若低置信度的错误结果也照单全收，坐标会一次次加权，下次再用同名候选时
+它权重最高 —— 错误被自我强化。`src/app/lexicon_guard.py` 因此规定：
+
+| 写入来源 | 规则 |
+|---|---|
+| 用户显式纠正 `/api/feedback` | 立即写入，`verified=true`，解除权重上限 |
+| 在线源 / OSM 自动沉淀 | 先排队，等 `pipeline.run()` 算出最终置信度后统一裁决 |
+| 自动写入的否决条件 | 置信度 < 0.35、低信息量直线输入、截图里程与几何里程量级不符、锚点残差系统性同向、与已核验异源条目相距 200 m~10 km |
+| 自动写入的上限 | 未核验条目 `weight ≤ 3.0`，`lookup().quality = weight/5` 永远 < 1.0 |
+
+门槛**只看独立证据**，不用贴路距离/锚点残差——它们在假解上也会变好。
+`diagnostics.lexicon_write_guard` 给出本轮 `pending / written / rejected`
+和每种拒因的计数；`stats()` 新增 `verified_points / auto_points`。
+非流水线调用（没有最终置信度）仍可冷启动，但 boost 压到 0.2 且同样封顶。
+
 ---
 
 ## 配置
@@ -1045,7 +1106,17 @@ TIANDITU_API_KEY=
 # BASEMAP_PROVIDER=tmap
 # AMAP_JS_KEY=                          # 高德 JS API key（不是 AMAP_KEY）
 # AMAP_JS_SECURITY=                     # 高德 JS API 安全密钥
+#
+# 可选增强（默认全部关闭，开启不改主 GeoJSON / 置信度 / 里程）
+# MAP_MATCH_ENABLED=1                   # HMM 地图匹配备选显示层 map_matched
+# POSE_GRAPH_ENABLED=1                  # 多图拼接位姿图全局平差
+# RIDE_CONFIDENCE_CALIBRATION=...       # 真值校准模型路径（默认词典同目录）
 ```
+
+`MAP_MATCH_ENABLED` / `POSE_GRAPH_ENABLED` 走 `.env` 热读，默认 `False`；
+前者只多一份「沿路折线」供人工对照，后者只把链式拼接的累积漂移分摊到
+各图，都不改地理配准主结果。低信息量直线输入仍由护栏强制跳过。
+详见交接文档 §22.40。
 
 未配置密钥时自动降级为纯本地词典模式，功能可用但只能识别词典覆盖的区域。
 只想用天地图时，把 `MAP_GEOCODING_ORDER` 设为 `tianditu`（或

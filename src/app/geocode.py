@@ -32,6 +32,7 @@ import requests
 
 from .config import AppConfig
 from .geo.coords import lonlat_to_mercator
+from .lexicon_guard import WriteDecision, evaluate_write
 from .maps.contracts import Capability
 from .maps.geocoding import build_geocoding_registry, convert_candidates
 
@@ -121,6 +122,9 @@ class Lexicon:
         self.path = path
         self._lock = threading.RLock()
         self._data: dict[str, list[dict[str, Any]]] = {}
+        # 识别会话期间的「待裁决」自动写入；None 表示不在会话中。
+        # 见 app/lexicon_guard.py 与 pipeline.run() 的外层包裹。
+        self._capture: list[dict[str, Any]] | None = None
         self.load()
 
     @staticmethod
@@ -396,6 +400,57 @@ class Lexicon:
         with self._lock:
             return list(self._data.get(key, []))
 
+    # ---------- 词典写入防毒 ----------
+
+    def begin_capture(self) -> None:
+        """开启一次识别会话：自动写入先排队，等结果出来统一裁决。"""
+        with self._lock:
+            self._capture = []
+
+    def discard_capture(self) -> int:
+        """异常/中断时丢弃待写入项，返回丢弃数量。"""
+        with self._lock:
+            pending = len(self._capture or [])
+            self._capture = None
+        return pending
+
+    def flush_capture(
+        self,
+        confidence: float | None,
+        self_consistent: bool = True,
+        input_ok: bool = True,
+    ) -> dict[str, Any]:
+        """用本轮最终结果裁决排队的自动写入；返回可审计的统计。"""
+        with self._lock:
+            pending = list(self._capture or [])
+            self._capture = None
+        report: dict[str, Any] = {
+            "pending": len(pending),
+            "written": 0,
+            "rejected": 0,
+            "reasons": {},
+            "confidence": (round(float(confidence), 3)
+                           if confidence is not None else None),
+            "self_consistent": bool(self_consistent),
+            "input_ok": bool(input_ok),
+        }
+        written = 0
+        for item in pending:
+            decision = self._commit(
+                **item, confidence=confidence,
+                self_consistent=self_consistent, input_ok=input_ok,
+            )
+            if decision.allowed:
+                written += 1
+            else:
+                key = decision.reason
+                report["reasons"][key] = report["reasons"].get(key, 0) + 1
+        report["written"] = written
+        report["rejected"] = len(pending) - written
+        if written:
+            self.save()
+        return report
+
     def remember(
         self,
         name: str,
@@ -405,40 +460,123 @@ class Lexicon:
         source: str = "user",
         address: str = "",
         boost: float = 1.0,
-    ) -> None:
-        """记录一条地名坐标（由用户确认或在线查询得到）。"""
+        confidence: float | None = None,
+        self_consistent: bool = True,
+        input_ok: bool = True,
+        verified: bool = False,
+    ) -> WriteDecision:
+        """记录一条地名坐标（由用户确认或在线查询得到）。
+
+        自动来源（在线地理编码 / OSM 冷启动）在识别会话里只排队，
+        由 ``flush_capture()`` 拿到最终置信度后统一裁决；用户显式
+        纠正 ``source="user"`` 立即写入，不受自动门槛约束。
+        """
         key = self.normalize(name)
         if not key:
-            return
+            return WriteDecision(False, 0.0, "empty_name")
+        item = {
+            "key": key, "lon": lon, "lat": lat, "city": city,
+            "source": source, "address": address, "boost": boost,
+            "verified": verified,
+        }
+        with self._lock:
+            capturing = self._capture is not None
+            if capturing and not verified and source != "user":
+                self._capture.append(item)
+                return WriteDecision(True, float(boost), "queued")
+        decision = self._commit(
+            **item, confidence=confidence,
+            self_consistent=self_consistent, input_ok=input_ok,
+        )
+        if decision.allowed:
+            self.save()
+        return decision
+
+    def _commit(
+        self,
+        *,
+        key: str,
+        lon: float,
+        lat: float,
+        city: str,
+        source: str,
+        address: str,
+        boost: float,
+        verified: bool,
+        confidence: float | None,
+        self_consistent: bool,
+        input_ok: bool,
+    ) -> WriteDecision:
+        """真正改内存中的词典（不落盘，交给调用方批量 save）。"""
         with self._lock:
             entries = self._data.setdefault(key, [])
+            decision = evaluate_write(
+                key=key, lon=lon, lat=lat, source=source, boost=boost,
+                entries=entries, confidence=confidence,
+                self_consistent=self_consistent, input_ok=input_ok,
+                verified=verified,
+            )
+            if not decision.allowed:
+                return decision
+            is_user = verified or source == "user"
             for e in entries:
-                if abs(e["lon"] - lon) < 1e-6 and abs(e["lat"] - lat) < 1e-6:
-                    e["weight"] = float(e.get("weight", 1.0)) + boost
-                    e["count"] = int(e.get("count", 0)) + 1
-                    if city:
-                        e["city"] = city
-                    break
+                try:
+                    same = (abs(float(e["lon"]) - float(lon)) < 1e-6
+                            and abs(float(e["lat"]) - float(lat)) < 1e-6)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if not same:
+                    continue
+                old = float(e.get("weight", 1.0))
+                if is_user:
+                    weight = old + decision.boost
+                elif e.get("verified"):
+                    # 已核验点位不能被自动写入继续加权（也不能被封顶拉低）
+                    weight = old
+                else:
+                    weight = old + decision.boost
+                    if decision.weight_cap is not None:
+                        weight = min(weight, decision.weight_cap)
+                e["weight"] = weight
+                e["count"] = int(e.get("count", 0)) + 1
+                if city:
+                    e["city"] = city
+                if address:
+                    e["address"] = address
+                if is_user:
+                    # 用户纠正把未核验条目升级为已核验，后续不再封顶
+                    e["source"] = "user"
+                    e["verified"] = True
+                if confidence is not None:
+                    e["last_confidence"] = round(float(confidence), 3)
+                break
             else:
-                entries.append(
-                    {
-                        "lon": lon,
-                        "lat": lat,
-                        "weight": boost,
-                        "count": 1,
-                        "city": city,
-                        "source": source,
-                        "address": address,
-                    }
-                )
-            self.save()
+                e = {
+                    "lon": float(lon),
+                    "lat": float(lat),
+                    "weight": (min(decision.boost, decision.weight_cap)
+                               if decision.weight_cap is not None
+                               else decision.boost),
+                    "count": 1,
+                    "city": city,
+                    "source": source,
+                    "address": address,
+                    "verified": bool(is_user),
+                }
+                if confidence is not None:
+                    e["last_confidence"] = round(float(confidence), 3)
+                entries.append(e)
+            return decision
 
     def stats(self) -> dict[str, Any]:
         with self._lock:
+            points = [e for v in self._data.values() for e in v]
             return {
                 "entries": len(self._data),
-                "points": sum(len(v) for v in self._data.values()),
-                "cities": sorted({e.get("city", "") for v in self._data.values() for e in v if e.get("city")}),
+                "points": len(points),
+                "verified_points": sum(1 for e in points if e.get("verified")),
+                "auto_points": sum(1 for e in points if not e.get("verified")),
+                "cities": sorted({e.get("city", "") for e in points if e.get("city")}),
             }
 
 

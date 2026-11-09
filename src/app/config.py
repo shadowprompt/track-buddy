@@ -268,6 +268,17 @@ class AppConfig:
         return raw in ("1", "true", "yes", "on")
 
     @property
+    def confidence_calibration_path(self) -> Path:
+        """置信度校准模型文件（由真值样本离线拟合，默认不存在）。
+
+        ``RIDE_CONFIDENCE_CALIBRATION`` 可改路径；文件缺失时
+        ``app.calibration.apply_calibration()`` 会原样返回原置信度。
+        与词典同目录，便于部署方把「识别产物数据」集中管理。
+        """
+        raw = (self._env_value("RIDE_CONFIDENCE_CALIBRATION") or "").strip()
+        return Path(raw) if raw else self.lexicon_path.parent / "confidence_calibration.json"
+
+    @property
     def amap_key(self) -> str | None:
         return self._env_value(AMAP_KEY_ENV)
 
