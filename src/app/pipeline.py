@@ -1625,6 +1625,7 @@ class RidePipeline:
             anchor_guard_m=float(self.cfg.road_fit_anchor_guard_m),
             anchor_worsen_m=float(self.cfg.road_fit_anchor_worsen_m),
             anchor_worsen_ratio=float(self.cfg.road_fit_anchor_worsen_ratio),
+            eval_budget=int(getattr(self.cfg, "road_fit_eval_budget", 2000)),
         )
         if fit.ok:
             # 把平移量并入配准矩阵（墨卡托 y 轴向上，北为正）

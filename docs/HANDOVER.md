@@ -4423,3 +4423,102 @@ if Lexicon.normalize(title) != Lexicon.normalize(name):
     **不再落天地图**；
   - `tianditu` → 8 个上海本地候选，零失败记录；
   - `amap,tianditu` → 天地图接手，`source=tianditu` 标记正确。
+
+## §22.36 多图精修链路：从「手动跑得通」到「默认可用」（2026-11-09）
+
+### 起因：一次零改动实测
+
+问「多图模式下能支持精修吗」，先不改代码，直接拿 11:09 上传的 12 张图调
+`POST /api/recognize_multi?refine=on` 验证：
+
+| 项 | 实测 |
+|---|---|
+| HTTP / 耗时 | 200 / **263.8 秒** |
+| `road_fit.ok` | `true`（修正模式，尺度 0.887 m/px < 8 分界） |
+| 平移 | 东 +25 m、北 −50 m（合 56 m） |
+| 贴路中位 | 24.7 m → 8.7 m |
+| 路名来源 | `amap`（10 段）→ `road_network`（OSM 几何，87 段） |
+| `confidence` | 0.2 → 0.829 |
+
+结论：**通路本来就跑得通**，但只有手动传 `refine=on` 才有，默认 `auto` 下
+多图明确跳过。三个障碍：
+
+1. 后台精修是 `_pipeline.run(img, refine=True)` **整条重跑**——大画布上
+   OCR、轨迹提取、锚点地理编码、配准全部再来一遍，成本翻倍；
+2. 拼接画布只有一个刚体 `reg`，12 张链式拼接 depth=10 的累积漂移会被
+   当成「配准误差」，用 `min(800, 0.15×轨迹长)` 的平移量去纠正，
+   容易压到平行主干道上；
+3. 多图接口不返回 `refine_pending`，后台任务也不更新 `last_stitch.json`，
+   前端那段轮询根本不会触发。
+
+另外实测发现 `data/cache/roads.json` 时间戳没变——这次**命中了已有路网缓存**，
+没有重新打 Overpass，264 秒基本花在画布级重算与 KD 树搜索上。
+
+### 三个阶段（各自单独跑全量、单独提交）
+
+| 提交 | 阶段 | 内容 |
+|---|---|---|
+| `b319d5d` | 1 | `PipelineResult.refine_context` + `RefineContext` + `refine_existing()`；后台不再重跑 pipeline |
+| `5a341ae` | 2 | 多图接同一后台任务、`refine_pending` 轮询、同步 `last_stitch.json`、`verify` 档 |
+| 本次 | 3 | 评估点抽样提速、任务耗时上报、前端「贴路校正」开关、文档 |
+
+**阶段 1 的关键设计**：`run()` 成功配准后把 `reg / track / simplified /
+anchors / pairs / zoom / texts / alternatives / road_name_fit` 留在
+`RefineContext`（不进接口 payload）。后台只做三件事：补算平移 →
+`apply_to_polyline` 重投影 → 重算置信度与路名归属。`reg` 用 `deepcopy`，
+任务重试不会在上一次平移上再叠一层。用户路名约束生效时**直接跳过后台平移**
+——它是会改尺度的强约束，叠一个贴路优化等于把轨迹从用户指定的路上拉走。
+后台默认 `allow_online_roadname=False`，不再悄悄打一次商业接口，避免配额
+波动让同一张图两次结果不一致。
+
+**阶段 2 的关键设计**：`_road_refine(mode="verify")` 强制走低缩放档，
+只算贴路距离 + 几何路名，坐标、置信度、里程一律保持主请求的值，并在
+`road_fit.mode` 打标供前端区分文案。多图 `auto` 用 `verify`，显式
+`refine=on` 仍是同步修正；只传 1 张图时仍用完整 `auto`。后台结果
+通过 `extra` 带回 `stitch / n_shots / stitched_url`，前端刷新不丢拼接画布。
+
+**两处竞态**（都是集成测试逼出来的）：
+- 多图里 `_start_refine` 起初放在 `_persist_last_result` 之前，后台线程
+  读 `last_result.json` 做 shot_id 保护时文件还没写，误判「用户换了新图」
+  而不落盘 → 启动挪到两份结果都写完之后；
+- `_run_refine` 原先先标 `done` 再落盘，前端轮询拿到结果立刻渲染，
+  此时核对页文件还是旧的 → `done` 挪到落盘之后。
+
+**阶段 3 的性能**：`refine_with_roads` 新增 `eval_budget`（默认 2000）。
+位移候选数与轨迹点数相乘：1.1 万点 × 4225 候选 ≈ 4700 万次 KD 树查询。
+轨迹点本来就是约 6 米等距采样，等距抽样不改变「中位距离」这个统计量；
+**搜索空间、锚点护栏、位移限幅依据的轨迹长度（`span_m` 用完整折线算）
+都不变**。`tests/test_roadfit_eval_budget.py` 用合成几何锁住
+「抽样前后平移量与护栏判定一致」。
+
+### 验证
+
+- 全量：阶段 1 **251 passed**、阶段 2 **257 passed**、阶段 3 **265 passed**。
+- 新增测试：`test_refine_reuse.py`（编排 / deepcopy / 强约束 / 不重跑 pipeline）、
+  `test_multi_refine.py`（接口接线 / 落盘 / 三种 refine / elapsed_s）、
+  `test_roadfit_eval_budget.py`、`test_frontend_refine_control.py`。
+- **重启服务后的真实端到端验证**（同一批 12 张图、默认 `auto`、不传 `refine`）：
+
+  | 项 | 结果 |
+  |---|---|
+  | 主请求 | HTTP 200 / **158.5 秒**，`refine_pending=true` |
+  | 后台精修 | **3.0 秒**完成（路网缓存命中 + 评估点抽样） |
+  | `road_fit` | `ok=true, mode=verify`，平移 `东0 / 北0`，贴路中位 25 m |
+  | GeoJSON 首点 | 精修前后都是 `[121.3822816, 31.210834]`，**一字未动** |
+  | 附带字段 | `stitch` / `n_shots=12` / `stitched_url` 都在后台结果里 |
+  | 落盘 | `last_stitch.json` 的 `road_fit.mode=verify`，核对页不会退回粗结果 |
+
+  对比改造前手动 `refine=on` 的 263.8 秒同步等待：现在粗结果先出，
+  3 秒后自动补上路网校验与几何路名，且不会误平移拼接画布。
+- 零改动实测与前后对照留在 `output/verify_*.json`（该目录已 gitignore）。
+
+### 仍然存在的边界
+
+- 能力③「道路几何」取数仍未经过 `app/maps/registry` 注册表，
+  `MAP_ROAD_GEOMETRY_ORDER` 目前只在 `/api/health` 上报（见 §22.31）；
+  公共 Overpass 镜像挂掉时也不会按「配置哪个就用哪个」明确报错。
+- 能力②「路名归属」仍只有高德一个在线实现；不过精修成功时结果走
+  `road_network` 几何判定，不依赖高德配额。
+- 同步 `refine=on` 在大画布上依旧是分钟级，靠前端开关和状态提示告知用户，
+  并没有把同步路径本身变快（只有后台路径复用了中间结果）。
+- `app/trajmap.py` 仍直接使用 `TMap.*`，未走底图适配层。

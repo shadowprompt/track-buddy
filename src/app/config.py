@@ -178,6 +178,12 @@ class AppConfig:
     road_fit_anchor_guard_m: float = 100.0
     road_fit_anchor_worsen_m: float = 80.0
     road_fit_anchor_worsen_ratio: float = 2.5
+    # 位移搜索时用来估计「中位贴路距离」的轨迹点上限。
+    # 12 图拼接画布的轨迹有约 1.1 万个像素点，粗搜 4225 个位移候选
+    # 就是 4700 万次 KD 树查询（实测一次同步精修 264 秒）。轨迹点本身
+    # 已是约 6 米等距采样，等距抽到 2000 点不会改变中位距离的统计量，
+    # 但能把查询量降一个数量级。设 0 表示关闭降采样。
+    road_fit_eval_budget: int = 2000
     # .env 文件位置（改完不用重启服务就能生效，见 _env_value）
     env_path: Path = ROOT / ".env"
     # .env 解析结果的缓存（按内容指纹失效）

@@ -391,6 +391,7 @@ def refine_with_roads(
     anchor_guard_m: float = 100.0,
     anchor_worsen_m: float = 80.0,
     anchor_worsen_ratio: float = 2.5,
+    eval_budget: int = 2000,
 ) -> RoadFit:
     """在保持尺度与朝向的前提下平移轨迹，使其贴路距离最小。
 
@@ -411,6 +412,12 @@ def refine_with_roads(
     ``min(max_shift_m, shift_span_ratio × 轨迹米制长度)``，
     与截图分辨率、城市、具体样本都无关。
 
+    ``eval_budget`` 是估计贴路距离时最多用多少个轨迹点。位移候选数
+    与轨迹点数是相乘关系：大画布上不设上限会做几千万次 KD 树查询。
+    轨迹点本来就是等距采样，等距抽样不改变「中位距离」这个统计量，
+    只降低估计精度到可接受范围；**搜索空间与护栏完全不变**，
+    轨迹长度（位移限幅依据）始终按完整折线计算。设 0 关闭抽样。
+
     返回的 shift_n_m 为**正表示向北**（几何意义上）。
     施加方式：``reg.translation += [shift_e_m, shift_n_m]``。
     """
@@ -425,8 +432,15 @@ def refine_with_roads(
         return result
     tree = net.tree
     # 轨迹像素 → 绝对墨卡托米（与路网同一坐标系）
-    traj = np.array([reg.pixel_to_mercator(float(px), float(py))
-                      for px, py in polyline_px])
+    traj_all = np.array([reg.pixel_to_mercator(float(px), float(py))
+                         for px, py in polyline_px])
+
+    # 等距抽样只用于「估计中位贴路距离」，不改变网格搜索空间。
+    if eval_budget > 0 and len(traj_all) > eval_budget:
+        idx = np.linspace(0, len(traj_all) - 1, eval_budget).astype(int)
+        traj = traj_all[idx]
+    else:
+        traj = traj_all
 
     def median_dist(dx: float, dy: float) -> float:
         d, _ = tree.query(traj + np.array([dx, dy]))
@@ -435,8 +449,10 @@ def refine_with_roads(
     before = median_dist(0.0, 0.0)
     result.median_before_m = before
 
-    # 轨迹自身的米制长度 → 本次允许的位移上限（见函数说明）
-    span_m = float(np.linalg.norm(np.diff(traj, axis=0), axis=1).sum())
+    # 轨迹自身的米制长度 → 本次允许的位移上限（见函数说明）。
+    # ⚠️ 必须用**完整折线**：抽样后相邻点被拉直，弯曲轨迹的长度会
+    # 被低估，位移限幅跟着变小，可能误拒本来合理的平移。
+    span_m = float(np.linalg.norm(np.diff(traj_all, axis=0), axis=1).sum())
     shift_limit_m = min(max_shift_m, shift_span_ratio * span_m)
     shift_limit_m = max(shift_limit_m, coarse_step_m)
 

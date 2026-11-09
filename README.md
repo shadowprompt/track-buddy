@@ -1070,13 +1070,40 @@ TIANDITU_API_KEY=
 |---|---|---|
 | GET | `/api/health` | 服务状态、可用地理编码能力、词典统计 |
 | POST | `/api/recognize` | 上传截图，返回 GeoJSON 轨迹与诊断信息 |
+| POST | `/api/recognize_multi` | 多张截图拼接成一张画布后识别 |
+| GET | `/api/refine/{shot_id}` | 查询后台路网精修进度与结果 |
 | GET | `/api/shots/{name}` | 回传原图，供前端叠加显示 |
 | POST | `/api/feedback` | 提交锚点纠正，写入词典 |
 | GET | `/api/lexicon` | 查看词典内容与统计 |
 | GET | `/api/lexicon/export` | 导出词典 JSON |
 
 `POST /api/recognize` 表单字段：`file`（图片）、`city`（城市提示，可选）、
-`output_crs`（`WGS-84` / `GCJ-02`）、`allow_online`（是否允许在线地理编码）。
+`output_crs`（`WGS-84` / `GCJ-02`）、`allow_online`（是否允许在线地理编码）、
+`refine`、`road_names`。多图接口用 `files` 代替 `file`。
+
+### `refine` 参数与多图精修
+
+| 取值 | 单图 | 多图 |
+|---|---|---|
+| 不传 / `auto`（默认） | 主请求先出粗结果，后台**补算贴路平移**，前端轮询刷新 | 后台只做**路网校验 + 路名归属**，不平移 |
+| `on` | 同步执行完整精修（阻塞请求） | 同步执行完整精修；12 图拼接实测约 264 秒 |
+| `off` / 其他 | 不精修 | 不精修 |
+
+后台精修**不重跑 OCR / 轨迹提取 / 在线锚点 / 配准**：主请求把 `reg`、
+简化折线、锚点、缩放评估留在 `PipelineResult.refine_context`（只在进程内，
+不进接口响应），后台只调 `Pipeline.refine_existing` 补算平移量并重新投影。
+结果里 `road_fit.mode == "verify"` 表示「只校验没平移」；
+`GET /api/refine/{shot_id}` 在任务运行中额外返回 `elapsed_s`。
+
+多图默认不平移的原因：拼接画布只有**一个刚体配准**，12 张链式拼接
+（depth=10）的累积漂移会被当成「配准误差」，用一个平移量去贴路很容易
+把整条轨迹压到平行的主干道上。前端「贴路校正」开关勾选后才会发
+`refine=on`，由用户显式承担耗时与风险。
+
+位移搜索对轨迹点等距抽样（`AppConfig.road_fit_eval_budget`，默认 2000）：
+大画布 1.1 万个轨迹点 × 4225 个位移候选约 4700 万次 KD 树查询，抽样后
+查询量降一个数量级；**搜索空间、护栏、位移限幅依据的轨迹长度都不变**，
+设 0 可关闭抽样。
 
 响应中同时提供两份 GeoJSON：
 

@@ -204,6 +204,37 @@ def test_single_file_uses_full_mode(env, monkeypatch):
     _wait_done(server, data["shot_id"])
 
 
+def test_refine_status_reports_elapsed_seconds():
+    """长任务前端要能拿到已耗时，才能给出「仍在计算」的提示。"""
+    from app import server
+
+    server._refine_jobs.clear()
+    server._refine_jobs["sid"] = {
+        "state": "running", "started_at": time.time() - 12.5,
+    }
+    try:
+        with TestClient(server.app) as client:
+            job = client.get("/api/refine/sid").json()
+        assert job["state"] == "running"
+        assert job["elapsed_s"] >= 12.0
+    finally:
+        server._refine_jobs.clear()
+
+
+def test_refine_status_done_has_no_elapsed():
+    from app import server
+
+    server._refine_jobs.clear()
+    server._refine_jobs["sid"] = {"state": "done", "payload": {"ok": True}}
+    try:
+        with TestClient(server.app) as client:
+            job = client.get("/api/refine/sid").json()
+        assert job["state"] == "done"
+        assert "elapsed_s" not in job
+    finally:
+        server._refine_jobs.clear()
+
+
 def test_no_coordinates_skips_background_refine(env, monkeypatch):
     server, res, _ = env
     res.geojson = {"features": [{"geometry": {"coordinates": []},

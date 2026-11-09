@@ -177,6 +177,17 @@
           </div>
         </div>
 
+        <div style="margin-top:10px; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="roadFit" style="width:auto; margin:0;">
+          <label for="roadFit" style="margin:0; cursor:pointer;">贴路校正（同步执行，多图耗时较长）</label>
+        </div>
+        <div class="note" style="margin-top:6px;">
+          默认：单图会自动做完整的<b>贴路平移校正</b>（后台完成）；
+          多图拼接只做<b>路网校验与路名归属</b>，不平移——链式拼接有累积漂移，
+          整体平移容易把轨迹压到平行的主干道上。勾选后改为同步执行平移校正，
+          大画布可能要数分钟，请确认截图拼接无误再开启。
+        </div>
+
         <div style="margin-top:12px;">
           <label for="roadNames">你记得走过的路（可选，逗号分隔）</label>
           <input id="roadNames" type="text" placeholder="例如：打浦路隧道, 世博大道, 古北路"
@@ -349,9 +360,12 @@ __WB_AMAP_SDK__
     if (!picked) return;
     go.disabled = true;
     const multi = picked.length > 1;
-    showStatus(multi
-      ? '<span class="spin"></span> 正在拼接 ' + picked.length + ' 张截图并识别…'
-      : '<span class="spin"></span> 正在识别：提取轨迹线、OCR 识别地名、地理配准中…');
+    const syncFit = !!(multi && $('roadFit') && $('roadFit').checked);
+    showStatus(syncFit
+      ? '<span class="spin"></span> 正在拼接并同步执行贴路校正（大画布可能需要数分钟）…'
+      : multi
+        ? '<span class="spin"></span> 正在拼接 ' + picked.length + ' 张截图并识别…'
+        : '<span class="spin"></span> 正在识别：提取轨迹线、OCR 识别地名、地理配准中…');
 
     const fd = new FormData();
     if (multi) {
@@ -363,6 +377,9 @@ __WB_AMAP_SDK__
     fd.append('city', $('city').value.trim());
     fd.append('output_crs', $('crs').value);
     fd.append('online', $('online').value);
+    // 只对多图生效：单图默认就走完整的后台贴路校正，勾了反而把
+    // 后台任务变成同步等待。多图默认只校验+命名，勾选才允许平移。
+    if (syncFit) fd.append('refine', 'on');
     const rn = $('roadNames').value.trim();
     if (rn) fd.append('road_names', rn);
 
@@ -415,9 +432,11 @@ __WB_AMAP_SDK__
 
   let refineTimer = null;
   let refineShot = null;
+  let refineWarned = false;
 
   function pollRefine(shotId) {
     refineShot = shotId;
+    refineWarned = false;
     if (refineTimer) clearTimeout(refineTimer);
     const tick = async () => {
       if (refineShot !== shotId) return;
@@ -469,6 +488,16 @@ __WB_AMAP_SDK__
         if (j.state === 'error') {
           showStatus('位置精修失败：' + text(j.message, '未知错误'), 'err');
           return;
+        }
+        // 长任务（大画布 / 首次拉 OSM 路网）要给用户一个明确交代，
+        // 否则状态条一直停在「识别完成」看起来像卡死了。
+        if (j.state === 'running' && !refineWarned
+            && Number(j.elapsed_s || 0) > 180) {
+          refineWarned = true;
+          showStatus(
+            '路网精修仍在计算（已 ' + Math.round(j.elapsed_s) +
+            ' 秒），初次识别的结果可以继续使用；完成后会自动刷新', 'info'
+          );
         }
         refineTimer = setTimeout(tick, 3000);
       } catch (e) {

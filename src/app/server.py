@@ -583,7 +583,8 @@ def _start_refine(
     with _refine_lock:
         if shot_id in _refine_jobs:
             return
-        _refine_jobs[shot_id] = {"state": "running"}
+        _refine_jobs[shot_id] = {"state": "running",
+                                 "started_at": time.time()}
         _refine_ctx[shot_id] = {
             "base": base_result, "mode": mode,
             "extra": dict(extra or {}), "multi": bool(extra),
@@ -598,12 +599,19 @@ def _start_refine(
 
 @app.get("/api/refine/{shot_id}")
 def get_refine(shot_id: str) -> JSONResponse:
-    """查询后台路网精修的进度与结果。"""
+    """查询后台路网精修的进度与结果。
+
+    运行中额外返回 ``elapsed_s``：前端据此在长任务时给出「仍在计算」
+    的提示，而不是让用户对着一个不动的状态条一直等。
+    """
     with _refine_lock:
         job = _refine_jobs.get(shot_id)
     if job is None:
         return JSONResponse({"state": "unknown"})
-    return JSONResponse(job)
+    out = dict(job)
+    if out.get("state") == "running" and out.get("started_at"):
+        out["elapsed_s"] = round(time.time() - float(out["started_at"]), 1)
+    return JSONResponse(out)
 
 
 @app.get("/api/shots/{name}")
