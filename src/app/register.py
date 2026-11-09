@@ -32,9 +32,11 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
+from .anchor_quality import point_anchor_rmse, split_anchor_quality, systematic_bias
 from .geo.coords import lonlat_to_mercator, mercator_to_lonlat
 
 
@@ -51,6 +53,9 @@ class AnchorPair:
     lat: float | None = None
     # 该候选经纬度的可靠性（1.0 = 精确匹配，0.5 = 模糊匹配）
     match_quality: float = 1.0
+    # 坐标来源（lexicon / tianditu / amap / osm / user ...）。
+    # 只用于按源做残差一致性诊断，不参与几何拟合。
+    source: str = ""
 
 
 @dataclass
@@ -74,6 +79,10 @@ class Registration:
     # 而其中三个 POI 锚点的残差只有 100-300 米）。
     rmse_reliable_m: float = 0.0
     n_reliable: int = 0
+    # 被判定为 OCR 残片、未参与配准的锚点（保留可追溯）。
+    fragment_rejected: list[AnchorPair] = field(default_factory=list)
+    # 内点残差向量的方向一致性诊断（用于识别锚点源系统性偏移）。
+    anchor_bias: dict[str, Any] = field(default_factory=dict)
     # 备选解：低置信度时交给用户选。
     #
     # ⚠️ 为什么需要它：低缩放截图（一张图覆盖 20 公里）下，
@@ -833,10 +842,20 @@ def register(
     （0.5 米/像素）与城市级截图（15 米/像素）上都成立。
     """
     notes: list[str] = []
-    valid = [p for p in pairs if p.lon is not None and p.lat is not None]
+    valid_all = [p for p in pairs if p.lon is not None and p.lat is not None]
+    # OCR 残片路名（截断地名）会在 road 的 800m 容差下混进内点，
+    # 把 RMSE 和尺度一起带偏。它们必须**不进入 RANSAC**，但仍保留在
+    # 结果的离群列表里，方便追溯「为什么这个地名没被用上」。
+    valid, fragments = split_anchor_quality(valid_all)
+    if fragments:
+        notes.append(
+            f"剔除 {len(fragments)} 个疑似 OCR 残片路名锚点（不参与配准）"
+        )
     if len(valid) < 2:
         return Registration(
-            ok=False, notes=[f"有效锚点不足（{len(valid)} 个），至少需要 2 个"]
+            ok=False,
+            fragment_rejected=fragments,
+            notes=[f"有效锚点不足（{len(valid)} 个），至少需要 2 个"],
         )
 
     # --- 按屏幕锚点分组 ---
@@ -988,6 +1007,23 @@ def register(
         )
 
     reg = best_reg
+    # 可信 RMSE 只由**点状**锚点（POI / 车站 / 图标）计算。
+    # road 是线对象，残差里含「文字标注落在沿线哪一处的任意性」，
+    # 把它和 POI 的点位精度混在一起会同时污染 RMSE 与置信度。
+    rmse_pt, n_pt = point_anchor_rmse(reg)
+    reg.rmse_reliable_m = rmse_pt if n_pt else reg.rmse_m
+    reg.n_reliable = n_pt
+    reg.fragment_rejected = fragments
+    reg.anchor_bias = systematic_bias(reg)
+    # 残片仍是「被拒绝的候选」，放进离群列表供诊断查看
+    reg.outliers = list(reg.outliers) + fragments
+    if reg.anchor_bias.get("systematic"):
+        bias = reg.anchor_bias
+        notes.append(
+            f"锚点残差方向高度一致（相干性 {bias['coherence']:.2f}、"
+            f"平均 {bias['magnitude_m']:.0f}m），可能是某个坐标源的"
+            "系统性偏移，建议统一锚点来源"
+        )
     if is_degenerate(reg):
         # 退化解不能当作成功：矩阵不可逆，输出的所有坐标会是同一个点。
         # 交给调用方按「配准失败」处理，并给出可操作的重截建议。

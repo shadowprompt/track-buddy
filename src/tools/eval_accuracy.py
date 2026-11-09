@@ -31,6 +31,9 @@ if str(SRC) not in sys.path:
 
 from app.eval import evaluate_files, run_synthetic_benchmark  # noqa: E402
 
+# 这些指标是「越大越好」，其余都是误差类（越小越好）。
+_HIGHER_BETTER = frozenset({"precision", "recall"})
+
 
 def _print_summary(report: dict) -> None:
     if "aggregate" not in report:
@@ -53,11 +56,13 @@ def _compare(report: dict, baseline_path: Path) -> dict:
         if old is None:
             continue
         new = val["p50"]
+        higher = key in _HIGHER_BETTER
         out["delta"][key] = {
             "p50_before": old,
             "p50_after": new,
             "change": new - old,
-            "improved": new < old,
+            "higher_is_better": higher,
+            "improved": new > old if higher else new < old,
         }
     return out
 

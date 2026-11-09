@@ -150,6 +150,8 @@ DIAG_KEYS: tuple[str, ...] = (
     "track_points_px",
     "bbox_px",
     "track_straightness",
+    "anchor_fragments",
+    "anchor_bias",
     "start_marker",
     "end_marker",
     "online_geocoding",
@@ -559,6 +561,8 @@ class RidePipeline:
                 track_points_px=len(track.polyline),
                 bbox_px=list(track.bbox),
                 track_straightness=round(straightness, 3),
+                anchor_fragments=len(reg.fragment_rejected),
+                anchor_bias=reg.anchor_bias,
                 start_marker=list(track.start_marker) if track.start_marker else None,
                 end_marker=list(track.end_marker) if track.end_marker else None,
                 # ⚠️ 这个字段的语义是「本次识别**真的用到**了在线源」，
