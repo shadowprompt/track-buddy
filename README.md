@@ -74,9 +74,16 @@ python -m app.server --reload    # 开发模式（热重载，需 PYTHONPATH=src
 跑验收测试：
 
 ```bash
-python tests/test_e2e.py       # 后端端到端（66 项）
-python tests/test_frontend.py  # 前端逻辑 + 地图代理（29 项，需 Node.js）
+python -m pytest -q                            # 全量（约 4 分钟，需装 pytest）
+python -m pytest tests/test_waterguard.py -q   # 单项
 ```
+
+> **跑全量前先看一眼运行缓存**：识别服务按城市覆写 `data/cache/waters_上海.json`
+> （缓存 24 小时有效）。若某次联网只拉到部分河流，这份「新鲜但不完整」的缓存
+> 会让 `tests/test_waterguard.py` 的 4 项断言报 `KeyError: '黄浦江'`，**不是代码回归**。
+> 把该文件改名备份后重跑，会走 `data/waters.json` 的兜底折线（详见交接文档 §22.39）。
+> 另外 `data/lexicon.json` 是识别时的词典自学习产物，**按约定不提交**，
+> 所以识别后工作区出现它的 diff 属正常现象。
 
 > **为什么要单独测前端**：有些 bug 只发生在浏览器里，后端日志全是 200。
 > 典型例子：腾讯地图 GL JS 在 0 尺寸容器上做 `fitBounds` 会抛

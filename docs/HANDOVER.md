@@ -4619,8 +4619,6 @@ POI/车站锚点重新拟合：尺度 2.7538（差 0.6%），中心点只差
 把选择权交给用户比替他猜测更安全。若后续积累了「锚点系统性偏移」
 的可信判据（例如残差向量方向高度一致），再重新评估护栏权重。
 
-### 验证
-
 ### 收尾修复：被否决的后台精修也要落盘
 
 `server._run_refine` 早期只在 `road_fit.ok` 为真时才写 `last_result.json`
@@ -4655,3 +4653,78 @@ payload 里，不落盘的话用户刷新页面，橙色虚线和「查看候选
 `road_fit.ok=false` 且 `candidate_shift_px=[-19.73, 62.79]`、
 候选 −55/−175 m、贴路 6.4 m —— **刷新页面仍能看到橙线与切换按钮**。
 产物留在 `output/verify_straight_final.json`（已 gitignore）。
+
+## §22.39 本轮收尾：提交清单、验收状态与运行副作用（2026-11-09 22:00）
+
+§22.36–§22.38 逐项写了实现与实测，本节只把「现在到底停在哪、怎么验收、
+哪些文件不该进提交」收口，避免下一个人接手时从 4600 行里翻。
+
+### 提交清单与 HEAD
+
+| 提交 | 内容 |
+|---|---|
+| `b319d5d` | 后台精修复用主请求的 `RefineContext`，不再重跑 OCR / 配准 / 在线锚点 |
+| `5a341ae` | 多图接后台精修，默认 `verify` 档只校验 + 命名不平移；修两处落盘竞态 |
+| `80f114f` | 位移搜索抽样提速、`elapsed_s` 上报、前端「贴路校正」开关 |
+| `0e6c086` | 未采纳的精修路线用橙色虚线画到原始截图 |
+| `c18d025` | 低信息量直线输入识别 + 候选位置显示层切换 + 拒因文案去重 |
+| `3230c9a` | 判据改为三条件组合（直线度 / 长宽比 / 无路名锚点），端到端实测触发 |
+| `445ce00` | 护栏否决的后台精修结果也要落盘，刷新后橙线不丢 —— **代码 HEAD** |
+
+文档收尾（本节与 README 快速开始一节）单独提交，不夹带运行数据。
+
+### 当前服务与验收入口
+
+- 启动：`PYTHONPATH=src <Python312> -m app.server --host 127.0.0.1 --port 8848`；
+  `MAP_GEOCODING_ORDER=tianditu`（单源严格模式），health 里天地图 probe ok；
+  高德 `/v3/place/text` 仍报 `USER_DAILY_QUERY_OVER_LIMIT`，其余高德接口正常。
+- **刷新页面即可验收最后一张单图，不用重新上传**：`warnings` 里有「起终点连线 /
+  只能定位到街区级」提示，状态条下有「在地图上查看未采纳的贴路位置」按钮，
+  原始截图叠加层有橙色虚线 `#ff8a3d` + 图例。
+- `data/last_result.json` 关键字段：`diagnostics.track_straightness=0.83`、
+  `bbox_px=[269,1313,710,95]`、`has_road_names=false`、`road_fit.ok=false`、
+  候选 东 −55 / 北 −175 m、`candidate_shift_px=[-19.73, 62.79]`。
+  候选只改显示层，坐标 / GeoJSON / 里程 / 置信度一律不变。
+
+### 运行副作用清单（哪些不该进提交）
+
+| 路径 | 状态 | 说明 |
+|---|---|---|
+| `data/lexicon.json` | **tracked，但按约定不提交** | 识别时地名词库自学习（权重 / 计数 / 城市）。收尾时工作区唯一 diff 就是它（+475 / −48 行），提交会夹带真实地址数据，并让工作区长期不干净 |
+| `data/last_result.json`、`data/last_stitch.json`、`data/uploads/` | gitignore | 最近一次识别结果与上传原图；刷新页面靠它们恢复候选线与按钮 |
+| `data/cache/` | gitignore | 路网 / 岸线 / 路线校验缓存，见下节 |
+| `output/` | gitignore | 端到端验证响应、pytest 日志 |
+
+### 新踩的坑：识别会覆写城市级岸线缓存，打挂水岸测试
+
+22:02 全量测试从 **286 passed** 变成 `4 failed, 282 passed`，4 项全在
+`tests/test_waterguard.py`（`KeyError: '黄浦江'` / 岸线几何断言）。**不是代码回归。**
+
+原因：`get_waters()` 按城市名缓存 24 小时（`data/cache/waters_上海.json`）。
+21:52 那次识别联网拉河时 Overpass 只返回「苏州河」，`_store_cached()` 把整份
+缓存覆写成 `{"waters": {"苏州河": ...}}`。测试用
+`get_waters(..., allow_network=False)` 命中这份「新鲜但不完整」的缓存，
+既拿不到黄浦江，也不会走到 `data/waters.json` 的 `bank_fallback` 兜底。
+
+恢复（已实测）：
+
+```bash
+mv data/cache/waters_上海.json data/cache/waters_上海.json.bak   # 别直接删，留证据
+python -m pytest tests/test_waterguard.py -q                       # 6 passed（走兜底折线）
+```
+
+后续建议（本轮**未改代码**）：`_store_cached()` 按河名合并旧缓存、缺河时
+不覆盖已有完整数据；`tests/test_waterguard.py` 改用 `tmp_path` 独立缓存目录，
+不再与运行目录共享。在此之前，跑全量前先确认该缓存是否完整。
+
+### 测试与遗留
+
+- 测试命令：`/d/soft/Python311/python -m pytest -q`
+  （WorkBuddy 内置 3.13 没装 pytest）；本轮三个提交时全量 **286 passed**。
+- 文档收尾时移走被覆写的岸线缓存后**再跑全量仍是 286 passed**（263.96 秒），
+  确认 4 项失败纯属运行缓存污染，日志留在
+  `output/pytest_final_20261109.txt`（已 gitignore）。
+- 遗留：③ 道路几何取数仍未接 `app/maps/registry`（`MAP_ROAD_GEOMETRY_ORDER`
+  只在 health 展示）；② 在线路名归属仍只有高德实现；`app/trajmap.py` 仍直接用
+  `TMap.*`；同步 `refine=on` 大画布仍是分钟级（只有后台路径复用了中间结果）；
+  高德 JS 底图未经真机验证；`waterguard` 缓存覆写问题见上节。
