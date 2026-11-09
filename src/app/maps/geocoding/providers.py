@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Any, Callable
 
@@ -38,6 +39,45 @@ from ..contracts import (
 )
 
 BAIDU_PLACE_SEARCH = "https://api.map.baidu.com/place/v2/search"
+
+# 归一化时会去掉的分隔符。
+_NAME_SEPARATORS = " \t　()（）·・,，.。-—_/\\"
+
+
+def _name_matches(query: str, title: str) -> bool:
+    """查询词与 POI 标题是否「同名」（已归一化）。
+
+    两级判据：
+
+    1. **连续子串**：``query in title``。
+       「东方明珠」⊂「东方明珠广播电视塔」✓
+    2. **分段包含**：把标题按分隔符切开，查询词完整命中其中一段。
+       「东方明珠-公交站」归一化成「东方明珠公交站」，
+       它不是「东方明珠」的连续子串，但按原始分隔符切开后
+       第一段就是「东方明珠」✓
+
+    为什么需要第 2 条：地图上最常见的标注恰恰带分隔符
+    （「XX-公交站」「XX公园东南门」「XX(地铁站)」），
+    只用连续子串会把它们全漏掉。
+    """
+    if not query or not title:
+        return False
+    if query in title:
+        return True
+    # 用**原始**标题按分隔符切段，段内再归一化
+    raw = title
+    for ch in _NAME_SEPARATORS:
+        raw = raw.replace(ch, "\x00")
+    for seg in raw.split("\x00"):
+        if seg and query in _strip_sep(seg):
+            return True
+    return False
+
+
+def _strip_sep(s: str) -> str:
+    for ch in _NAME_SEPARATORS:
+        s = s.replace(ch, "")
+    return s
 
 
 class _BaseGeocodingProvider:
@@ -78,6 +118,17 @@ class _BaseGeocodingProvider:
 
     def is_available(self) -> bool:
         return bool(self.key)
+
+    def _reset_error(self) -> None:
+        """清掉**上一次**调用的错误。
+
+        ⚠️ 必须每次查询前都清：`last_error` 是「最近一次错误」，
+        而成功路径不会写它（只写失败路径）。不清的话会出现
+        「上一次配额超限、这次成功」却仍报故障——
+        实测天地图模式下明明查得到「东方明珠」，
+        health 里却仍显示上一次的「高德配额超限」。
+        """
+        self.last_error = ""
 
     def _throttle(self) -> None:
         wait = self.min_interval - (time.time() - self._last_call)
@@ -126,6 +177,7 @@ class AmapProvider(_BaseGeocodingProvider):
         key = self.key
         if not key:
             return []
+        self._reset_error()
         self._throttle()
         params = {
             "key": key, "keywords": name, "city": city or "",
@@ -202,6 +254,7 @@ class TmapProvider(_BaseGeocodingProvider):
         key = self.key
         if not key:
             return []
+        self._reset_error()
         self._throttle()
         params = {"key": key, "keyword": name, "page_size": "10",
                   "page_index": "1", "output": "json"}
@@ -250,6 +303,7 @@ class BaiduProvider(_BaseGeocodingProvider):
         key = self.key
         if not key:
             return []
+        self._reset_error()
         self._throttle()
         params = {"key": key, "query": name, "region": city or "全国",
                   "output": "json", "scope": "2"}
@@ -301,9 +355,32 @@ class TiandituProvider(_BaseGeocodingProvider):
     credential_aliases = ("TIANDITU_KEY", "TIANDITU_API_KEY", "TIANDITU_TK")
 
     def _bounds(self, city: str) -> tuple[str, bool]:
+        """派生搜索视野（minx,miny,maxx,maxy）与是否「已收窄」。
+
+        ⚠️ **不能用 ``Lexicon.city_bounds``**（min/max + 0.35° padding）：
+        词典里偶尔有标错城市的条目，实测上海词典混进了经度 113.1
+        （山西）、纬度 22.5（广东）的点，min/max 被撑到
+        119.63~122.27°E / 30.47~32.19°N——苏州、昆山、杭州全在视野内，
+        于是查「外滩」返回**昆山**的「外滩8号」、
+        查「静安寺」返回**常熟**的静安寺。
+
+        改成「中位数中心 + 核心半径（距离分位数派生）」：
+        尾部错条目不影响分位数，城市边缘的正常点位仍能命中。
+        """
         custom = self.cfg.tianditu_map_bound_custom
         if custom:
             return custom, True
+        if self.lexicon is not None and city:
+            center = self.lexicon.core_center(city)
+            radius = self.lexicon.core_radius_m(city)
+            if center and radius:
+                cx, cy = center
+                # 半径换算成经纬度增量：纬度方向直接除，方向按 cos 修正
+                dlat = radius / 111320.0
+                dlon = radius / max(1.0, 111320.0 * math.cos(math.radians(cy)))
+                bound = (f"{cx - dlon:.4f},{cy - dlat:.4f},"
+                         f"{cx + dlon:.4f},{cy + dlat:.4f}")
+                return bound, True
         derived = self.lexicon.city_bounds(city) if self.lexicon else None
         if derived:
             return derived, True
@@ -315,6 +392,7 @@ class TiandituProvider(_BaseGeocodingProvider):
         key = self.key
         if not key:
             return []
+        self._reset_error()
         self._throttle()
         bound_str, narrow = self._bounds(city)
         try:
@@ -352,22 +430,67 @@ class TiandituProvider(_BaseGeocodingProvider):
             # 客户端按坐标再校一次（换算后的 GCJ-02 坐标）。
             glon, glat = GeoPoint(wlon, wlat, self.output_crs).gcj02
             address = p.get("address") or ""
+            title = p.get("name") or name
             if narrow and len(bx) == 4 and not (
                 bx[0] <= glon <= bx[2] and bx[1] <= glat <= bx[3]
             ):
                 continue
             if not narrow and city and address and city not in address:
+                # ⚠️ 地址字段**不一定含城市名**：公交站、地铁站、门、入口
+                # 这类标注的 address 常常就是 POI 名本身
+                # （「东方明珠-公交站」的 address 是「东方明珠」）。
+                # 旧实现一刀切按「地址含城市名」过滤，把这些全丢了。
+                #
+                # 改成：地址含城市名 → 放行；地址不含城市名时，
+                # 只要**标题本身就是我们要找的那个名字**，也放行
+                # （同名候选由后续的 RANSAC 几何一致性挑）。
+                #
+                # 注意判据是「标题 vs 查询词」，不是「地址 vs 城市名」。
+                if not _name_matches(Lexicon.normalize(name), title):
+                    continue
+            # ⚠️ **同名判据必须是「包含关系」，不能要求完全相等**。
+            #
+            # 天地图的搜索是「包含关键词」语义，查「东方明珠」返回的是
+            # 「东方明珠广播电视塔」「东方明珠-公交站」「东方明珠公园东南门」
+            # 等**更长的名字**，一条标题恰好等于查询词的都没有。
+            # 早期实现要求 `normalize(title) == normalize(name)`，
+            # 结果这些全部被丢掉 —— 接口明明返回了 10 个坐标正确的 POI，
+            # 解析后剩 0 个，这个源等于从未可用。
+            #
+            # 判据分两级：
+            #   1) 归一化后**连续子串**（「东方明珠广播电视塔」含「东方明珠」）；
+            #   2) 归一化后**分段包含**（「东方明珠-公交站」归一化成
+            #      「东方明珠公交站」，「东方明珠」不是它的连续子串，
+            #      但它是其中一个**词段**）。
+            # 只用第 1 条会漏掉带分隔符的 POI（公交站、门、入口等），
+            # 而这些恰恰是地图上最常见的标注。
+            #
+            # OCR 残片（名字被截断）会命中几十公里外的同名泛类 POI，
+            # 但那些候选最终还要过 RANSAC 的几何一致性校验，由它来挑。
+            q = Lexicon.normalize(name)
+            t = Lexicon.normalize(title)
+            if not q or not t:
                 continue
-            title = p.get("name") or name
-            # 普通搜索是「包含关键词」语义；OCR 残片会命中几十公里外的
-            # 同名泛类 POI，只保留同名候选，查不到就交给下游兜底。
-            if Lexicon.normalize(title) != Lexicon.normalize(name):
+            # ⚠️ 分段判据要用**原始标题**（分隔符还在），
+            # 归一化后的标题已经把分隔符去掉了，段就切不出来了。
+            if t != q and not _name_matches(q, title):
                 continue
+            # 贴进度：完全相等 > 前缀包含 > 任意包含。
+            # 反映在 quality 上（越小越贴近），最终按 quality 排序。
+            if t == q:
+                quality = 0.9
+            elif t.startswith(q):
+                quality = 0.8
+            else:
+                quality = 0.7
             out.append(self._candidate(
-                name=title, lon=wlon, lat=wlat, quality=0.9,
+                name=title, lon=wlon, lat=wlat, quality=quality,
                 address=address,
                 category=p.get("typeName") or p.get("typeCode") or "",
             ))
+        # 贴近查询词的排前面；同一贴进度下按标题长度短优先
+        # （「东方明珠」比「东方明珠广播电视塔」更可能是用户要找的）
+        out.sort(key=lambda c: (-c.quality, len(c.name)))
         if city and out:
             out.sort(key=lambda r: (0 if city in r.address else 1, -r.quality))
         return out

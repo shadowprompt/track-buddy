@@ -880,8 +880,21 @@ budget = canvas_pixel_budget(总输入像素)   # 内存预算 ∩ 输入规模
 漏掉会整体偏约 570 米；
 三是普通搜索是「包含关键词」语义，项目只保留同名候选，并从词典里该城市
 的已核验坐标派生搜索视野，过滤异地同名（详见 HANDOVER §22.28）。
-在线源顺序可用 `MAP_GEOCODING_ORDER` 调整（旧名 `GEOCODE_PROVIDER_ORDER`
-仍兼容，默认同源优先），上游配额耗尽或返回空时自动落到下一源。
+
+**在线源的调用语义是「单源严格模式」**：配了哪家就用哪家，失败**直接提示**，
+不自动换到另一家。
+
+- `MAP_GEOCODING_ORDER=tianditu` → 只用天地图，它失败就在识别结果里提示原因；
+- `MAP_GEOCODING_ORDER=amap,tianditu` → 显式声明多源，此时才启用依次回退；
+- **不配** → 用默认顺序里第一个有 key 的源（当前是高德），同样失败不换源。
+
+改这个值不需要重启服务（`.env` 每次读取）。旧名 `GEOCODE_PROVIDER_ORDER` 仍兼容。
+
+> ⚠️ 早期版本是「高德失败就静默落天地图」。实测高德当日配额用尽
+> （`USER_DAILY_QUERY_OVER_LIMIT`）时，每个地名都先打高德再打天地图——
+> 既慢一倍，又让人误判实际用的是哪家。现在失败原因会写进识别结果的提示里，
+> 例如「在线地理编码不可用，已降级到本地词典与 OSM 冷启动：amap: 高德
+> USER_DAILY_QUERY_OVER_LIMIT」。
 
 **为什么需要第 4 级（冷启动）**
 
@@ -1008,14 +1021,18 @@ TMAP_KEY=
 BAIDU_MAP_KEY=
 # 天地图 tk 三种变量名都能识别
 TIANDITU_API_KEY=
-# 可选：能力层顺序（默认 amap,tmap,baidu,tianditu）
-# MAP_GEOCODING_ORDER=tianditu,amap   # 旧名 GEOCODE_PROVIDER_ORDER 仍兼容
+# 可选：在线地理编码服务商（**单源严格模式**）
+#   配了哪家就用哪家，失败直接提示，不自动换源。
+#   写一个名字 = 只用它；写多个 = 才启用依次回退；不写 = 用默认第一个可用的。
+# MAP_GEOCODING_ORDER=tianditu
+# MAP_GEOCODING_ORDER=amap,tianditu     # 显式多源才回退
+# 旧名 GEOCODE_PROVIDER_ORDER 仍兼容
 # MAP_ROADNAME_ORDER=amap             # 路名能力，新增实现后可在这里排序
 # MAP_ROAD_GEOMETRY_ORDER=osm         # 道路几何（公共 Overpass）
 # MAP_ROUTE_VALIDATION_ORDER=osrm,valhalla
 # MAP_ROAD_GEOMETRY_ENABLED=0         # 整体关闭公共路网
 # MAP_ROUTE_VALIDATION_ENABLED=0      # 整体关闭公共路线校验
-# 可选：天地图搜索视野（默认全球；按业务区域收紧可减少异地同名）
+# 可选：天地图搜索视野（不配则从词典里该城市的已核验坐标自动派生）
 # TIANDITU_MAP_BOUND=<minx>,<miny>,<maxx>,<maxy>
 # 可选：网页底图服务商（默认 tmap 腾讯；改成 amap 需配下面两项）
 # BASEMAP_PROVIDER=tmap

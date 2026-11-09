@@ -142,6 +142,10 @@ class RidePipeline:
         warnings: list[str] = []
         cfg = self.cfg.vision
 
+        # 清空「本轮在线源失败」记录：它是**每次识别**的，
+        # 不是进程级的（否则上一张图的失败会污染这一张的提示）。
+        self.geocoder._online_failures.clear()
+
         # --- 阶段 1-2：轨迹提取 ---
         track: TrackResult = extract_track(img, cfg)
         warnings.extend(track.notes)
@@ -218,7 +222,9 @@ class RidePipeline:
                     end_marker=list(track.end_marker) if track.end_marker else None,
                     ocr_texts=len(texts),
                     anchor_candidates=len(anchors),
-                    online_geocoding=bool(self.cfg.has_online_key and allow_online),
+                    online_geocoding=bool(
+                        self.cfg.has_online_key and allow_online
+                        and not getattr(self.geocoder, "_online_failures", [])),
                     lexicon=self.lexicon.stats(),
                 ),
                 elapsed_ms=int((time.time() - t0) * 1000),
@@ -424,7 +430,13 @@ class RidePipeline:
                 bbox_px=list(track.bbox),
                 start_marker=list(track.start_marker) if track.start_marker else None,
                 end_marker=list(track.end_marker) if track.end_marker else None,
-                online_geocoding=bool(self.cfg.has_online_key and allow_online),
+                # ⚠️ 这个字段的语义是「本次识别**真的用到**了在线源」，
+                # 不是「配了 key」。单源严格模式下，配的那家可能配额用尽、
+                # 每次都失败，结果其实是词典 + 冷启动兜出来的——
+                # 报 True 会让人以为在线源工作正常。
+                online_geocoding=bool(
+                    self.cfg.has_online_key and allow_online
+                    and not getattr(self.geocoder, "_online_failures", [])),
                 lexicon=self.lexicon.stats(),
                 alternatives=len(alternatives),
                 zoom=zoom,
@@ -648,6 +660,25 @@ class RidePipeline:
             )
         else:
             warnings.append(f"{matched}/{len(targets)} 个 POI 锚点匹配到坐标")
+
+        # ---- 在线地理编码源的失败原因必须让用户看到 ----
+        #
+        # 单源严格模式下，若配置的那家（默认高德）不可用，
+        # 结果其实是靠**本地词典 + OSM 冷启动**兜出来的。
+        # 不提示的话，用户会以为「配了高德就一直在用高德」，
+        # 实际是每次都在失败——这正是「配置哪个就用哪个，失败直接提示」
+        # 要解决的现象。
+        online_err = getattr(self.geocoder, "_last_error", "")
+        online_failed = list(getattr(self.geocoder, "_online_failures", []))
+        if online_failed:
+            # 去重后只留前 3 条，避免刷屏
+            uniq = list(dict.fromkeys(online_failed))[:3]
+            warnings.append(
+                "在线地理编码不可用，已降级到本地词典与 OSM 冷启动："
+                + "；".join(uniq)
+                + "。如需更换服务商，在 .env 设置 MAP_GEOCODING_ORDER"
+                "（如 tianditu 或 amap,tianditu）后无需重启即可生效。"
+            )
         return pairs
 
     def _cold_start_pairs(

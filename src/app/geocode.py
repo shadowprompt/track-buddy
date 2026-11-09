@@ -305,6 +305,81 @@ class Lexicon:
         x, y = lonlat_to_mercator(lon, lat)
         return math.hypot(x - x0, y - y0) <= radius
 
+    def core_radius_m(
+        self, city: str, quantile: float = 0.90, factor: float = 1.5,
+        min_radius_m: float = 15000.0,
+    ) -> float | None:
+        """该城市已核验点的**核心半径**（米），供派生搜索视野。
+
+        与 ``in_city_core`` 同源：先用中位数中心剔除跨省错条目，
+        再取「到中心距离」的分位数作为半径基准。
+
+        为什么需要它：``city_bounds`` 用 min/max 派生视野，而词典里
+        偶尔会有标错城市的条目——实测上海词典里混进了经度 113.1
+        （山西）、纬度 22.5（广东）的点，min/max 被撑到
+        119.63~122.27°E / 30.47~32.19°N，苏州、杭州全在视野内，
+        于是查「外滩」会返回**昆山**的「外滩8号」、
+        查「静安寺」会返回**常熟**的静安寺。
+
+        这里返回 ``None`` 表示词典数据不足，调用方应放宽或放弃收窄。
+        """
+        if not city:
+            return None
+        pts: list[tuple[float, float]] = []
+        with self._lock:
+            for entries in self._data.values():
+                for e in entries:
+                    if (e.get("city") or "") != city:
+                        continue
+                    try:
+                        pts.append((float(e["lon"]), float(e["lat"])))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+        if len(pts) < 8:
+            return None
+        xs = sorted(p[0] for p in pts)
+        ys = sorted(p[1] for p in pts)
+        cx, cy = xs[len(xs) // 2], ys[len(ys) // 2]
+        keep = [p for p in pts if abs(p[0] - cx) <= 2.0 and abs(p[1] - cy) <= 2.0]
+        if len(keep) < 8:
+            return None
+        x0, y0 = lonlat_to_mercator(cx, cy)
+        dists: list[float] = []
+        for lo, la in keep:
+            x, y = lonlat_to_mercator(lo, la)
+            dists.append(math.hypot(x - x0, y - y0))
+        dists.sort()
+        base = dists[min(len(dists) - 1, int(len(dists) * quantile))]
+        return max(min_radius_m, base * factor)
+
+    def core_center(self, city: str) -> tuple[float, float] | None:
+        """该城市已核验点的**中位数中心**（经度, 纬度）。
+
+        与 ``core_radius_m`` 同源，用于「以城市中心为准」的场景
+        （例如天地图视野以中心 + 半径派生，而不是靠 min/max 撑开）。
+        """
+        if not city:
+            return None
+        pts: list[tuple[float, float]] = []
+        with self._lock:
+            for entries in self._data.values():
+                for e in entries:
+                    if (e.get("city") or "") != city:
+                        continue
+                    try:
+                        pts.append((float(e["lon"]), float(e["lat"])))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+        if len(pts) < 8:
+            return None
+        xs = sorted(p[0] for p in pts)
+        ys = sorted(p[1] for p in pts)
+        cx, cy = xs[len(xs) // 2], ys[len(ys) // 2]
+        keep = [p for p in pts if abs(p[0] - cx) <= 2.0 and abs(p[1] - cy) <= 2.0]
+        if len(keep) < 8:
+            return None
+        return cx, cy
+
     def lookup_exact(self, name: str) -> list[dict[str, Any]]:
         """只做**精确**匹配（不做子串扩展）。
 
@@ -394,6 +469,11 @@ class Geocoder:
         # 用于 /api/health 暴露配置问题——静默失败会让人误以为
         # 「在线服务不可用」，而实际是 key 用错了地方。
         self._last_error: str = ""
+        # 本次识别周期内**发生过**的在线源失败（成功不清空）。
+        # 与 ``_last_error`` 的区别：后者是「最近一次错误」，
+        # 这个是「这一轮有没有失败过」——pipeline 要用它判断
+        # 「结果是不是降级来的」。
+        self._online_failures: list[str] = []
         # 厂商实现与调用顺序全部交给能力层；Geocoder 只保留薄适配方法。
         self.registry, self._impl = build_geocoding_registry(
             self.cfg, lambda: self._session, self.lexicon)
@@ -478,19 +558,23 @@ class Geocoder:
         if user:
             return user
 
-        # 2) 在线服务：顺序来自注册表，不再手写厂商字典
+        # 2) 在线服务：**单源严格模式**
+        #
+        # ⚠️ **不再「高德失败就静默落天地图」**。
+        #
+        # 旧行为是按注册表顺序逐个试，任一源返回空就落下一个。用户看到的
+        # 现象是「配了高德却在用天地图」却毫无提示——实测高德当日配额用尽
+        # （USER_DAILY_QUERY_OVER_LIMIT），每个地名都先打高德再打天地图，
+        # 既慢一倍（每个地名付两次请求）又让人误判实际用的是哪家。
+        #
+        # 现在：**只用一个源**——由 ``MAP_GEOCODING_ORDER`` 指定的第一个
+        # 可用源（默认 amap）。它失败就把原因记进 ``_last_error``，
+        # 交给上层明确提示，**不自动换源**。
+        #
+        # 想用多家兜底仍可显式声明：``MAP_GEOCODING_ORDER=amap,tianditu``，
+        # 这时才是「依次尝试」语义（且失败原因同样会被记录）。
         if allow_online and self.cfg.allow_online:
-            online: list[GeocodeResult] = []
-            for pname in self.registry.order(Capability.GEOCODING):
-                fn = getattr(self, "_" + pname, None)
-                if fn is None:
-                    continue
-                try:
-                    online = fn(name, city)
-                except Exception:
-                    online = []
-                if online:
-                    break
+            online = self._online_search(name, city)
             if online:
                 # 数据飞轮只沉淀「同名且坐标落在本城已核验范围」的候选。
                 for r in online[:3]:
@@ -514,6 +598,86 @@ class Geocoder:
             cold = self._cold_start(name, city)
             if cold:
                 return cold
+        return []
+
+    def _online_search(self, name: str, city: str) -> list[GeocodeResult]:
+        """按配置调用在线地理编码源。
+
+        **单源严格模式**：
+        - 用户显式配了 ``MAP_GEOCODING_ORDER=tianditu`` → 只用它，
+          失败就记录原因并返回空，**不自动换源**；
+        - 用户显式配了多个（``amap,tianditu``）→ 才启用依次回退；
+        - **没配** → 用默认表里**第一个可用**的源（当前是 amap），
+          只用它一个；失败不换源。
+
+        为什么不能默认四家依次回退：实测高德当日配额用尽
+        （USER_DAILY_QUERY_OVER_LIMIT），每个地名都先打高德再打天地图，
+        既慢一倍（每个地名付两次请求），又让人误判实际用的是哪家——
+        现象是「配了高德却在用天地图」却毫无提示。
+
+        这样「配了哪家就用哪家」成为可预期行为：
+        用户看到高德配额提示，就知道结果是降级来的，
+        而不是误以为天地图本来就是主源。
+        """
+        configured = self.registry.configured_order(Capability.GEOCODING)
+        if configured:
+            order = configured
+            strict = len(configured) == 1
+        else:
+            # 未配置：取默认顺序里第一个「有 key」的，只用它
+            order = self.registry.order(Capability.GEOCODING)
+            usable = [
+                n for n in order
+                if (p := self.registry.get(n, Capability.GEOCODING)) is not None
+                and p.is_available()
+            ]
+            if not usable:
+                self._last_error = (
+                    "未配置可用的在线地理编码源（需要 AMAP_KEY / "
+                    "TMAP_KEY / BAIDU_MAP_KEY / TIANDITU_API_KEY 之一）"
+                )
+                return []
+            order = (usable[0],)
+            strict = True
+
+        errors: list[str] = []
+        misses: list[str] = []
+        for pname in order:
+            fn = getattr(self, "_" + pname, None)
+            if fn is None:
+                continue
+            try:
+                online = fn(name, city)
+            except Exception as exc:  # noqa: BLE001 - 记原因后按模式决定是否继续
+                online = []
+                errors.append(f"{pname}: {type(exc).__name__}: {exc}")
+            if online:
+                return online
+            # 记录这个源的失败原因
+            impl = self._impl.get(pname)
+            reason = getattr(impl, "last_error", "") if impl else ""
+            if reason:
+                errors.append(f"{pname}: {reason}")
+            elif not any(e.startswith(pname + ":") for e in errors):
+                # ⚠️ 「无匹配结果」**不是故障**，只是这个地名没查到。
+                # OCR 残片（如「支工」「丰河」）本来就查不到，
+                # 把它报成失败会让人以为服务商坏了。
+                # 所以单独归类，不与真正的错误（配额/鉴权）混在一起。
+                misses.append(pname)
+
+        if errors:
+            self._last_error = "；".join(errors[:3])
+            # 记录「这一轮失败过」，供 pipeline 判断结果是否降级而来
+            for e in errors:
+                if e not in self._online_failures:
+                    self._online_failures.append(e)
+        elif misses:
+            # 只是「这个地名没查到」（OCR 残片常见），**不是故障**。
+            # 必须清掉上一次的错误，否则会把陈旧的配额提示带到现在——
+            # 实测天地图模式下明明查得到东方明珠，却仍显示上一次的
+            # 「高德配额超限」。
+            self._last_error = ""
+        # 单源模式：失败就返回空，让上层提示，不再换源
         return []
 
     def _in_city_bounds(self, lon: float, lat: float, city: str) -> bool:

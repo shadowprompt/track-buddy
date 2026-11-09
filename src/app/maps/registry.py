@@ -89,6 +89,28 @@ class ProviderRegistry:
         base += [n for n in self.names(capability) if n not in base]
         return tuple(base)
 
+    def configured_order(self, capability: Capability) -> tuple[str, ...]:
+        """**显式配置**的调用顺序（不读默认值）。
+
+        与 ``order()`` 的区别：``order()`` 在没配置时返回内置默认表
+        （地理编码是 amap/tmap/baidu/tianditu 四家），而调用方往往需要
+        区分「用户指定了谁」与「系统默认是什么」——
+        比如单源严格模式：用户只写了一个名字就只用它；
+        没写则按默认表里**第一个可用**的来，不该被当成「四家依次回退」。
+
+        没配置时返回空元组。
+        """
+        known = set(self.names(capability))
+        for env_name in ORDER_ENV.get(capability, ()):
+            raw = self._env(env_name) or ""
+            picked = tuple(dict.fromkeys(
+                x.strip() for x in raw.split(",")
+                if x.strip() and x.strip() in known
+            ))
+            if picked:
+                return picked
+        return ()
+
     def available(self, capability: Capability) -> list[MapProvider]:
         """按序返回「已注册且当前可用」的实现。
 

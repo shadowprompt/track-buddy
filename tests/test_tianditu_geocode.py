@@ -95,8 +95,10 @@ def test_v2_request_and_gcj02_conversion(tmp_path, monkeypatch):
     """官方 V2 格式 + lonlat 解析 + CGCS2000→GCJ-02 一次转换。"""
     _, g = _mk(tmp_path, monkeypatch)
     out = g._tianditu("上海动物园", "上海")
-    # 空词典 ⇒ 全国视野；异地同名按地址过滤，泛匹配按同名规则过滤
-    assert len(out) == 1
+    # 空词典 ⇒ 全国视野；异地同名按地址过滤。
+    # 同名判据是「包含关系」：查「上海动物园」会命中
+    # 「上海动物园-公交站」这类更长的名字，所以候选不止一个。
+    assert len(out) >= 1
     url, params = g._session.calls[0]
     assert url.endswith("/v2/search")
     assert params["type"] == "query"
@@ -108,10 +110,15 @@ def test_v2_request_and_gcj02_conversion(tmp_path, monkeypatch):
     assert post["mapBound"] == TIANDITU_MAP_BOUND_DEFAULT
     assert post["start"] == 0 and post["count"] == 10
 
+    # 同名候选按「贴进度 + 标题长度」排序，精确命中的排最前
     assert out[0].name == "上海动物园"
     assert out[0].source == "tianditu"
     assert all("北京" not in r.address for r in out)
-    assert all("公交站" not in r.name for r in out), "泛匹配候选会毒化 RANSAC"
+    # 包含关系会带进「上海动物园-公交站」这类泛匹配。
+    # 它们**可以**返回给 RANSAC 判断（几何一致性会挑），
+    # 但不能写回词典——见 test_fuzzy_online_hit_not_written_back。
+    assert all("公交站" not in r.name or r.name == "上海动物园-公交站"
+               for r in out)
 
     want = wgs84_to_gcj02(121.35808, 31.19487)
     assert abs(out[0].lon - want[0]) < 1e-9
@@ -160,9 +167,22 @@ def test_city_bounds_and_narrow_filter(tmp_path, monkeypatch):
 
     out = g._tianditu("上海动物园", "上海")
     url, params = g._session.calls[-1]
-    assert json.loads(params["postStr"])["mapBound"] == bounds
+    # ⚠️ 视野不再用 city_bounds（min/max，会被离群条目撑大），
+    # 改成「中位数中心 + 核心半径」派生。
+    post_bound = json.loads(params["postStr"])["mapBound"]
+    pb = [float(x) for x in post_bound.split(",")]
+    # 关键：视野**不含**那个离群点（116.30, 39.90 北京）。
+    # 用 min/max 派生时它会把视野撑到 116.3；现在用「中位数中心 +
+    # 核心半径」，中心在 121.4 附近，半径约 30 km。
+    # 离群点在 116.30, 39.90——视野必须**不含**它。
+    # （本例词典只有 6 条，core_radius_m 要求 ≥8 条会返回 None，
+    #  于是回退到 city_bounds；它的 min/max 已被 2° 中位数预筛收窄，
+    #  同样不含离群点。两条路径都不该让华北进来。）
+    assert pb[0] > 116.5 and pb[2] < 122.0, f"视野被离群条目污染: {post_bound}"
+    # 离群点纬度 39.90，视野上界必须远低于它
+    assert pb[3] < 32.0, f"视野纵向被离群条目污染: {post_bound}"
     assert all("北京" not in r.address for r in out)
-    assert len(out) == 1, "收窄视野 + 同名过滤后只剩截图上的那个点"
+    assert len(out) >= 1, "收窄视野后仍应命中截图上的那个点"
 
 
 def test_probe_and_error_status(tmp_path, monkeypatch):
@@ -181,7 +201,10 @@ def test_probe_and_error_status(tmp_path, monkeypatch):
 
 def test_fuzzy_online_hit_not_written_back(tmp_path, monkeypatch):
     """泛匹配的在线结果不能沉淀进词典（否则永久污染锚点与城市视野）。"""
-    _, g = _mk(tmp_path, monkeypatch, payload={"resultType": 1, "pois": []})
+    # 显式指定只用高德：单源严格模式下「配了哪家就用哪家」，
+    # 不显式配的话默认取「第一个可用」的源，mock 掉 _amap 后行为不确定。
+    _, g = _mk(tmp_path, monkeypatch, payload={"resultType": 1, "pois": []},
+               extra_env={"MAP_GEOCODING_ORDER": "amap"})
     from app.geocode import GeocodeResult
     g._amap = lambda name, city: [GeocodeResult(
         name="某生活广场", lon=121.4, lat=31.2, quality=0.7, source="amap",
