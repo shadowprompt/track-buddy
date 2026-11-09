@@ -188,6 +188,33 @@ def _track_straightness(polyline_px: Any) -> float:
     return float(min(1.0, chord / length))
 
 
+def _track_lacks_shape_info(
+    polyline_px: Any, bbox: Any, has_road_names: bool
+) -> bool:
+    """是否属于「轨迹被渲染成起终点连线」的低信息量输入。
+
+    单独用直线度不够：一段较长但确实沿直路骑的真实轨迹，弦长/总长
+    也能到 0.87（实测 12 图拼接样本 0.869）。三个条件必须同时成立：
+
+    * 折线整体贴近端连线（直线度 ≥ 0.80）；
+    * 轨迹框极度扁长（长边 / 短边 ≥ 4，实测起终点连线 7.5、
+      12 图拼接真实轨迹 2.0）；
+    * 截图里**没有可辨认的街道名锚点**——这是「看不到路、无法核对走向」
+      的直接证据。
+
+    有街道名锚点时交由缩放评估与路名约束处理，不在这里下结论。
+    """
+    pts = np.asarray(polyline_px, dtype=float)
+    if has_road_names or len(pts) < 20:
+        return False
+    try:
+        _, _, bw, bh = bbox
+        ratio = max(float(bw), float(bh)) / max(1.0, min(float(bw), float(bh)))
+    except (TypeError, ValueError):
+        return False
+    return _track_straightness(pts) >= 0.80 and ratio >= 4.0
+
+
 # 「大范围对象」类型：行政区、地铁线路。
 # 这类标注的文字位置与真实点位可差 1-16 公里，无法支撑街区级定位。
 _BROAD_KINDS = ("district", "transit")
@@ -295,9 +322,11 @@ class RidePipeline:
         # 缩放级别只看「米/像素」，抓不到「轨迹本身被渲染成直线」。
         # 这类输入下配准再准也得不到沿路的形状，必须明确说明，
         # 否则一个置信度不高却看起来精确的结果会误导用户。
-        if straightness >= 0.93 and len(track.polyline) >= 20:
+        if _track_lacks_shape_info(
+            track.polyline, track.bbox, bool(zoom.get("has_road_names"))
+        ):
             warnings.append(
-                f"截图里的轨迹线近乎笔直（直线度 {straightness:.2f}），"
+                "截图里的轨迹整体呈一条扁长的直线，且没有可辨认的街道名锚点，"
                 "很可能是起终点连线而非沿道路的实际轨迹：本结果只能定位到"
                 "街区级，无法还原沿路走向，画在底图上会横穿街区。"
                 "请截取包含完整轨迹曲线的页面，或把地图放大到能看到道路名后"

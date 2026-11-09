@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from app.pipeline import _track_straightness
+from app.pipeline import _track_lacks_shape_info, _track_straightness
 
 PIPELINE_SRC = (
     __import__("pathlib").Path(__file__).resolve().parent.parent
@@ -61,9 +61,39 @@ def test_never_exceeds_one() -> None:
     assert 0.0 <= _track_straightness(pts) <= 1.0
 
 
+def test_gate_needs_all_three_signals() -> None:
+    """只看直线度会误判「沿直路骑」的真实轨迹，必须三条件同时成立。"""
+    line = np.array([[float(i * 10), 1300.0 + 3.0 * np.sin(i / 9.0)]
+                     for i in range(80)])
+    flat_box = (100.0, 1300.0, 800.0, 100.0)   # 长宽比 8
+    square_box = (100.0, 1300.0, 800.0, 500.0)  # 长宽比 1.6
+    assert _track_lacks_shape_info(line, flat_box, False) is True
+    # 有街道名锚点：交给缩放评估与路名约束，不在这里下结论
+    assert _track_lacks_shape_info(line, flat_box, True) is False
+    # 轨迹框不扁长：可能是沿直路骑的真实轨迹（实测 12 图拼接为 2.0）
+    assert _track_lacks_shape_info(line, square_box, False) is False
+    # 真正曲折的轨迹不该被判成连线
+    bent = np.array([[float(i * 10), 1300.0 + 200.0 * np.sin(i / 6.0)]
+                     for i in range(80)])
+    assert _track_lacks_shape_info(bent, flat_box, False) is False
+    # 点数太少 / bbox 异常时安全降级
+    assert _track_lacks_shape_info(line[:5], flat_box, False) is False
+    assert _track_lacks_shape_info(line, None, False) is False
+
+
+def test_real_sample_triggers_the_gate() -> None:
+    """这次实测的直线轨迹（原始 731 点、bbox 710x95）必须触发。"""
+    line = np.array([[float(269 + i * 0.96), 1350.0 + 12.0 * np.sin(i / 12.0)]
+                     for i in range(731)])
+    # 原始折线带提取抖动，直线度约 0.83，仍在 0.80 门槛之上
+    assert _track_straightness(line) >= 0.80
+    assert _track_lacks_shape_info(line, (269.0, 1313.0, 710.0, 95.0), False)
+
+
 def test_pipeline_wires_the_warning_and_diagnostic() -> None:
-    """阈值、文案与 diagnostics 字段必须真接进主流程。"""
-    assert "straightness >= 0.93 and len(track.polyline) >= 20" in PIPELINE_SRC
+    """判据、文案与 diagnostics 字段必须真接进主流程。"""
+    assert "_track_lacks_shape_info(" in PIPELINE_SRC
+    assert 'bool(zoom.get("has_road_names"))' in PIPELINE_SRC
     assert "起终点连线而非沿道路的实际轨迹" in PIPELINE_SRC
     assert "请截取包含完整轨迹曲线的页面" in PIPELINE_SRC
     assert '"track_straightness",' in PIPELINE_SRC
