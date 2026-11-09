@@ -531,27 +531,31 @@ def _run_refine(shot_id: str, shot_path: Path) -> None:
         payload = _build_payload(result, shot_id, shot_path)
         payload.update(ctx.get("extra") or {})
         # 精修结果同样要落盘，否则用户刷新页面 / 打开对照页会退回
-        # 主流程那份未贴路的粗结果。两个条件都要满足：
-        #   1) 精修确实被采纳（road_fit.ok）——若护栏判定「疑似贴到
-        #      别的路上」而未采纳，落盘只会把未采纳的诊断信息写进
-        #      用户当前看到的结果；
-        #   2) 这张图仍是最近一次识别——避免精修期间用户又上传新图
-        #      后被旧任务覆盖。
-        if (payload.get("road_fit") or {}).get("ok"):
-            try:
-                prev = json.loads(
-                    (DATA_DIR / "last_result.json").read_text(encoding="utf-8")
-                )
-                if prev.get("shot_id") == shot_id:
-                    _persist_last_result(payload)
-                    if ctx.get("multi"):
-                        # 多图结果单独存一份，否则之后跑一次单图识别
-                        # 会把核对页上的拼接结果冲掉。
-                        (DATA_DIR / "last_stitch.json").write_text(
-                            json.dumps(payload, ensure_ascii=False),
-                            encoding="utf-8")
-            except (OSError, ValueError, KeyError, TypeError):
-                pass
+        # 主流程那份未精修的粗结果。
+        #
+        # ⚠️ 早期只在上层判 ``road_fit.ok`` 时才落盘，理由是「未采纳就
+        # 不必写诊断信息」。但候选路线可视化上线后这个前提不成立了：
+        # 护栏否决时 ``candidate_shift_*``、拒因与形状提示**只存在于
+        # 后台 payload**，不落盘的话刷新后橙色虚线和「在地图上查看
+        # 未采纳的贴路位置」按钮会一起消失。否决时输出位移为 0、
+        # 坐标一字未改，落盘只是补齐诊断信息，不会改动结果本身。
+        #
+        # 唯一保留的护栏是 shot_id：精修期间用户又上传新图时，
+        # 旧任务不能覆盖更新的结果。
+        try:
+            prev = json.loads(
+                (DATA_DIR / "last_result.json").read_text(encoding="utf-8")
+            )
+            if prev.get("shot_id") == shot_id:
+                _persist_last_result(payload)
+                if ctx.get("multi"):
+                    # 多图结果单独存一份，否则之后跑一次单图识别
+                    # 会把核对页上的拼接结果冲掉。
+                    (DATA_DIR / "last_stitch.json").write_text(
+                        json.dumps(payload, ensure_ascii=False),
+                        encoding="utf-8")
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
         # ⚠️ 落盘完成后才对外宣布 done：前端轮询拿到结果就会立刻渲染，
         # 若此时核对页的 last_result / last_stitch 还没写，用户刷新页面
         # 又会退回未精修的粗结果。

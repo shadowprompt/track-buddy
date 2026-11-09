@@ -165,6 +165,40 @@ def test_multi_auto_starts_verify_background_refine(env, monkeypatch):
     assert polled["payload"]["road_fit"]["ok"] is True
 
 
+def test_rejected_background_refine_is_persisted(env, monkeypatch):
+    """护栏否决时也必须落盘，否则刷新后橙线与候选切换按钮都会消失。"""
+    server, base, tmp_path = env
+
+    def rejected(base_result, *, mode="auto"):
+        return replace(base_result, road_fit={
+            "ok": False,
+            "shift_e_m": 0.0, "shift_n_m": 0.0,
+            "median_before_m": 78.1, "median_after_m": 78.1,
+            "candidate_shift_e_m": -55.0, "candidate_shift_n_m": -175.0,
+            "candidate_median_after_m": 6.4,
+            "candidate_shift_px": [-19.73, 62.79],
+            "notes": ["路网精修未采纳（可靠锚点残差 52m → 222m）"],
+        })
+
+    monkeypatch.setattr(server._pipeline, "refine_existing", rejected)
+
+    with TestClient(server.app) as client:
+        resp = _post(client, n=3)
+        assert resp.status_code == 200, resp.text
+        shot_id = resp.json()["shot_id"]
+
+    job = _wait_done(server, shot_id)
+    assert job["state"] == "done", job
+    for name in ("last_result.json", "last_stitch.json"):
+        saved = json.loads((tmp_path / name).read_text(encoding="utf-8"))
+        assert saved["shot_id"] == shot_id
+        rf = saved["road_fit"]
+        assert rf["ok"] is False
+        assert rf["candidate_shift_px"] == [-19.73, 62.79]
+        # 否决时输出位移归零，落盘不能把坐标改掉
+        assert rf["shift_e_m"] == 0.0 and rf["shift_n_m"] == 0.0
+
+
 def test_multi_sync_refine_on_has_no_background_job(env, monkeypatch):
     server, _, _ = env
     seen: dict = {}

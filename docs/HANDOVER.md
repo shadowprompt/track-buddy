@@ -4621,10 +4621,24 @@ POI/车站锚点重新拟合：尺度 2.7538（差 0.6%），中心点只差
 
 ### 验证
 
+### 收尾修复：被否决的后台精修也要落盘
+
+`server._run_refine` 早期只在 `road_fit.ok` 为真时才写 `last_result.json`
+（当时理由是「未采纳就不必写诊断信息」）。候选路线可视化上线后这个前提
+失效了：**护栏否决时** `candidate_shift_*`、拒因与形状提示只存在后台
+payload 里，不落盘的话用户刷新页面，橙色虚线和「查看候选位置」按钮
+会一起消失。现在去掉 `ok` 门槛，只保留 `shot_id` 一致性保护（防止
+精修期间用户又上传新图后被旧任务覆盖）；否决时输出位移为 0，
+落盘只是补齐诊断信息，不改坐标。新增
+`tests/test_multi_refine.py::test_rejected_background_refine_is_persisted`。
+
+### 验证
+
 新增 `tests/test_track_straightness.py`（9 项：直线 / 转弯 / 缩放平移不变 /
 退化输入 / 上界 / 三条件门槛 / 真实样本触发 / 主流程接线），
 `tests/test_frontend_refine_control.py` 追加 3 项静态契约（去重文案、
-候选切换按钮与换算）；全量 **285 passed**。
+候选切换按钮与换算），`test_multi_refine.py` 追加 1 项落盘；全量
+**286 passed**。
 
 真实单图端到端（`1794226850_77de82b4`，主请求 34.9 秒、后台 4 秒）：
 
@@ -4636,4 +4650,8 @@ POI/车站锚点重新拟合：尺度 2.7538（差 0.6%），中心点只差
 | 后台 `road_fit` | `ok=false`，候选 东−55 / 北−175 m，贴路 78.1 → **6.4 m**，`candidate_shift_px=[-19.73, 62.79]` |
 
 候选字段齐全，前端「在地图上查看未采纳的贴路位置」按钮可正常构造候选坐标。
+落盘修复后再次端到端（`1794227434_0877ed2d`，主请求 28.0 秒）：
+`last_result.json` 的 `shot_id` 与本次一致、形状提示为 `true`、
+`road_fit.ok=false` 且 `candidate_shift_px=[-19.73, 62.79]`、
+候选 −55/−175 m、贴路 6.4 m —— **刷新页面仍能看到橙线与切换按钮**。
 产物留在 `output/verify_straight_final.json`（已 gitignore）。
