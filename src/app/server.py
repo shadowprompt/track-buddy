@@ -169,6 +169,7 @@ def _build_payload_from(result: Any, shot_id: str, shot_url: str) -> dict[str, A
         "warnings": result.warnings,
         "elapsed_ms": result.elapsed_ms,
         "track_polyline_px": result.track_polyline_px,
+        "map_matched": result.map_matched,
         "image_size": list(result.image_size),
     }
 
@@ -507,6 +508,7 @@ def _build_payload(result: Any, shot_id: str, shot_path: Path) -> dict[str, Any]
         "warnings": result.warnings,
         "elapsed_ms": result.elapsed_ms,
         "track_polyline_px": result.track_polyline_px,
+        "map_matched": result.map_matched,
         "image_size": list(result.image_size),
     }
 

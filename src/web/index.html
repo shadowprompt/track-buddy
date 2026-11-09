@@ -804,6 +804,12 @@ __WB_AMAP_SDK__
             return '<li>' + esc(s) + '</li>';
           }).join('') + '</ul>'
         : '') +
+      (dg.map_match && dg.map_match.ok
+        ? '<div class="kv"><span>沿路匹配（备选）</span><span>平均吸附 ' +
+          num(dg.map_match.mean_snap_m, 0, '—') + ' m / ' +
+          int(dg.map_match.n_points, 0) +
+          ' 点（主结果与里程未改动）</span></div>'
+        : '') +
       lowConfidenceHint(d);
 
     // 用户提供的路名约束

@@ -247,6 +247,17 @@ class AppConfig:
         return file_val
 
     @property
+    def map_match_enabled(self) -> bool:
+        """是否输出 HMM 地图匹配的**备选显示层**（默认关闭）。
+
+        开启后不改变主 GeoJSON / 置信度 / 里程，只在结果里多一份
+        ``map_matched``。低信息量直线输入仍由护栏强制跳过。
+        配置 ``MAP_MATCH_ENABLED=1`` 即可，无需重启（.env 热读）。
+        """
+        raw = (self._env_value("MAP_MATCH_ENABLED") or "").strip().lower()
+        return raw in ("1", "true", "yes", "on")
+
+    @property
     def amap_key(self) -> str | None:
         return self._env_value(AMAP_KEY_ENV)
 

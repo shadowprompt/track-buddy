@@ -99,6 +99,9 @@ class PipelineResult:
     # 的分数差只有 0.1%，但地理位置分散在 900-1600 米范围内。
     # 只给一个答案等于替用户乱猜，不如把几个候选摆出来。
     alternatives: list[dict[str, Any]] = field(default_factory=list)
+    # HMM 地图匹配的**备选显示层**（默认关闭）。主 GeoJSON / 置信度 /
+    # 里程一律不改，这里只是多给一份「沿路折线」供人工对照。
+    map_matched: dict[str, Any] = field(default_factory=dict)
     # 后台精修要复用的中间产物（只存在进程内，不进接口 payload）。
     # ``_build_payload*`` 是显式字段白名单，所以这里不会被序列化。
     refine_context: Any = None
@@ -162,6 +165,7 @@ DIAG_KEYS: tuple[str, ...] = (
     "scale_check",
     "route_validation",
     "input_quality",
+    "map_match",
     "start_marker",
     "end_marker",
     "online_geocoding",
@@ -521,6 +525,9 @@ class RidePipeline:
 
         geojson = _build_geojson(lonlat, reg, track)
 
+        # --- 可选：HMM 地图匹配（备选显示层，不改主结果） ---
+        map_matched = self._map_match_optional(reg, track, road_net, zoom)
+
         # --- 独立校验：与配准自洽指标无关的两条外部证据 ---
         # 截图里程来自 OCR、外部路由来自 Valhalla/OSRM，二者都不吃
         # 配准残差，因此能抓到"所有自洽指标一起变好但位置是错的"的情况。
@@ -598,6 +605,10 @@ class RidePipeline:
                 scale_check=scale_check,
                 route_validation=route_check,
                 input_quality=input_quality,
+                map_match=(
+                    {k: map_matched.get(k) for k in
+                     ("ok", "reason", "mean_snap_m", "median_snap_m", "n_points")}
+                    if map_matched else None),
                 start_marker=list(track.start_marker) if track.start_marker else None,
                 end_marker=list(track.end_marker) if track.end_marker else None,
                 # ⚠️ 这个字段的语义是「本次识别**真的用到**了在线源」，
@@ -612,6 +623,7 @@ class RidePipeline:
                 zoom=zoom,
             ),
             warnings=warnings,
+            map_matched=map_matched,
             elapsed_ms=int((time.time() - t0) * 1000),
             debug={"track_mask": track.mask},
             track_polyline_px=[[int(px), int(py)] for px, py in simplified],
@@ -2022,6 +2034,31 @@ class RidePipeline:
             return RoadAttribution(source="none", note="无路名标签可用")
         pts = [(float(px), float(py)) for px, py in simplified]
         return attribute_by_shot_labels(lonlat_gcj, pts, labels)
+
+    def _map_match_optional(
+        self, reg: Registration, track: TrackResult,
+        road_net: Any, zoom: dict[str, Any],
+    ) -> dict[str, Any]:
+        """可选：输出 HMM 地图匹配的沿路折线（默认关闭）。
+
+        三条护栏在 ``mapmatch.hmm_match`` 内部；这里额外把
+        「起终点直线」这类低信息量输入显式传进去，避免把概览页的
+        直连线强行贴成一条看似合理的路。
+        """
+        if not self.cfg.map_match_enabled:
+            return {}
+        if road_net is None or getattr(road_net, "tree", None) is None:
+            return {"ok": False, "reason": "无可用路网几何（本次未取路网）"}
+        low = _track_lacks_shape_info(
+            track.polyline, track.bbox, bool(zoom.get("has_road_names")))
+        try:
+            from .mapmatch import hmm_match
+
+            return hmm_match(
+                reg, track.polyline, road_net, low_shape_info=low
+            ).to_dict()
+        except Exception as exc:  # noqa: BLE001 — 备选层失败不能影响主结果
+            return {"ok": False, "reason": f"地图匹配失败：{type(exc).__name__}"}
 
     def _self_check(
         self, reg: Registration, pairs: list[AnchorPair]
