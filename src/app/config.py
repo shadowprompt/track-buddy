@@ -7,7 +7,43 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# 目录布局（2026-11 起）：
+#
+#   <repo>/            仓库根：data/ samples/ docs/ tests/ .env
+#     src/             源代码
+#       app/           Python 包（识别核心）
+#       web/           前端页面与静态资源
+#       tools/         实验与诊断脚本
+#
+# SRC_ROOT = src/，ROOT = 仓库根。
+#
+# ⚠️ **ROOT 必须是「含 data/ 的那一层」，不能用固定的 parent.parent**：
+# 本文件会被复制进技能包，vendor 布局是
+# ``<skill>/assets/ride_core/app/config.py`` + ``<core>/data/``，
+# 与仓库布局差了两层。固定层数会让 vendor 版去读**技能包外面**的
+# data/，直接读不到词典。
+# 所以改成向上查找「最近的、含 data/ 目录的祖先」，两种布局都对。
+_APP_DIR = Path(__file__).resolve().parent
+
+
+def _find_root(start: Path) -> Path:
+    """向上找最近的、含 ``data/`` 目录的祖先目录。
+
+    仓库布局：``<repo>/src/app/config.py`` → ``<repo>``（有 data/）
+    vendor 布局：``<core>/app/config.py`` → ``<core>``（有 data/）
+
+    找不到时退回 ``start.parent.parent``（等价于旧的固定层数）。
+    """
+    for cand in (start, *start.parents):
+        if (cand / "data").is_dir():
+            return cand
+    return start.parent.parent
+
+
+ROOT = _find_root(_APP_DIR)
+# src/ 根：仓库布局下是 ROOT/src；vendor 布局下 app/ 直接在 ROOT 下。
+SRC_ROOT = ROOT / "src" if (ROOT / "src" / "app").is_dir() else ROOT
+
 SAMPLES_DIR = ROOT / "samples"
 DATA_DIR = ROOT / "data"
 

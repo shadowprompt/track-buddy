@@ -212,13 +212,13 @@ def test_old_ds_format_not_reintroduced():
     厂商实现已迁入 ``app/maps/geocoding/providers.py``，护栏随之迁移，
     并额外要求「声明输出坐标系 + 走契约层换算」——漏转会整体偏约 570 m。
     """
-    src = (ROOT / "app" / "maps" / "geocoding" / "providers.py").read_text(
+    src = (ROOT / "src" / "app" / "maps" / "geocoding" / "providers.py").read_text(
         encoding="utf-8")
     body = src.split("class TiandituProvider", 1)[1].split("\nclass ", 1)[0]
     assert "postStr" in body and '"ds"' not in body
     assert '.get("items"' not in body
     assert "CRS.CGCS2000" in body, "必须声明输出坐标系"
     assert ".gcj02" in body, "坐标必须经契约层统一换算"
-    contracts = (ROOT / "app" / "maps" / "contracts.py").read_text(
+    contracts = (ROOT / "src" / "app" / "maps" / "contracts.py").read_text(
         encoding="utf-8")
     assert "def to_gcj02" in contracts and "wgs84_to_gcj02" in contracts

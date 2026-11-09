@@ -160,7 +160,7 @@ def build_road_verify(res, sample: str, out_dir: str) -> str:
     """
     res = _normalize(res)
     img, reg = _registration(res, sample)
-    from app.roadfit import fetch_roads
+    from .roadfit import fetch_roads
     gcj_all = res["geojson_gcj02"]["features"][0]["geometry"]["coordinates"]
     lons = [c[0] for c in gcj_all]
     lats = [c[1] for c in gcj_all]

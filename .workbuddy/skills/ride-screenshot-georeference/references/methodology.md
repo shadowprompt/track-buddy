@@ -94,7 +94,7 @@ dlat, dlon = _transform_lat(lon - 105.0, lat - 35.0)   # ← dlon 也取了 lat 
 
 **路名文字仍有价值**，但只能用于：
 - 「区域一致性校验」（判断候选是否落在合理街区）
-- 路名归属（`app/roadname.py`，用走向匹配筛掉方向不符的标注）
+- 路名归属（`src/app/roadname.py`，用走向匹配筛掉方向不符的标注）
 
 ---
 
@@ -110,7 +110,7 @@ RANSAC 退化检查：2 点时**不能**要求 `matrix_rank >= 2`（2 点秩恒�
 
 ---
 
-## 6. 路网约束精修（`app/roadfit.py`）
+## 6. 路网约束精修（`src/app/roadfit.py`）
 
 **动机**：锚点来自 POI 文字标注，标注位置由地图排版决定；POI 坐标来自不同
 数据库（美团底图用国内数据，本地词典种子来自 OSM）。同一 POI 在两套数据里可差
@@ -214,7 +214,7 @@ OSM 在那里恰好有个顶点，就被误当成吻合。把整条线投影回�
 cd /d/Dev/meituan-ride
 
 # 识别 + 全部产物
-python -m app.cli samples/meituan_ride_shanghai.jpg --out out/
+python -m app.cli samples/meituan_ride_shanghai.jpg --out out/   # 需 PYTHONPATH=src
 
 # 绝对精度校验（渲染路网判据）
 python tools/verify_roads.py samples/meituan_ride_shanghai.jpg

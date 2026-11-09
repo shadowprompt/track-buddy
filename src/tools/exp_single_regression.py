@@ -24,12 +24,14 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+# 仓库根（data/ samples/ tmp_debug/）与 src/ 根（app/ 包）
+ROOT = Path(__file__).resolve().parent.parent.parent
+SRC = ROOT / "src"
+sys.path.insert(0, str(SRC))
 
 
 def _load_old_track():
-    path = ROOT / "tmp_debug/ab_old/app/track.py"
+    path = ROOT / "tmp_debug/ab_old/src/app/track.py"
     spec = importlib.util.spec_from_file_location("app._track_ab_old", str(path))
     mod = importlib.util.module_from_spec(spec)
     sys.modules["app._track_ab_old"] = mod

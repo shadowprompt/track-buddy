@@ -22,7 +22,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_WATERS_FILE = ROOT / "data" / "waters.json"
 WATERS_FILE_ENV = "RIDE_WATERS_JSON"
 

@@ -31,7 +31,7 @@ GPS 坐标不在图片里，要用图上印的 POI 标注当锚点做像素→�
 python ~/.workbuddy/skills/ride-screenshot-georeference/scripts/recognize.py <图片> --out <目录>
 
 # 等价的 CLI
-python -m app.cli <图片> --city 上海 --out <目录>
+python -m app.cli <图片> --city 上海 --out <目录>   # 需 PYTHONPATH=src
 ```
 
 | 路径 | 说明 |
@@ -40,16 +40,16 @@ python -m app.cli <图片> --city 上海 --out <目录>
 | `.../scripts/recognize.py` | 调用封装，输出 JSON 摘要 |
 | `.../assets/ride_core/` | **打包进来的识别内核**（app 包 + 本地词典 + 依赖清单） |
 | `.../references/methodology.md` | 方法论、判据设计、踩坑记录 |
-| `app/cli.py` | 无需服务即可调用的命令行入口 |
-| `app/visuals.py` | 三种可视化产出（叠加图 / 验证图 / 轨迹图） |
-| `tools/sync_skill.py` | 把内核同步进各份技能安装（避免副本漂移） |
+| `src/app/cli.py` | 无需服务即可调用的命令行入口 |
+| `src/app/visuals.py` | 三种可视化产出（叠加图 / 验证图 / 轨迹图） |
+| `src/tools/sync_skill.py` | 把内核同步进各份技能安装（避免副本漂移） |
 | `dist/ride-screenshot-georeference.zip` | 打包好的技能（77 KB，完全自包含） |
 
 **技能包是完全自包含的**：解压到任意目录即可运行，不依赖本仓库存在。
 已实测：把 zip 解压到全新临时目录，仅靠包内内核跑出的结果与本仓库
 完全一致（conf 0.863 / 180 点 / 4.000 km / 路名一致）。
 
-三处安装位置（内容一致，由 `tools/sync_skill.py` 同步）：
+三处安装位置（内容一致，由 `src/tools/sync_skill.py` 同步）：
 
 | 位置 | 作用域 |
 |---|---|
@@ -58,7 +58,7 @@ python -m app.cli <图片> --city 上海 --out <目录>
 | `<工作区>/.workbuddy/skills/ride-screenshot-georeference/` | 项目级，当前工作区生效 |
 
 **维护约定**：代码只在本仓库改，改完执行
-`python tools/sync_skill.py <各技能目录>` 同步。
+`python src/tools/sync_skill.py <各技能目录>` 同步。
 
 ## 快速开始
 
@@ -66,7 +66,7 @@ python -m app.cli <图片> --city 上海 --out <目录>
 pip install -r requirements.txt
 python run.py                    # http://127.0.0.1:8000
 python run.py --port 9000        # 指定端口
-python -m app.server --reload    # 开发模式（热重载）
+python -m app.server --reload    # 开发模式（热重载，需 PYTHONPATH=src）
 ```
 
 打开浏览器访问 `http://127.0.0.1:8000`，上传截图即可。
@@ -100,10 +100,10 @@ OSM/Nominatim。同一 POI 在两套数据里可差 100-300 米。
 
 修法分两步：
 
-1. **修正地理编码优先级**（`app/geocode.py`）：用户确认 > 在线服务（与美团
+1. **修正地理编码优先级**（`src/app/geocode.py`）：用户确认 > 在线服务（与美团
    底图同源）> 本地词典。早期实现是「词典优先」，只要词典命中就永不调用
    在线服务，配了 `AMAP_KEY` 也用不上——这是根因。
-2. **路网约束精修**（`app/roadfit.py`）：道路几何不存在基准不一致的问题。
+2. **路网约束精修**（`src/app/roadfit.py`）：道路几何不存在基准不一致的问题。
    在保持尺度与朝向的前提下平移轨迹，使贴路距离最小，再把平移量并入配准
    矩阵。实测贴路中位距离 61 m → 5 m，路名归属随即输出为用户实骑的那几条。
 
@@ -117,7 +117,7 @@ OSM/Nominatim。同一 POI 在两套数据里可差 100-300 米。
 
 ## 坐标系转换：一个让整条链路偏 400 米的 bug
 
-`app/geo/coords.py` 里的 GCJ-02 转换曾经有一个**万里挑一的实现错误**：
+`src/app/geo/coords.py` 里的 GCJ-02 转换曾经有一个**万里挑一的实现错误**：
 
 ```python
 dlat, dlon = _transform_lat(lon - 105.0, lat - 35.0)   # ← dlon 也取了 lat 的结果
@@ -255,7 +255,7 @@ var s = new Error("Unhandled error." + (a ? " (" + a.message + ")" : ""));
 即某个组件触发了 `'error'` 事件但**没有监听器**，且第一个参数不是 `Error` 实例。
 腾讯地图 GL JS 鉴权失败时走的正是这条路。
 
-**鉴权为什么会失败**：`web/index.html` 里的
+**鉴权为什么会失败**：`src/web/index.html` 里的
 
 ```js
 serviceHost: 'http://127.0.0.1:__WB_HTTP_PORT__/_TMapService/_wbt/__WB_TMAP_SECRET__',
@@ -270,9 +270,9 @@ serviceHost: 'http://127.0.0.1:__WB_HTTP_PORT__/_TMapService/_wbt/__WB_TMAP_SECR
 
 **修法**：
 
-1. 实现 `app/tmap_proxy.py`：真实转发 `checkKey` / `oversea` / `pingd` 到腾讯地图上游，
+1. 实现 `src/app/tmap_proxy.py`：真实转发 `checkKey` / `oversea` / `pingd` 到腾讯地图上游，
    在服务端注入 key，浏览器永远拿不到 key
-2. 首页改为动态渲染（`app/server.py` 的 `index()`），把端口与随机代理标记填进页面
+2. 首页改为动态渲染（`src/app/server.py` 的 `index()`），把端口与随机代理标记填进页面
 3. 底图 key 用腾讯地图官方公开示例 key（`config.TMAP_PUBLIC_KEY`），
    用户配了自己的 `TMAP_KEY` 则优先用用户的
 4. **把「识别」与「渲染」彻底分开**：接口失败才显示「识别失败」；
@@ -290,7 +290,7 @@ serviceHost: 'http://127.0.0.1:__WB_HTTP_PORT__/_TMapService/_wbt/__WB_TMAP_SECR
 > **教训三**：真实浏览器测试是唯一可靠的手段。
 > 前两轮修复（容器尺寸检查、隐藏时跳过）方向都对但都不是根因，
 > 只有 Playwright 抓到真实的 `pageerror` 才定位到真相。
-> 见 `tools/verify_browser.py`。
+> 见 `src/tools/verify_browser.py`。
 
 ### 原图预览下半部分显示不全
 
@@ -647,10 +647,10 @@ curl -X POST http://127.0.0.1:8848/api/recognize_multi \
 
 ### 怎么自己验证
 
-打开 `web/verify.html`（腾讯底图，GCJ-02 坐标，起终点已标注），
+打开 `src/web/verify.html`（腾讯底图，GCJ-02 坐标，起终点已标注），
 对照原始截图核对：轨迹应落在北翟路—淞虹路一线，终点贴「上海荟聚」。
 
-`web/verify_wgs.html` 是同一份数据的 WGS-84 版本，两者相差约 350 米，
+`src/web/verify_wgs.html` 是同一份数据的 WGS-84 版本，两者相差约 350 米，
 用来直观感受坐标系基准差。
 
 ---
@@ -804,7 +804,7 @@ if not topo_ok and (宽度可疑 or 形状可疑):
 12 张拼出的画布再大，徽章仍是几十像素、轨迹线仍是 10 像素左右。
 用画布尺寸去量内容，或固定一个数字不管画布多大，都会错。
 
-现在统一由 `app/scale.py` 的 `Scale` 派生，业务代码里不再出现裸像素数字：
+现在统一由 `src/app/scale.py` 的 `Scale` 派生，业务代码里不再出现裸像素数字：
 
 ```python
 scale  = Scale.from_image(img, badge_d)   # badge_d 从检出的徽章连通域反推
@@ -868,7 +868,7 @@ budget = canvas_pixel_budget(总输入像素)   # 内存预算 ∩ 输入规模
 2. **在线服务** — 按已配置的密钥自动选择高德 / 腾讯 / 百度 / 天地图。
    这些与美团底图同源，POI 坐标没有基准偏差
 3. **本地词典** `data/lexicon.json` — 离线可用，精度受限于种子来源
-4. **OSM 冷启动** `app/coldstart.py` — 前三级都没命中时的最后一道网
+4. **OSM 冷启动** `src/app/coldstart.py` — 前三级都没命中时的最后一道网
 
 返回多个候选时全部交给 RANSAC，由几何一致性挑选，天然处理同名地点歧义。
 
@@ -876,7 +876,7 @@ budget = canvas_pixel_budget(总输入像素)   # 内存预算 ∩ 输入规模
 `TIANDITU_API_KEY` / `TIANDITU_KEY` / `TIANDITU_TK` 都能识别，
 `/api/health` 会主动探测 tk 是否真的可用；二是天地图返回 CGCS2000
 （工程精度上等同 WGS-84），而项目内部锚点按 GCJ-02 处理；坐标换算统一由
-`app/maps/contracts.py::to_gcj02` 按 provider 声明的 `output_crs` 完成——
+`src/app/maps/contracts.py::to_gcj02` 按 provider 声明的 `output_crs` 完成——
 漏掉会整体偏约 570 米；
 三是普通搜索是「包含关键词」语义，项目只保留同名候选，并从词典里该城市
 的已核验坐标派生搜索视野，过滤异地同名（详见 HANDOVER §22.28）。
@@ -890,11 +890,11 @@ budget = canvas_pixel_budget(总输入像素)   # 内存预算 ∩ 输入规模
 这些真实地名，却因为「词典里没有、也没配密钥」而拿到 0 个坐标，配准直接失败。
 
 冷启动按城市限定范围去 OSM 检索这些地名。这与本项目既有做法一致——
-`app/seed_lexicon.py` 的初始词典种子本来就是「viewbox 限定的地理编码查询」
+`src/app/seed_lexicon.py` 的初始词典种子本来就是「viewbox 限定的地理编码查询」
 得到的。检索结果标记为 `osm` 源（权重低于用户确认与在线服务），
 并写回词典形成数据飞轮；它的 100-300 米基准偏差由第 ④.5 步的路网精修纠正。
 
-**冷启动的三阶段策略**（`app/coldstart.py`）
+**冷启动的三阶段策略**（`src/app/coldstart.py`）
 
 早期版本「要求完全同名 + 城市级 viewbox」，在浦东实测**6 个 POI 全部 0 命中**。
 三个原因分别对应三个阶段：
@@ -1030,14 +1030,14 @@ TIANDITU_API_KEY=
 `*_ENABLED=0` 开关整体关闭。
 
 **能力层约定**：后端四类能力（① 地理编码 / ② 路名 / ③ 道路几何 /
-④ 路线校验）都通过 `app/maps/` 的契约、凭证、注册表与 HTTP 基座装配。
+④ 路线校验）都通过 `src/app/maps/` 的契约、凭证、注册表与 HTTP 基座装配。
 每个 provider 必须声明 `output_crs`，框架统一换算到 GCJ-02；Overpass
 镜像表与轮换、Session/UA/限流/重试、路由结果磁盘缓存各只有一份实现。
 `/api/health` 新增 `maps.road_geometry` 与 `maps.route_validation`
 字段上报装配顺序（只读注册表、不打公共实例），新增服务商不需要改
 `server.py`。详见 HANDOVER §22.30–22.31。
 
-**网页底图**：前端底图走独立适配层 `web/js/basemap.js`，业务代码不直接
+**网页底图**：前端底图走独立适配层 `src/web/js/basemap.js`，业务代码不直接
 调用 `TMap.*`。已注册 `tmap`（腾讯 GL JS）与 `amap`（高德 JS API 2.0）
 两个实现，改 `.env` 的 `BASEMAP_PROVIDER` 即可切换，无需改代码；
 `/api/health` 的 `maps.basemap.provider` 会显示当前服务商。
@@ -1080,7 +1080,7 @@ TIANDITU_API_KEY=
 境外或未备案数据源。
 
 **密钥不下发到浏览器**：腾讯地图 GL JS 的鉴权请求（`checkKey` 等）由本地服务
-代理转发（`app/tmap_proxy.py`），key 只存在于服务端。
+代理转发（`src/app/tmap_proxy.py`），key 只存在于服务端。
 页面里只有随机生成的代理标记（`_wbt/<随机串>`），拿不到真正的 key。
 
 底图默认用腾讯地图官方公开示例 key（仅用于渲染底图）；用户配置了自己的
@@ -1090,10 +1090,10 @@ TIANDITU_API_KEY=
 **关于 OSM 的使用边界**：OSM 在本项目中**只提供坐标与几何参考**，
 不参与底图渲染，也不作为首选地理编码来源——
 
-- `app/roadfit.py`：OSM 路网几何用于「轨迹必须走在真实道路上」的几何判定与精修
-- `app/coldstart.py`：OSM 名称检索用于词典未覆盖区域的冷启动兜底，
+- `src/app/roadfit.py`：OSM 路网几何用于「轨迹必须走在真实道路上」的几何判定与精修
+- `src/app/coldstart.py`：OSM 名称检索用于词典未覆盖区域的冷启动兜底，
   优先级低于用户确认与四家持牌服务，结果标记为 `osm` 源并由路网精修纠正偏差
-- `app/seed_lexicon.py`：词典种子同样来自 OSM 名称检索（viewbox 限定）
+- `src/app/seed_lexicon.py`：词典种子同样来自 OSM 名称检索（viewbox 限定）
 
 页面底图始终是腾讯地图；坐标来源优先级见「③ 地理编码」。
 
@@ -1102,39 +1102,58 @@ TIANDITU_API_KEY=
 ## 项目结构
 
 ```
-app/
-  cli.py         命令令入口（python -m app.cli）
-  visuals.py     可视化产出（叠加图 / 验证图 / 轨迹图）
-  config.py      全局配置
-  cv_utils.py    中文路径读写、几何工具（含弧长保真的折线简化）
-  track.py       轨迹提取（掩膜、骨架化、图路径追踪）
-  ocr_anchor.py  OCR 封装与锚点分级
-  geocode.py     四级地理编码编排 + 在线源薄适配（实现在 maps/geocoding/）
-  coldstart.py   OSM 冷启动检索（新区域无词典覆盖时的兜底）
-  register.py    RANSAC 配准（north_up / similarity / affine）
-  roadfit.py     路网约束精修（真实道路几何纠正绝对位置）
-  roadname.py    路名领域模型 + 通用入口（实现在 maps/roadname/）
-  pipeline.py    流水线编排与 GeoJSON 输出
-  maps/          可插拔地图能力层（替换服务商只改 .env）
-    contracts.py    数据契约 / CRS 声明 / 统一换算 to_gcj02
-    credentials.py  env + .env 别名解析（唯一一处「找 key」）
-    registry.py     按能力装配、配置驱动顺序、回退、健康探测
-    http.py         Session / UA / 限流 / 重试 / 磁盘缓存
-    geocoding/      amap | tmap | baidu | tianditu 实现
-    roadname/       amap 实现（后续阶段接入道路几何与路线校验）
-  geo/coords.py  坐标转换与投影
-  server.py      FastAPI 服务（首页动态渲染，注入地图代理地址）
-  tmap_proxy.py 腾讯地图 GL JS 本地代理（鉴权转发，key 不下发浏览器）
-  seed_lexicon.py 词典种子生成
-web/
-  index.html     网页界面（腾讯地图 GL JS + 原图叠加）
-  verify.html    轨迹验证页（GCJ-02，腾讯底图直接可用）
-  verify_wgs.html 同一数据的 WGS-84 版本（对比基准差）
-tests/test_e2e.py 端到端验收测试（66 项）
-tests/test_frontend.py 前端逻辑与地图代理测试（29 项，Node.js）
-tools/verify_browser.py 真实浏览器端到端验证（Playwright，连续识别三张）
-data/lexicon.json 本地地名词典
+<仓库根>/
+  run.py           启动入口（python run.py，无需设 PYTHONPATH）
+  data/            本地词典与水系数据（入库）
+  samples/         测试截图（个人数据，不入库）
+  docs/            交接文档
+  tests/           pytest 测试
+  output/          运行时产物（不入库）
+  src/             ← 源代码
+    app/
+      cli.py         命令令入口（python -m app.cli）
+      visuals.py     可视化产出（叠加图 / 验证图 / 轨迹图）
+      config.py      全局配置（ROOT / SRC_ROOT 由目录结构自动探测）
+      cv_utils.py    中文路径读写、几何工具（含弧长保真的折线简化）
+      track.py       轨迹提取（掩膜、骨架化、图路径追踪）
+      ocr_anchor.py  OCR 封装与锚点分级
+      geocode.py     四级地理编码编排 + 在线源薄适配（实现在 maps/geocoding/）
+      coldstart.py   OSM 冷启动检索（新区域无词典覆盖时的兜底）
+      register.py    RANSAC 配准（north_up / similarity / affine）
+      roadfit.py     路网约束精修（真实道路几何纠正绝对位置）
+      roadname.py    路名领域模型 + 通用入口（实现在 maps/roadname/）
+      pipeline.py    流水线编排与 GeoJSON 输出
+      maps/          可插拔地图能力层（替换服务商只改 .env）
+        contracts.py    数据契约 / CRS 声明 / 统一换算 to_gcj02
+        credentials.py  env + .env 别名解析（唯一一处「找 key」）
+        registry.py     按能力装配、配置驱动顺序、回退、健康探测
+        http.py         Session / UA / 限流 / 重试 / 磁盘缓存
+        geocoding/      amap | tmap | baidu | tianditu 实现
+        roadname/       amap 实现
+        roads/          道路几何（OSM / Overpass 统一镜像与轮换）
+        routing/        路线校验（OSRM / Valhalla 共享基座）
+        staticmap/      静态地图素材（实验与合成测试用）
+      geo/coords.py  坐标转换与投影
+      server.py      FastAPI 服务（首页动态渲染，注入地图代理地址）
+      tmap_proxy.py 腾讯地图 GL JS 本地代理（鉴权转发，key 不下发浏览器）
+      seed_lexicon.py 词典种子生成
+    web/
+      index.html     网页界面（腾讯地图 GL JS + 原图叠加）
+      js/basemap.js  底图适配层（tmap | amap，业务代码不直接调 TMap.*）
+      verify.html    轨迹验证页（GCJ-02，腾讯底图直接可用）
+      verify_wgs.html 同一数据的 WGS-84 版本（对比基准差）
+    tools/
+      verify_browser.py 真实浏览器端到端验证（Playwright，连续识别三张）
+      exp_*.py       诊断与 A/B 实验脚本
 ```
+
+**为什么 `app/` 在 `src/` 下面**：`app` 是可导入的 Python 包，放在 `src/` 布局里
+能避免「仓库根目录被 `sys.path` 污染」——`tests/`、`tools/` 里的脚本
+`import app` 时命中的一定是 `src/app/`，不会误import到别处的同名目录。
+
+> ⚠️ `src/app/config.py` 的 `ROOT` 由**目录结构自动探测**（向上找最近的含
+> `data/` 的祖先目录），不是固定层数。因为同一份代码会被打包进技能包，
+> vendor 布局是 `<core>/app/` + `<core>/data/`，与仓库布局差两层。
 
 ---
 
@@ -1154,11 +1173,11 @@ data/lexicon.json 本地地名词典
 
 | 东西 | 放在哪 | 依据 |
 |---|---|---|
-| 像素阈值 | `app/scale.py` | 无量纲系数 × 标尺（画布对角线 / 徽章直径），见交接文档 22.22 |
-| 物理阈值 | `app/config.py` | 米/像素、米；如 `road_fit_low_zoom_m_per_px` |
+| 像素阈值 | `src/app/scale.py` | 无量纲系数 × 标尺（画布对角线 / 徽章直径），见交接文档 22.22 |
+| 物理阈值 | `src/app/config.py` | 米/像素、米；如 `road_fit_low_zoom_m_per_px` |
 | 地理参考数据 | `data/waters.json`、`data/seed_lexicon.json` | 河流岸线/半宽、POI 锚点坐标与 OCR 别名，可整体替换 |
 | 统计样本量 | 业务代码里的少量常量 | 与分辨率无关（如 NCC 需要几百个像素才稳定） |
-| 位移类阈值 | `app/config.py` | 绝对上限 + 被修正对象自身尺度的无量纲比例，二者取小，见交接文档 22.27 |
+| 位移类阈值 | `src/app/config.py` | 绝对上限 + 被修正对象自身尺度的无量纲比例，二者取小，见交接文档 22.27 |
 
 - 水系数据可用 `RIDE_WATERS_JSON` 指向自己的文件，POI 种子用
   `RIDE_SEED_LEXICON_JSON`；换城市不用改代码。

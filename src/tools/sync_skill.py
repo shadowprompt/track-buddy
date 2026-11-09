@@ -21,7 +21,9 @@ import os
 import shutil
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 仓库根（data/ requirements.txt）与 src/ 根（app/ 包）
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC = os.path.join(ROOT, "src")
 CORE_NAME = "ride_core"
 
 SKIP_DIRS = {"__pycache__", ".git", ".idea", "out", "dist", "cache", "uploads"}
@@ -40,7 +42,7 @@ def sync_one(target: str) -> str:
     app_dst = os.path.join(core, "app")
     if os.path.isdir(app_dst):
         shutil.rmtree(app_dst)
-    shutil.copytree(os.path.join(ROOT, "app"), app_dst, ignore=_ignore)
+    shutil.copytree(os.path.join(SRC, "app"), app_dst, ignore=_ignore)
 
     # 2) 词典
     data_dst = os.path.join(core, "data")

@@ -15,7 +15,7 @@ import ast
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def test_no_bare_except_pass():
     """不允许出现「裸 except: pass」——它会吞掉护栏的失败。"""
     bad = []
-    for f in sorted((ROOT / "app").glob("*.py")):
+    for f in sorted((ROOT / "src" / "app").glob("*.py")):
         src = f.read_text(encoding="utf-8")
         tree = ast.parse(src)
         for node in ast.walk(tree):
@@ -48,7 +48,7 @@ def test_check_crossing_call_signature():
 
     sig = set(check_crossing.__code__.co_varnames[
         :check_crossing.__code__.co_argcount])
-    src = (ROOT / "app" / "pipeline.py").read_text(encoding="utf-8")
+    src = (ROOT / "src" / "app" / "pipeline.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     bad = []
     for node in ast.walk(tree):
@@ -71,7 +71,7 @@ def test_water_check_reaches_result():
     from app.config import CONFIG
 
     pipe = RidePipeline(CONFIG)
-    src = (ROOT / "app" / "pipeline.py").read_text(encoding="utf-8")
+    src = (ROOT / "src" / "app" / "pipeline.py").read_text(encoding="utf-8")
     assert '"water_check": water_check' in src, "water_check 未写入返回值"
     # 确认 water_check 是在 except 之前赋值的（否则失败时永远是空）
     idx_assign = src.find('water_check = {')

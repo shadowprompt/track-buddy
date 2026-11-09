@@ -4,10 +4,10 @@
 用来定位「多图功能改造 pipeline 之后，老单图样本是否退化」。
 
 用法：
-    python tools/exp_ab_full.py <pkg_root> <img> [lexicon.json]
+    python src/tools/exp_ab_full.py <pkg_root> <img> [lexicon.json]
 
 pkg_root 传 `.` 表示当前工作区；传 `tmp_debug/ab_base` 表示
-`git archive 5713484 app` 导出的基线版本。
+`git archive 5713484 src` 导出的基线版本。
 旧包目录需要自备 data/lexicon.json、data/cache/ 和 .env
 （因为 app/config.py 的 ROOT 由 __file__ 决定）。
 """
@@ -21,8 +21,10 @@ from pathlib import Path
 
 import cv2
 
-PROJECT = Path(__file__).resolve().parent.parent
-pkg_root = (PROJECT / sys.argv[1]).resolve()
+# 仓库根（含 data/ samples/ docs/）与 src/ 根（含 app/ 包）
+PROJECT = Path(__file__).resolve().parent.parent.parent
+SRC = PROJECT / "src"
+pkg_root = (SRC / sys.argv[1]).resolve()
 img_path = Path(sys.argv[2])
 lexicon_path = Path(sys.argv[3]) if len(sys.argv) > 3 else None
 

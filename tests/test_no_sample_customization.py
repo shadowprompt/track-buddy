@@ -39,7 +39,7 @@ SAMPLE_MARKERS = (
 
 def _code_literals(module: str) -> list[object]:
     """收集代码里的字面量，排除注释与 docstring（历史排查记录）。"""
-    path = ROOT / "app" / f"{module}.py"
+    path = ROOT / "src" / "app" / f"{module}.py"
     tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
     doc_ids: set[int] = set()
     for node in ast.walk(tree):
@@ -67,7 +67,7 @@ def test_no_sample_specific_literals(module):
 
 
 def test_output_names_do_not_depend_on_filename():
-    src = (ROOT / "app" / "visuals.py").read_text(encoding="utf-8")
+    src = (ROOT / "src" / "app" / "visuals.py").read_text(encoding="utf-8")
     assert "_tag(" not in src
     assert "os.path.basename" not in src
     for name in ("overlay_result.png", "road_verify.png",
@@ -141,6 +141,6 @@ def test_seed_lexicon_is_external_and_replaceable(tmp_path):
 
 def test_physical_threshold_is_a_config_item():
     assert CONFIG.road_fit_low_zoom_m_per_px > 0
-    pipeline = (ROOT / "app" / "pipeline.py").read_text(encoding="utf-8")
+    pipeline = (ROOT / "src" / "app" / "pipeline.py").read_text(encoding="utf-8")
     assert "_ROAD_FIT_MAX_M_PER_PX" not in pipeline
     assert "self.cfg.road_fit_low_zoom_m_per_px" in pipeline

@@ -15,7 +15,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .config import CONFIG, DATA_DIR, ROOT, load_dotenv
+from .config import CONFIG, DATA_DIR, ROOT, SRC_ROOT, load_dotenv
 from .cv_utils import imread_unicode
 from .multishot import stitch as stitch_images
 from .pipeline import RidePipeline
@@ -586,7 +586,7 @@ def lexicon_export() -> FileResponse:
 
 
 # --- 静态前端 ---
-WEB_DIR = ROOT / "web"
+WEB_DIR = SRC_ROOT / "web"
 if WEB_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 

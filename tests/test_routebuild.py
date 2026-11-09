@@ -10,11 +10,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import sys
 
 import numpy as np
 
-sys.path.insert(0, r"D:\Dev\meituan-ride")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from app.routebuild import _endpoints, build_route
 from app.seampath import insert_seams

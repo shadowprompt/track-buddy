@@ -219,5 +219,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, ".")
+    # 兜底：主流程已把 src/ 加进 sys.path，这里再确保一次。
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     raise SystemExit(main())

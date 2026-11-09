@@ -4257,3 +4257,66 @@ html = html.replace(PLACEHOLDER_BASEMAP, basemap_provider)
 
 代价是每次取值多读一次文件内容——`.env` 只有几十行，
 而配置读取不在热点路径上，这个代价可以忽略。
+
+## 22.34 目录结构重构：源代码收进 src/
+
+### 新布局
+
+```
+<仓库根>/
+  run.py           启动入口（自己设好 sys.path，不需要 PYTHONPATH）
+  data/ samples/ docs/ tests/ output/     数据与文档留在根目录
+  src/
+    app/           Python 包（识别核心）
+    web/           前端页面与底图适配层
+    tools/         诊断与 A/B 实验脚本
+```
+
+`app/` → `src/app/`、`web/` → `src/web/`、`tools/` → `src/tools/`，
+根目录 4 个 `trajectory*.geojson` 移到 `output/`（该目录已 gitignore）。
+
+### 三个必须小心的点
+
+**1. `config.py` 的 `ROOT` 不能用固定层数。**
+本文件会被打包进技能包，vendor 布局是
+`<skill>/assets/ride_core/app/config.py` + `<core>/data/`，
+与仓库布局差两层。固定层数会让 vendor 版去读**技能包外面**的 data/，
+直接读不到词典。改成向上查找「最近的、含 `data/` 目录的祖先」，
+两种布局都对。`SRC_ROOT` 同理：仓库布局是 `ROOT/src`，
+vendor 布局下 `app/` 直接在 `ROOT` 下。
+
+**2. A/B 工具的语义分层。**
+`src/tools/exp_ab_full.py` 会把历史版本的 `src` 导出到临时目录再导入。
+基线的 data/ 与 .env 放在**导出目录根部**，所以 `PROJECT` 必须仍指仓库根，
+`pkg_root` 则要指 `src/`（那里才有 app 包）。两个常量现在显式分开。
+
+**3. 顺带修掉一批硬编码绝对路径。**
+`tests/test_endpointfit.py` / `test_routebuild.py` / `test_valhalla.py` /
+`test_waterguard.py` 曾把 `r"D:/Dev/meituan-ride"` 写死在 `sys.path`，
+`test_waterguard.py` 还有两处硬编码的数据/缓存路径——换台机器就崩。
+全部改成从 `__file__` 推导。`src/tools/probe_basemap_match.py` 里的
+`sys.path.insert(0, ".")` 也一样：它依赖当前工作目录，从别处调用就找不到包。
+
+### 顺带引入的改进
+
+- 新增 `tests/conftest.py`：把 `src/` 加进 `sys.path`，**所有测试自动生效**，
+  不必每个文件各写一遍 `sys.path.insert`（那种写法容易漏、也容易在
+  目录调整时全网改一遍）。
+- 包内 2 处绝对导入 `from app.xxx import` 改成相对导入
+  （`routebuild.py` / `visuals.py`）——包内用相对导入才不受包位置影响。
+- `run.py` 自己把 `src/` 加进 `sys.path`，所以 `python run.py` 直接能跑，
+  用户不需要手动设 `PYTHONPATH`。
+- 技能脚本 `recognize.py` 现在**同时支持两种内核布局**：
+  仓库模式 `<root>/src/app/` 与 vendor 模式 `<root>/app/`，
+  并按布局设置对应的 `PYTHONPATH`。
+
+### 新增回归
+
+`tests/test_project_layout.py` 11 项，从**结构**上锁住布局：
+三块源码在 src/ 下且根目录无残留、data/samples/docs/tests 仍在根、
+根目录无游离 geojson、两种布局下 `ROOT`/`DATA_DIR`/`WEB_DIR` 都正确、
+无硬编码绝对路径、无依赖 CWD 的 `sys.path.insert(0, ".")`、
+`from __future__` 都在文件开头、`python run.py --help` 无需 PYTHONPATH 即可运行。
+
+**教训**：目录重构最怕「路径错了但测试不报」——
+所以测试必须从结构层面验证，而不是只跑一遍功能测试。

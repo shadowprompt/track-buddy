@@ -23,8 +23,9 @@ import cv2
 import numpy as np
 from scipy.spatial import cKDTree
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+# 仓库根（samples/ docs/）与 src/ 根（app/ 包）
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from app.config import CONFIG  # noqa: E402
 from app.cv_utils import imread_unicode, imwrite_unicode  # noqa: E402

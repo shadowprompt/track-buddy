@@ -16,7 +16,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -29,7 +29,7 @@ def test_dotenv_loaded_on_import():
         "import sys; sys.path.insert(0, %r);"
         "from app.config import CONFIG;"
         "print('AMAP' if CONFIG.amap_key else 'NONE')"
-        % str(ROOT)
+        % str(ROOT / "src")
     )
     env = dict(os.environ)
     # 故意清掉环境变量里的 AMAP_KEY，确保只能靠 .env 提供
@@ -52,7 +52,7 @@ def test_probe_reports_hint():
     """探测失败时必须给出可读的 hint，而不是只丢一个错误码。"""
     from app.geocode import Geocoder
 
-    src = (ROOT / "app" / "geocode.py").read_text(encoding="utf-8")
+    src = (ROOT / "src" / "app" / "geocode.py").read_text(encoding="utf-8")
     assert "def probe_online" in src, "缺少 probe_online"
     assert "USERKEY_PLAT_NOMATCH" in src, "未处理 10009 平台类型不匹配"
     assert "Web服务" in src, "未给出正确的 key 类型指引"
@@ -62,7 +62,7 @@ def test_probe_reports_hint():
 
 def test_probe_is_wired_to_health():
     """health 接口必须调用探测，否则「配错 key」依然看不出来。"""
-    src = (ROOT / "app" / "server.py").read_text(encoding="utf-8")
+    src = (ROOT / "src" / "app" / "server.py").read_text(encoding="utf-8")
     assert "probe_online()" in src, "health 未调用 probe_online"
     assert '"probe"' in src, "health 未返回 probe 字段"
     print("  [OK] health 已接入主动探测")
@@ -70,7 +70,7 @@ def test_probe_is_wired_to_health():
 
 def test_amap_error_not_silent():
     """_amap 失败时不能静默 return []，必须留下原因。"""
-    src = (ROOT / "app" / "geocode.py").read_text(encoding="utf-8")
+    src = (ROOT / "src" / "app" / "geocode.py").read_text(encoding="utf-8")
     # 找到 _amap 方法体，确认里面有 _last_error 赋值
     i = src.find("def _amap(")
     assert i > 0

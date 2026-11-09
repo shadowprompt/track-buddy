@@ -9,12 +9,13 @@
   2. 与 `Registration.pixel_to_mercator` 的约定一致（同样的矩阵能互换）
   3. 尺度与旋转的符号正确（北在上、东在右）
 """
+from pathlib import Path
 import math
 import sys
 
 import numpy as np
 
-sys.path.insert(0, r"D:\Dev\meituan-ride")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from app.endpointfit import two_point_similarity, _apply, _compose
 from app.register import Registration
 from app.geo.coords import lonlat_to_mercator, mercator_to_lonlat

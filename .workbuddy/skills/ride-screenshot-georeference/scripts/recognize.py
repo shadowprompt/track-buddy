@@ -12,10 +12,14 @@
   2. **技能自带的内核**（assets/ride_core/）—— 技能包自带识别代码，
      复制到任何机器都能独立运行
   3. 技能目录上溯三级 —— 技能装在 <仓库>/.workbuddy/skills/ 下时，
-     上溯三级正好是仓库根目录（那里就有 app/）
+     上溯三级正好是仓库根目录（那里就有 src/app/）
   4. 常见安装位置 D:\\Dev\\meituan-ride
 
 也可用 --project 显式指定。
+
+⚠️ **两种内核布局**：
+  * 仓库模式   —— app 包在 ``<root>/src/app/``，需把 ``<root>/src`` 加进 PYTHONPATH；
+  * 技能自带   —— app 包在 ``<root>/app/``（vendor 时被拍平），直接用 ``<root>``。
 """
 from __future__ import annotations
 
@@ -39,14 +43,31 @@ _CANDIDATES = [
 
 
 def find_project() -> str | None:
-    """返回含 app/cli.py 的目录，找不到返回 None。"""
+    """返回含 app/cli.py 的目录，找不到返回 None。
+
+    兼容两种布局：仓库模式 ``<root>/src/app/cli.py`` 与
+    技能自带的 vendor 模式 ``<root>/app/cli.py``。
+    """
     for cand in _CANDIDATES:
         if not cand:
             continue
         path = os.path.abspath(cand)
         if os.path.isfile(os.path.join(path, "app", "cli.py")):
             return path
+        if os.path.isfile(os.path.join(path, "src", "app", "cli.py")):
+            return path
     return None
+
+
+def _cli_layout(project: str) -> tuple[str, str]:
+    """返回 (app 包所在目录, 需要加进 PYTHONPATH 的目录)。
+
+    仓库模式：app 在 ``<root>/src/app``，PYTHONPATH 加 ``<root>/src``。
+    vendor 模式：app 在 ``<root>/app``，PYTHONPATH 加 ``<root>``。
+    """
+    if os.path.isfile(os.path.join(project, "app", "cli.py")):
+        return project, project
+    return os.path.join(project, "src"), os.path.join(project, "src")
 
 
 def main() -> int:
@@ -63,7 +84,10 @@ def main() -> int:
     args = ap.parse_args()
 
     project = os.path.abspath(args.project) if args.project else find_project()
-    if not project or not os.path.isfile(os.path.join(project, "app", "cli.py")):
+    has_cli = (project and os.path.isfile(os.path.join(project, "app", "cli.py")))
+    if not has_cli and project:
+        has_cli = os.path.isfile(os.path.join(project, "src", "app", "cli.py"))
+    if not project or not has_cli:
         print(json.dumps({
             "ok": False,
             "error": "找不到底层项目（meituan-ride）。"
@@ -78,6 +102,7 @@ def main() -> int:
         return 2
 
     python = shutil.which("python") or sys.executable
+    _, pypath = _cli_layout(project)
     cmd = [python, "-m", "app.cli", os.path.abspath(args.image),
            "--city", args.city]
     if args.out:
@@ -89,8 +114,14 @@ def main() -> int:
     if args.no_road_verify:
         cmd.append("--no-road-verify")
 
+    # app 包在 src/app/（仓库模式）或 app/（vendor 模式），
+    # 都要把它所在的目录放进 PYTHONPATH 才能 `python -m app.cli`。
+    env = dict(os.environ)
+    env["PYTHONPATH"] = pypath + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+
     proc = subprocess.run(cmd, cwd=project, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace")
+                          encoding="utf-8", errors="replace", env=env)
     out = (proc.stdout or "").strip()
     err = (proc.stderr or "").strip()
 

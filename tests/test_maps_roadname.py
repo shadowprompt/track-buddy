@@ -72,7 +72,7 @@ def test_amap_key_goes_through_credential_store(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, monkeypatch, ["AMAP_KEY=from-dotenv"])
     monkeypatch.setattr(config_mod, "CONFIG", cfg)
     assert roadname_mod._amap_key() == "from-dotenv"
-    src = (ROOT / "app" / "roadname.py").read_text(encoding="utf-8")
+    src = (ROOT / "src" / "app" / "roadname.py").read_text(encoding="utf-8")
     assert "os.environ.get" not in src, "凭证读取必须只有能力层一处实现"
 
 
@@ -113,7 +113,7 @@ def test_attribute_by_online_degrades_without_key(tmp_path, monkeypatch):
 
 
 def test_health_reads_registry_instead_of_hardcoded_keys():
-    src = (ROOT / "app" / "server.py").read_text(encoding="utf-8")
+    src = (ROOT / "src" / "app" / "server.py").read_text(encoding="utf-8")
     assert "bool(CONFIG.amap_key)" not in src
     assert "reg.names(Capability.GEOCODING)" in src
     assert "probe_online()" in src, "health 仍必须主动探测"

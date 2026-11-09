@@ -9,10 +9,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import math
 import sys
 
-sys.path.insert(0, r"D:\Dev\meituan-ride")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from app.valhalla import (
     MAX_LOCATIONS,

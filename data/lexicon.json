@@ -39,6 +39,33 @@
    "city": "上海",
    "source": "amap",
    "address": "虹桥路1921号"
+  },
+  {
+   "lon": 121.37806921624794,
+   "lat": 31.202245168340422,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "虹桥路1921号"
+  },
+  {
+   "lon": 108.28132028766193,
+   "lat": 37.709400736806394,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "内蒙古自治区鄂尔多斯市鄂托克前旗城川镇西郊宾馆"
+  },
+  {
+   "lon": 118.82507162952157,
+   "lat": 36.71533995666851,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "珠宝街老城西派出所西70米路南"
   }
  ],
  "近铁城市广场": [
@@ -87,6 +114,33 @@
    "source": "verified",
    "address": "",
    "kind": "poi"
+  },
+  {
+   "lon": 120.5585394075144,
+   "lat": 32.41844855194701,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "江苏省南通市如皋市城北街道"
+  },
+  {
+   "lon": 120.80636765781195,
+   "lat": 31.644960843661195,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "江苏省苏州市常熟市古里镇"
+  },
+  {
+   "lon": 120.14855537457495,
+   "lat": 33.3417164884655,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "江苏省盐城市盐都区盐渎街道"
   }
  ],
  "申纪港公园": [
@@ -165,6 +219,24 @@
    "city": "上海",
    "source": "amap",
    "address": "先锋街66号(龙柏新村地铁站3号口步行330米)"
+  },
+  {
+   "lon": 121.37347048213923,
+   "lat": 31.176566909641615,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "先锋街66"
+  },
+  {
+   "lon": 121.35472232683476,
+   "lat": 31.123030387347466,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "黎安路与华友路交叉口向西50米"
   }
  ],
  "上海万象城": [
@@ -444,6 +516,33 @@
    "source": "verified",
    "address": "",
    "kind": "poi"
+  },
+  {
+   "lon": 107.37422408403913,
+   "lat": 40.765044133014555,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "浩澎商业广场C6C7-101"
+  },
+  {
+   "lon": 75.9584150910752,
+   "lat": 39.4784300878924,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "新疆维吾尔自治区喀什地区喀什市西公园街道花卉市场"
+  },
+  {
+   "lon": 87.61963560217154,
+   "lat": 43.93803778473847,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "新疆维吾尔自治区乌鲁木齐市米东区永祥街街道花卉市场"
   }
  ],
  "百联中环": [
@@ -7522,6 +7621,122 @@
    "city": "上海",
    "source": "amap",
    "address": "淮海中路街道上海广场"
+  }
+ ],
+ "15号": [
+  {
+   "lon": 119.36710591764427,
+   "lat": 34.739172596906315,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "江苏省连云港市连云区墟沟街道长宁路19号天成香苑小区"
+  },
+  {
+   "lon": 104.15853501037196,
+   "lat": 29.991536412152097,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "15号"
+  },
+  {
+   "lon": 104.15318746402542,
+   "lat": 29.99387579203738,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "15号"
+  }
+ ],
+ "G50": [
+  {
+   "lon": 120.83712081474566,
+   "lat": 31.045297276037765,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "江苏省苏州市吴江区黎里镇g50"
+  },
+  {
+   "lon": 120.65868605169314,
+   "lat": 31.03912679337645,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "江苏省苏州市吴江区八坼街道g50"
+  },
+  {
+   "lon": 119.57438588474368,
+   "lat": 30.918734655998023,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "浙江省湖州市长兴县g50"
+  }
+ ],
+ "2号线": [
+  {
+   "lon": 106.47032100270498,
+   "lat": 26.5513989673746,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "红枫街20"
+  },
+  {
+   "lon": 106.46719877365351,
+   "lat": 26.55661598149312,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "红旗路255"
+  },
+  {
+   "lon": 105.287890620068,
+   "lat": 27.30062654907466,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "砂石路3号正北方向186米"
+  }
+ ],
+ "长宁": [
+  {
+   "lon": 112.32457971528652,
+   "lat": 22.27126108965213,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "广东省江门市恩平市良西镇长宁"
+  },
+  {
+   "lon": 111.98013705376877,
+   "lat": 24.005048895367032,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "广东省肇庆市怀集县岗坪镇长宁"
+  },
+  {
+   "lon": 112.49460659559216,
+   "lat": 22.67704369570184,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "tianditu",
+   "address": "广东省江门市鹤山市双合镇长宁"
   }
  ]
 }

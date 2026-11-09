@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-TOOLS = ROOT / "tools"
+TOOLS = ROOT / "src" / "tools"
 
 
 def _parse(path: Path) -> ast.Module:
@@ -154,7 +154,7 @@ def test_tools_parse_and_import_provider(name: str) -> None:
 def test_no_duplicate_staticmap_url_in_repo() -> None:
     """仓库里静态地图端点只应出现在统一实现里。"""
     hits: list[str] = []
-    for base in (ROOT / "app", ROOT / "tools"):
+    for base in (ROOT / "src" / "app", ROOT / "src" / "tools"):
         for p in base.rglob("*.py"):
             if "staticmap" in p.parts:
                 continue

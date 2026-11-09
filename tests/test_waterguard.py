@@ -10,18 +10,19 @@
 测试用真实数据：OSM 拉到的黄浦江岸线 + 本项目实测的
 「徐汇滨江 → 长宁」骑行轨迹（修复后起点在浦西侧）。
 """
+from pathlib import Path
 import json
 import math
 import sys
 
 import numpy as np
 
-sys.path.insert(0, r"D:\Dev\meituan-ride")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from app.geo.coords import gcj02_to_wgs84, wgs84_to_gcj02
 from app.waterguard import check_crossing, get_waters
 
-CACHE = r"D:\Dev\meituan-ride\data\cache"
-RESULT = r"D:\Dev\meituan-ride\tmp_debug\run\e2e_result.json"
+CACHE = str(Path(__file__).resolve().parent.parent / "data" / "cache")
+RESULT = str(Path(__file__).resolve().parent.parent / "tmp_debug" / "run" / "e2e_result.json")
 
 WEST_BANK = (121.46019, 31.18592)   # 西岸艺术中心（浦西）
 EAST_BANK = (121.48793, 31.18618)   # 上海世博园（浦东）

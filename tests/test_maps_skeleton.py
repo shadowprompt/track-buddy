@@ -225,7 +225,7 @@ def test_http_client_retries_and_lenient_variant(tmp_path):
 @pytest.mark.parametrize("name", ["contracts.py", "credentials.py", "registry.py"])
 def test_contract_layer_does_not_depend_on_http_client(name):
     """契约/凭证/注册表不该各自再 import requests，否则统一基座形同虚设。"""
-    path = Path(__file__).resolve().parents[1] / "app" / "maps" / name
+    path = Path(__file__).resolve().parents[1] / "src" / "app" / "maps" / name
     tree = ast.parse(path.read_text(encoding="utf-8"))
     imported = set()
     for node in ast.walk(tree):

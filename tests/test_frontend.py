@@ -28,7 +28,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-HTML = ROOT / "web" / "index.html"
+HTML = ROOT / "src" / "web" / "index.html"
 
 PASS = "✓"
 FAIL = "✗"

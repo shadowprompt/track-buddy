@@ -19,8 +19,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-HTML = ROOT / "web" / "index.html"
-ADAPTER_JS = ROOT / "web" / "js" / "basemap.js"
+HTML = ROOT / "src" / "web" / "index.html"
+ADAPTER_JS = ROOT / "src" / "web" / "js" / "basemap.js"
 SCRIPT = Path(__file__).resolve().parent / "frontend_basemap_test.js"
 
 

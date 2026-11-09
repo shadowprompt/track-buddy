@@ -20,10 +20,12 @@ import json
 import os
 import sys
 
+# 本模块既能被 `python -m app.seed_lexicon` 调用，也能被直接当脚本跑。
+# 两种方式下包路径不同：前者靠父包引导，后者需要把 src/ 加进 sys.path。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app.geo.coords import wgs84_to_gcj02
+from app.config import ROOT  # noqa: E402
+from app.geo.coords import wgs84_to_gcj02  # noqa: E402
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SEED_FILE_ENV = "RIDE_SEED_LEXICON_JSON"
 DEFAULT_SEED_FILE = os.path.join(ROOT, "data", "seed_lexicon.json")
 

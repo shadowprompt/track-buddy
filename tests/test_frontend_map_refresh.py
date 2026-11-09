@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-HTML = ROOT / "web" / "index.html"
+HTML = ROOT / "src" / "web" / "index.html"
 SCRIPT = Path(__file__).resolve().parent / "frontend_map_refresh_test.js"
 
 

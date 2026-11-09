@@ -14,7 +14,7 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from app.pipeline import RidePipeline, _BROAD_KINDS, _EXPRESSWAY_MARKERS
 from app.register import AnchorPair

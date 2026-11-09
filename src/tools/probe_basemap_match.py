@@ -25,7 +25,9 @@ import numpy as np
 import requests
 from PIL import Image
 
-sys.path.insert(0, ".")
+# "." 依赖当前工作目录，从别处调用就找不到 app 包；改用绝对路径。
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.config import CONFIG
 from app.cv_utils import imread_unicode
 from app.ocr_anchor import build_anchors, ocr_texts

@@ -221,7 +221,7 @@ def build_route(
 
     内部流程：合并片段 -> 链式 DP 选实例 -> 算路口锚点 -> 裁子弧。
     """
-    from app.roadname_constraint import _dist_to_segments
+    from .roadname_constraint import _dist_to_segments
 
     res = RouteBuildResult()
     n = len(instances)
