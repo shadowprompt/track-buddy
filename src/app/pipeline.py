@@ -14,6 +14,12 @@ from .config import AppConfig
 from .cv_utils import resample_polyline, simplify_polyline
 from .geocode import Geocoder, Lexicon
 from .geo.coords import gcj02_to_wgs84, lonlat_to_mercator
+from .input_quality import (
+    assess_input_quality,
+    extract_distance_km,
+    route_validation_factor,
+    scale_consistency,
+)
 from .ocr_anchor import Anchor, build_anchors, classify_text, ocr_texts
 from .register import AnchorPair, Registration, apply_to_polyline, register
 from .track import TrackResult, extract_track
@@ -153,6 +159,9 @@ DIAG_KEYS: tuple[str, ...] = (
     "anchor_fragments",
     "anchor_bias",
     "anchor_sources",
+    "scale_check",
+    "route_validation",
+    "input_quality",
     "start_marker",
     "end_marker",
     "online_geocoding",
@@ -511,8 +520,29 @@ class RidePipeline:
             )
 
         geojson = _build_geojson(lonlat, reg, track)
+
+        # --- 独立校验：与配准自洽指标无关的两条外部证据 ---
+        # 截图里程来自 OCR、外部路由来自 Valhalla/OSRM，二者都不吃
+        # 配准残差，因此能抓到"所有自洽指标一起变好但位置是错的"的情况。
+        scale_check = scale_consistency(distance, extract_distance_km(texts))
+        route_check = route_validation_factor(road_name_fit)
+        input_quality = assess_input_quality(
+            image_size=(int(img.shape[1]), int(img.shape[0])),
+            straightness=straightness,
+            bbox_px=tuple(track.bbox),
+            has_road_names=bool(zoom.get("has_road_names")),
+            n_ocr_texts=len(texts),
+        )
+        if not scale_check["consistent"]:
+            warnings.append(
+                f"截图里程约 {scale_check['ocr_km']} km，还原轨迹几何里程 "
+                f"{scale_check['geom_distance_m'] / 1000:.1f} km"
+                f"（比值 {scale_check['ratio']}）：两者量级不一致，"
+                "配准尺度或轨迹形状可能有误，建议核对后重新截图"
+            )
         confidence = self._score_confidence(
-            reg, track, anchors, pairs, road_fit, road_name_fit, zoom
+            reg, track, anchors, pairs, road_fit, road_name_fit, zoom,
+            scale_check=scale_check, route_check=route_check,
         )
 
         # --- 阶段 6：路名归属 ---
@@ -565,6 +595,9 @@ class RidePipeline:
                 anchor_fragments=len(reg.fragment_rejected),
                 anchor_bias=reg.anchor_bias,
                 anchor_sources=reg.source_bias,
+                scale_check=scale_check,
+                route_validation=route_check,
+                input_quality=input_quality,
                 start_marker=list(track.start_marker) if track.start_marker else None,
                 end_marker=list(track.end_marker) if track.end_marker else None,
                 # ⚠️ 这个字段的语义是「本次识别**真的用到**了在线源」，
@@ -1844,9 +1877,17 @@ class RidePipeline:
         geojson_gcj = _build_geojson(lonlat_gcj, reg, ctx.track)
         geojson_gcj["features"][0]["properties"]["crs"] = "GCJ-02"
 
+        _base_diag = dict(base.diagnostics or {})
+        # 精修改变了轨迹长度，尺度独立校验要用新的几何里程重算，
+        # 否则诊断里留的是主请求的旧值。
+        _sc = _base_diag.get("scale_check") or {}
+        if _sc.get("ocr_km"):
+            diag["scale_check"] = scale_consistency(distance, _sc["ocr_km"])
         confidence = self._score_confidence(
             reg, ctx.track, ctx.anchors, ctx.pairs,
             road_fit, ctx.road_name_fit, ctx.zoom,
+            scale_check=diag.get("scale_check"),
+            route_check=_base_diag.get("route_validation"),
         )
         notes.append(
             f"路网精修：平移 东{road_fit['shift_e_m']:+.0f}m "
@@ -2042,6 +2083,8 @@ class RidePipeline:
         road_fit: dict[str, Any] | None = None,
         road_name_fit: dict[str, Any] | None = None,
         zoom: dict[str, Any] | None = None,
+        scale_check: dict[str, Any] | None = None,
+        route_check: dict[str, Any] | None = None,
     ) -> float:
         """综合置信度。
 
@@ -2198,6 +2241,14 @@ class RidePipeline:
         # 起终点锚定修正到街区级（实测误差 300-900 米），这时封顶会
         # 把一个正确的结果说成不可信。缩放过低仍然要提示——那影响的是
         # **形状**（街道级走向无法从城市级截图恢复）。
+        # --- 独立校验乘子 ---
+        # 两条证据都不吃配准残差：截图里程来自 OCR，外部路由来自
+        # Valhalla/OSRM。缺失结果一律不惩罚，只有明确不一致时才轻罚。
+        if scale_check and not scale_check.get("consistent", True):
+            conf *= 0.80
+        if route_check and route_check.get("available"):
+            conf *= float(route_check.get("factor", 1.0))
+
         if zoom and not zoom.get("position_ok", True):
             conf = min(conf, 0.2)
 
