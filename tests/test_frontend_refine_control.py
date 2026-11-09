@@ -59,3 +59,31 @@ def test_rejected_candidate_is_explained_outside_preview() -> None:
     assert "} else if (rf.candidate_shift_px) {" in h
     assert "const fitHint = (!rf0.ok && rf0.candidate_shift_px)" in h
     assert "路网精修未采纳，候选位置已在原始截图上用橙色虚线标出" in h
+
+
+def test_reject_note_is_not_double_wrapped() -> None:
+    """后端 notes 已带「路网精修未采纳（…）」，状态条不能再套一层。"""
+    h = _html()
+    assert "const rawNote = text((rf.notes || [])[0], '路网精修未采纳（位置未改动）');" in h
+    assert "/路网精修未采纳/.test(rawNote)" in h
+    # 旧写法会把同一句话嵌套两次
+    assert "'路网精修未采纳（' +\n              esc(text((rf.notes || [])[0]" not in h
+
+
+def test_candidate_position_can_be_toggled_on_map() -> None:
+    """护栏否决时把选择权交给用户：默认不切，点按钮才画候选并可切回。"""
+    h = _html()
+    assert 'id="candToggle"' in h
+    assert "function buildCandidatePath(d)" in h
+    assert "function setupCandidateToggle(d)" in h
+    assert "setupCandidateToggle(d);" in h
+    assert "candidateShown = !candidateShown;" in h
+    assert "basemap.setTrack(candidateShown ? candidatePath : lastPath);" in h
+    # 候选只在「未采纳 + 有位移」时出现；采纳成功不能残留按钮
+    assert "if (rf.ok || !rf.candidate_shift_px) return null;" in h
+    assert "btn.style.display = 'none';" in h
+    # 刚体平移换算：东向用 cos(纬度)，北向用固定每度米数
+    assert "const dlon = de / (111320 * cosLat);" in h
+    assert "const dlat = dn / 110540;" in h
+    # 切换只影响地图显示，结果坐标与下载文件不变
+    assert "结果与下载文件仍是初次识别位置" in h

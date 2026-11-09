@@ -201,6 +201,8 @@
         </div>
 
         <div class="status" id="status"></div>
+        <button id="candToggle" class="ghost" type="button"
+          style="display:none; margin-top:8px; font-size:12px; padding:5px 10px;"></button>
       </div>
 
       <div class="card" id="resultCard" style="margin-top:16px; display:none;">
@@ -480,11 +482,12 @@ __WB_AMAP_SDK__
               num(rf.shift_n_m, 0, '0') + ' 米，地图已刷新）'
             );
           } else {
-            showStatus(
-              '路网精修未采纳（' +
-              esc(text((rf.notes || [])[0], '位置未改动')) +
-              '），地图保留初次识别位置', 'info'
-            );
+            // 后端 notes[0] 本身已写成「路网精修未采纳（…）」，
+            // 早期这里又包了一层，状态条出现「未采纳（未采纳（…））」。
+            const rawNote = text((rf.notes || [])[0], '路网精修未采纳（位置未改动）');
+            const note = /路网精修未采纳/.test(rawNote)
+              ? rawNote : '路网精修未采纳（' + rawNote + '）';
+            showStatus(esc(note) + '，地图保留初次识别位置', 'info');
           }
           return;
         }
@@ -900,6 +903,8 @@ __WB_AMAP_SDK__
     // 地图（返回是否真的刷新成功，异步精修要用它决定提示文案）
     mapOk = drawMap(d);
     drawPreview(d);
+    // 后台精修完成后 render() 会再跑一次，这里重置切换状态并重建候选。
+    setupCandidateToggle(d);
 
     // 识别完成后确保地图就绪（已创建 + 视野对准新轨迹）。
     //
@@ -933,6 +938,62 @@ __WB_AMAP_SDK__
   }
 
   // ---------- 腾讯地图 ----------
+  // --- 未采纳的路网精修位置：把选择权交还给用户 ---
+  //
+  // 护栏否决的候选有时确实贴路（实测贴路中位 78m → 6.4m），
+  // 有时只是把一条直线搬到另一条平行主干道上（同时可信锚点残差
+  // 从 52m 涨到 222m）。两类证据冲突时系统不该替用户拍板：
+  // 默认仍用初次识别位置，但给一个按钮把候选画到地图上对照，随时切回。
+  let candidatePath = null;
+  let candidateShown = false;
+
+  function buildCandidatePath(d) {
+    const rf = d.road_fit || {};
+    if (rf.ok || !rf.candidate_shift_px) return null;
+    const de = Number(rf.candidate_shift_e_m || 0);
+    const dn = Number(rf.candidate_shift_n_m || 0);
+    if (!isFinite(de) || !isFinite(dn) || Math.abs(de) + Math.abs(dn) < 1) return null;
+    const gj = (d.geojson_gcj02 && d.geojson_gcj02.features) ? d.geojson_gcj02 : d.geojson;
+    const coords = (gj && gj.features && gj.features[0]
+      && gj.features[0].geometry && gj.features[0].geometry.coordinates) || [];
+    if (coords.length < 2) return null;
+    // 配准是刚体变换，候选平移对所有点都是同一个墨卡托东/北位移。
+    // 换算成经纬度增量即可；几百米量级下用平均纬度做一阶换算误差 < 1m。
+    let lat0 = 0;
+    coords.forEach(c => { lat0 += c[1]; });
+    lat0 /= coords.length;
+    const cosLat = Math.max(0.01, Math.cos(lat0 * Math.PI / 180));
+    const dlon = de / (111320 * cosLat);
+    const dlat = dn / 110540;
+    return coords.map(c => ({ lat: c[1] + dlat, lon: c[0] + dlon }));
+  }
+
+  function setupCandidateToggle(d) {
+    const btn = $('candToggle');
+    candidatePath = buildCandidatePath(d);
+    candidateShown = false;
+    if (!btn || !candidatePath || !lastPath || !lastPath.length) {
+      if (btn) btn.style.display = 'none';
+      return;
+    }
+    const rf = d.road_fit || {};
+    const label = '在地图上查看未采纳的贴路位置（贴路中位 '
+      + Math.round(Number(rf.candidate_median_after_m || 0)) + ' m）';
+    btn.style.display = 'inline-block';
+    btn.textContent = label;
+    btn.onclick = () => {
+      if (!basemap.getMap()) return;
+      candidateShown = !candidateShown;
+      basemap.setTrack(candidateShown ? candidatePath : lastPath);
+      btn.textContent = candidateShown
+        ? '← 返回初次识别位置（当前显示的是未采纳的候选）'
+        : label;
+      showStatus(candidateShown
+        ? '当前地图显示的是被护栏否决的候选位置，仅供对照；结果与下载文件仍是初次识别位置。'
+        : '已返回初次识别位置。', 'info');
+    };
+  }
+
   function drawMap(d) {
     // 整个地图绘制包在 try 里：腾讯地图 SDK 在鉴权失败、容器尺寸为 0
     // 等情况下会抛出没有上下文的错误（例如 "Unhandled error. (undefined)"）。

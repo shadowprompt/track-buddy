@@ -149,6 +149,7 @@ DIAG_KEYS: tuple[str, ...] = (
     "anchor_candidates",
     "track_points_px",
     "bbox_px",
+    "track_straightness",
     "start_marker",
     "end_marker",
     "online_geocoding",
@@ -164,6 +165,27 @@ def _base_diagnostics(**over: Any) -> dict[str, Any]:
     dg["lexicon"] = {}
     dg.update(over)
     return dg
+
+
+def _track_straightness(polyline_px: Any) -> float:
+    """折线的「直线度」= 端点弦长 / 折线总长，1.0 表示完全笔直。
+
+    美团在部分页面（路线概览、低缩放）会把骑行轨迹渲染成一条带箭头的
+    **起终点连线**，而不是沿道路曲折的实际轨迹。这类输入无论配准多准、
+    路网精修是否采纳，输出的经纬度都只能是一条横穿街区的直线。
+
+    判据与截图分辨率、城市、坐标都无关，只看形状本身；比按
+    「米/像素」判缩放级别更能抓住「轨迹本身没有信息量」这种情况
+    （实测一例街道级 2.38 m/px，缩放评估判定正常，但折线直线度 0.97）。
+    """
+    pts = np.asarray(polyline_px, dtype=float)
+    if len(pts) < 3:
+        return 0.0
+    chord = float(np.linalg.norm(pts[-1] - pts[0]))
+    length = float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum())
+    if length < 1e-6:
+        return 0.0
+    return float(min(1.0, chord / length))
 
 
 # 「大范围对象」类型：行政区、地铁线路。
@@ -235,6 +257,7 @@ class RidePipeline:
         anchors = build_anchors(img, texts, cfg)
         if not anchors:
             warnings.append("OCR 未识别到可用地名锚点")
+        straightness = _track_straightness(track.polyline)
 
         # --- 阶段 3：地理编码 ---
         pairs = self._resolve_anchors(anchors, city, allow_online, warnings)
@@ -267,6 +290,19 @@ class RidePipeline:
                     f"它们的位置误差可达数公里，无法定位到街区。"
                     f"请填写你记得走过的路名，或截取放大到街道级的地图。"
                 )
+
+        # --- 阶段 3.6：轨迹形状的信息量 ---
+        # 缩放级别只看「米/像素」，抓不到「轨迹本身被渲染成直线」。
+        # 这类输入下配准再准也得不到沿路的形状，必须明确说明，
+        # 否则一个置信度不高却看起来精确的结果会误导用户。
+        if straightness >= 0.93 and len(track.polyline) >= 20:
+            warnings.append(
+                f"截图里的轨迹线近乎笔直（直线度 {straightness:.2f}），"
+                "很可能是起终点连线而非沿道路的实际轨迹：本结果只能定位到"
+                "街区级，无法还原沿路走向，画在底图上会横穿街区。"
+                "请截取包含完整轨迹曲线的页面，或把地图放大到能看到道路名后"
+                "重新截图；也可以在「你记得走过的路」填入路名来约束位置。"
+            )
 
         # --- 阶段 4：配准 ---
         reg = register(
@@ -493,6 +529,7 @@ class RidePipeline:
                 anchor_candidates=len(anchors),
                 track_points_px=len(track.polyline),
                 bbox_px=list(track.bbox),
+                track_straightness=round(straightness, 3),
                 start_marker=list(track.start_marker) if track.start_marker else None,
                 end_marker=list(track.end_marker) if track.end_marker else None,
                 # ⚠️ 这个字段的语义是「本次识别**真的用到**了在线源」，
