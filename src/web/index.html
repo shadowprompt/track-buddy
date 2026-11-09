@@ -200,6 +200,7 @@
           </div>
         </div>
 
+        <div id="precheck" class="note" style="display:none; margin-top:8px; border-left:3px solid #d97706; padding-left:10px;"></div>
         <div class="status" id="status"></div>
         <button id="candToggle" class="ghost" type="button"
           style="display:none; margin-top:8px; font-size:12px; padding:5px 10px;"></button>
@@ -352,6 +353,65 @@ __WB_AMAP_SDK__
       drop.querySelector('.hint').textContent = '点击可重新选择';
     }
     hideStatus();
+    runPrecheck(list);
+  }
+
+  // ---------- 上传前输入预检 ----------
+  // 分辨率不足 / 文件过大时，配准再准也拿不到道路细节。这里只做**纯前端**
+  // 提示，不拦截上传（用户仍可能想用这张图试一次）；真正的低信息量判据
+  // （轨迹是起终点直线）由后端 input_quality 在识别后给出。
+  async function readImageSize(file) {
+    if (window.createImageBitmap) {
+      const bmp = await createImageBitmap(file);
+      const size = { w: bmp.width, h: bmp.height };
+      if (bmp.close) bmp.close();
+      return size;
+    }
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = url;
+      });
+      return { w: img.naturalWidth, h: img.naturalHeight };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  async function runPrecheck(list) {
+    const box = $('precheck');
+    if (!list || !list.length) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+    const notes = [];
+    for (const f of list) {
+      if (f.size > 20 * 1024 * 1024) {
+        notes.push(esc(f.name) + ' 超过 20MB，可能被压缩或超出上传限制');
+      }
+      try {
+        const s = await readImageSize(f);
+        const shortSide = Math.min(s.w, s.h);
+        if (shortSide > 0 && shortSide < 600) {
+          notes.push(esc(f.name) + ' 短边仅 ' + shortSide +
+            'px，POI 文字与道路细节可能不够清晰');
+        }
+      } catch (err) {
+        // 读不出尺寸（非图片 / 浏览器不支持）时不打断上传
+      }
+    }
+    if (!notes.length) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+    box.style.display = '';
+    box.innerHTML = '<b>上传前检查：</b>' + notes.join('；') +
+      '。建议使用未压缩的原图、放大到能看到道路名后重新截图。';
   }
 
   function showStatus(msg, kind) {
@@ -712,6 +772,37 @@ __WB_AMAP_SDK__
             ? '<b style="color:#c2410c">无法从这张图恢复</b>'
             : '可恢复') +
           '</span></div>'
+        : '') +
+      // 独立校验：截图里程 / 外部路由 / 输入质量，都不吃配准残差，
+      // 是「所有自洽指标一起变好但位置错了」时唯一能报警的外部证据。
+      (dg.scale_check && dg.scale_check.available
+        ? '<div class="kv"><span>尺度独立校验</span><span>截图 ' +
+          num(dg.scale_check.ocr_km, 1, '—') + ' km / 还原 ' +
+          num(dg.scale_check.geom_distance_m, 0, '—') + ' m（比值 ' +
+          num(dg.scale_check.ratio, 2, '—') + '）' +
+          (dg.scale_check.consistent
+            ? ' 一致'
+            : ' <b style="color:#c2410c">量级不一致</b>') +
+          '</span></div>'
+        : '') +
+      (dg.route_validation && dg.route_validation.available
+        ? '<div class="kv"><span>外部路由校验</span><span>命中 ' +
+          int(dg.route_validation.hits, 0) + ' 条路名，顺序一致 ' +
+          num((dg.route_validation.order_consistency || 0) * 100, 0, '—') + '%' +
+          (dg.route_validation.factor < 1
+            ? '（置信度小幅下调）'
+            : dg.route_validation.factor > 1
+              ? '（置信度小幅上调）' : '') +
+          '</span></div>'
+        : '') +
+      (dg.input_quality && dg.input_quality.level !== 'ok'
+        ? '<div class="kv" style="color:#c2410c"><span>输入质量</span><span>' +
+          esc((dg.input_quality.reasons || []).join('；') || '信息量不足') +
+          '</span></div>' +
+          '<ul class="warnlist">' +
+          (dg.input_quality.suggestions || []).map(function (s) {
+            return '<li>' + esc(s) + '</li>';
+          }).join('') + '</ul>'
         : '') +
       lowConfidenceHint(d);
 
