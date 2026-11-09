@@ -183,6 +183,22 @@ def test_verify_mode_is_passed_through(monkeypatch):
     assert seen == ["verify"]
 
 
+def test_verify_mode_never_moves_or_rescores(monkeypatch):
+    """多图默认档：只校验 + 命名，坐标与置信度都保持主请求的值。"""
+    _install_fakes(monkeypatch)
+    base = _base()
+    out = _pipeline().refine_existing(base, mode="verify")
+    assert out.road_fit["mode"] == "verify"
+    assert out.geojson == base.geojson
+    assert out.geojson_gcj02 == base.geojson_gcj02
+    assert out.confidence == base.confidence
+    assert out.track_points == base.track_points
+    # 命名仍然换成几何判定的结果
+    assert out.road_attribution["source"] == "road_network"
+    assert any("路名归属（road_network）" in w for w in out.warnings)
+    assert not any("路网精修：平移" in w for w in out.warnings)
+
+
 # --- server 层：确认后台任务绝不重跑 pipeline ---------------------------
 
 def test_background_refine_never_reruns_pipeline(monkeypatch, tmp_path):

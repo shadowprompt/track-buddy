@@ -1690,6 +1690,35 @@ class RidePipeline:
         # ``_road_refine`` 已把平移并进 ``reg.translation``；形状、尺度、
         # 朝向都没变，因此对同一条简化折线重新投影一次即可。
         lonlat_gcj = apply_to_polyline(reg, ctx.simplified)
+        road_attr = self._attribute_roads(
+            lonlat_gcj, ctx.simplified, ctx.texts,
+            allow_online=allow_online_roadname,
+            road_fit=road_fit, road_net=road_net, reg=reg,
+        )
+        notes: list[str] = []
+        if road_attr.segments:
+            notes.append(f"路名归属（{road_attr.source}）："
+                         + "、".join(road_attr.roads[:8]))
+
+        diag = dict(base.diagnostics or {})
+        diag["refine_reused"] = True
+
+        if mode == "verify":
+            # 只校验 + 命名：坐标、置信度、里程一律保持主请求的值。
+            # 多图拼接画布只有一个刚体配准，链式累积漂移不该被「优化」
+            # 成一个平移量；路网在这里只用来验证贴路程度并给出路名。
+            road_fit = dict(road_fit)
+            road_fit["mode"] = "verify"
+            notes.extend(road_fit.get("notes", []))
+            return replace(
+                base,
+                road_fit=road_fit,
+                road_attribution=road_attr.to_dict(),
+                diagnostics=diag,
+                warnings=_kept_warnings + notes,
+                elapsed_ms=base.elapsed_ms + int((time.time() - t0) * 1000),
+            )
+
         if ctx.output_crs.upper() in ("WGS-84", "WGS84", "EPSG:4326"):
             lonlat = [gcj02_to_wgs84(lo, la) for lo, la in lonlat_gcj]
         else:
@@ -1711,24 +1740,12 @@ class RidePipeline:
             reg, ctx.track, ctx.anchors, ctx.pairs,
             road_fit, ctx.road_name_fit, ctx.zoom,
         )
-        road_attr = self._attribute_roads(
-            lonlat_gcj, ctx.simplified, ctx.texts,
-            allow_online=allow_online_roadname,
-            road_fit=road_fit, road_net=road_net, reg=reg,
-        )
-        notes: list[str] = []
-        if road_attr.segments:
-            notes.append(f"路名归属（{road_attr.source}）："
-                         + "、".join(road_attr.roads[:8]))
         notes.append(
             f"路网精修：平移 东{road_fit['shift_e_m']:+.0f}m "
             f"北{road_fit['shift_n_m']:+.0f}m，贴路中位 "
             f"{road_fit['median_before_m']:.0f}m → "
             f"{road_fit['median_after_m']:.0f}m"
         )
-        diag = dict(base.diagnostics or {})
-        diag["refine_reused"] = True
-
         return replace(
             base,
             geojson=geojson,

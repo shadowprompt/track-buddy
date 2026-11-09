@@ -291,16 +291,10 @@ async def recognize_multi(
     payload["stitch"] = stitch_info
     payload["n_shots"] = len(imgs)
     warns = list(result.warnings)
-    # 多图接口不启动后台精修：拼接画布动辄几千万像素，重跑一遍
-    # pipeline 的成本远高于收益。pipeline 里那条通用提示在这里会
-    # 让用户以为「后台还在算」而一直等，必须换成准确说明。
-    if len(imgs) > 1 and want_refine and not do_sync_refine:
-        warns = [
-            ("多图模式不执行后台路网精修（大画布重跑成本过高）；"
-             "需要贴路校正请改用单图，或显式传 refine=on")
-            if "跳过路网精修" in w else w
-            for w in warns
-        ]
+    # 多图 auto 现在会启动后台精修。pipeline 里那句通用提示没说清
+    # 「只校验不平移」，留着会和后面的准确说明并存甚至矛盾，先去掉。
+    if want_refine and not do_sync_refine:
+        warns = [w for w in warns if "跳过路网精修" not in w]
     payload["warnings"] = warns + list(stitch_info.get("notes") or [])
 
     # 拼接后的画布存一份，供前端叠加显示。
@@ -316,6 +310,42 @@ async def recognize_multi(
     except Exception:
         payload["stitched_url"] = f"/api/shots/{shot_id}{shot_path.suffix}"
 
+    # --- 多图后台精修 ---
+    # 阶段 1 之后后台不再重跑 pipeline（只补算路网校验/平移，大画布的
+    # OCR 与配准一次都不重做），所以这里可以安全地把它接上。
+    #
+    # ⚠️ 默认 ``mode="verify"``：拼接画布只有**一个刚体配准**，depth=10
+    # 的链式拼接存在累积漂移，用一个平移量去「贴路」很容易把整条轨迹
+    # 压到平行的主干道上。多图后台只做校验 + 路名归属；要真正平移必须
+    # 显式传 ``refine=on``（同步执行，用户自己承担耗时与风险）。
+    refine_args: dict[str, Any] | None = None
+    if want_refine and not do_sync_refine:
+        multi_mode = len(imgs) > 1
+        if _need_background_refine(result, True, False):
+            refine_args = {
+                "shot_id": shot_id,
+                "shot_path": shot_path,
+                "base_result": result,
+                "mode": "verify" if multi_mode else "auto",
+                "extra": {
+                    "stitch": stitch_info,
+                    "n_shots": len(imgs),
+                    "stitched_url": payload.get("stitched_url"),
+                },
+            }
+            payload["refine_pending"] = True
+            payload["refine_state"] = "running"
+            note = (
+                "多图后台精修已启动：只做路网校验与路名归属，"
+                "不平移配准（拼接画布存在链式累积漂移）；"
+                "需要贴路校正请显式传 refine=on"
+            ) if multi_mode else (
+                "后台路网精修已启动，完成后会自动刷新地图"
+            )
+        else:
+            note = "本次未启动后台精修（结果尚无可用坐标）"
+        payload["warnings"] = list(payload["warnings"]) + [note]
+
     _persist_last_result(payload)
     # 多图结果单独存一份——否则之后跑一次单图识别就会把它冲掉，
     # 核对页就看不到了。
@@ -324,6 +354,12 @@ async def recognize_multi(
             json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
+
+    # ⚠️ 必须等上面两份结果落盘之后再启动线程：``_run_refine`` 会读
+    # ``last_result.json`` 做 shot_id 保护，早启动会因为文件还没写
+    # 而误判「用户已经换了新图」，精修结果就不落盘了。
+    if refine_args is not None:
+        _start_refine(**refine_args)
     return JSONResponse(payload)
 
 
@@ -493,8 +529,7 @@ def _run_refine(shot_id: str, shot_path: Path) -> None:
             raise RuntimeError("精修上下文已失效，请重新识别该截图")
         result = _pipeline.refine_existing(ctx["base"], mode=ctx["mode"])
         payload = _build_payload(result, shot_id, shot_path)
-        with _refine_lock:
-            _refine_jobs[shot_id] = {"state": "done", "payload": payload}
+        payload.update(ctx.get("extra") or {})
         # 精修结果同样要落盘，否则用户刷新页面 / 打开对照页会退回
         # 主流程那份未贴路的粗结果。两个条件都要满足：
         #   1) 精修确实被采纳（road_fit.ok）——若护栏判定「疑似贴到
@@ -509,8 +544,19 @@ def _run_refine(shot_id: str, shot_path: Path) -> None:
                 )
                 if prev.get("shot_id") == shot_id:
                     _persist_last_result(payload)
+                    if ctx.get("multi"):
+                        # 多图结果单独存一份，否则之后跑一次单图识别
+                        # 会把核对页上的拼接结果冲掉。
+                        (DATA_DIR / "last_stitch.json").write_text(
+                            json.dumps(payload, ensure_ascii=False),
+                            encoding="utf-8")
             except (OSError, ValueError, KeyError, TypeError):
                 pass
+        # ⚠️ 落盘完成后才对外宣布 done：前端轮询拿到结果就会立刻渲染，
+        # 若此时核对页的 last_result / last_stitch 还没写，用户刷新页面
+        # 又会退回未精修的粗结果。
+        with _refine_lock:
+            _refine_jobs[shot_id] = {"state": "done", "payload": payload}
     except Exception as exc:  # noqa: BLE001
         with _refine_lock:
             _refine_jobs[shot_id] = {"state": "error", "message": str(exc)}
@@ -524,17 +570,24 @@ def _start_refine(
     shot_id: str, shot_path: Path, *,
     base_result: Any,
     mode: str = "auto",
+    extra: dict[str, Any] | None = None,
 ) -> None:
     """登记并启动一次后台精修。
 
     ``base_result`` 是主请求刚算出的 ``PipelineResult``（含
     ``refine_context``）。``mode`` 见 ``Pipeline._road_refine``。
+    ``extra`` 是需要原样带回后台结果的多图专有字段
+    （``stitch`` / ``n_shots`` / ``stitched_url``）——前端拿到精修结果
+    后要重新渲染，缺了它们会丢掉拼接画布。
     """
     with _refine_lock:
         if shot_id in _refine_jobs:
             return
         _refine_jobs[shot_id] = {"state": "running"}
-        _refine_ctx[shot_id] = {"base": base_result, "mode": mode}
+        _refine_ctx[shot_id] = {
+            "base": base_result, "mode": mode,
+            "extra": dict(extra or {}), "multi": bool(extra),
+        }
     th = threading.Thread(
         target=_run_refine,
         args=(shot_id, shot_path),
