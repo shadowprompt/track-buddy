@@ -36,7 +36,13 @@ from typing import Any
 
 import numpy as np
 
-from .anchor_quality import point_anchor_rmse, split_anchor_quality, systematic_bias
+from .anchor_quality import (
+    apply_source_consistency,
+    point_anchor_rmse,
+    source_bias_report,
+    split_anchor_quality,
+    systematic_bias,
+)
 from .geo.coords import lonlat_to_mercator, mercator_to_lonlat
 
 
@@ -83,6 +89,9 @@ class Registration:
     fragment_rejected: list[AnchorPair] = field(default_factory=list)
     # 内点残差向量的方向一致性诊断（用于识别锚点源系统性偏移）。
     anchor_bias: dict[str, Any] = field(default_factory=dict)
+    # 按坐标源分组的残差报告与跨源冲突降权记录。
+    source_bias: dict[str, Any] = field(default_factory=dict)
+    source_consistency: dict[str, Any] = field(default_factory=dict)
     # 备选解：低置信度时交给用户选。
     #
     # ⚠️ 为什么需要它：低缩放截图（一张图覆盖 20 公里）下，
@@ -847,14 +856,21 @@ def register(
     # 把 RMSE 和尺度一起带偏。它们必须**不进入 RANSAC**，但仍保留在
     # 结果的离群列表里，方便追溯「为什么这个地名没被用上」。
     valid, fragments = split_anchor_quality(valid_all)
+    valid, source_consistency = apply_source_consistency(valid)
     if fragments:
         notes.append(
             f"剔除 {len(fragments)} 个疑似 OCR 残片路名锚点（不参与配准）"
+        )
+    if source_consistency.get("n_conflicted"):
+        notes.append(
+            f"{source_consistency['n_conflicted']} 个地名的跨源候选坐标不一致"
+            "（已整体降权，由几何一致性挑选）"
         )
     if len(valid) < 2:
         return Registration(
             ok=False,
             fragment_rejected=fragments,
+            source_consistency=source_consistency,
             notes=[f"有效锚点不足（{len(valid)} 个），至少需要 2 个"],
         )
 
@@ -1015,8 +1031,16 @@ def register(
     reg.n_reliable = n_pt
     reg.fragment_rejected = fragments
     reg.anchor_bias = systematic_bias(reg)
+    reg.source_bias = source_bias_report(reg)
+    reg.source_consistency = source_consistency
     # 残片仍是「被拒绝的候选」，放进离群列表供诊断查看
     reg.outliers = list(reg.outliers) + fragments
+    if reg.source_bias.get("warning"):
+        notes.append(
+            f"内点混用了 {len(reg.source_bias['by_source'])} 个坐标源，"
+            f"彼此平均残差相距 {reg.source_bias['spread_m']:.0f}m："
+            "这是基准不一致，不要用平移去补，建议统一锚点来源"
+        )
     if reg.anchor_bias.get("systematic"):
         bias = reg.anchor_bias
         notes.append(

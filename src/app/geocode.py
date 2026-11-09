@@ -52,7 +52,7 @@ class GeocodeResult:
     lon: float  # GCJ-02
     lat: float  # GCJ-02
     quality: float  # 0-1，可靠度
-    source: str  # lexicon / amap / tmap / baidu / tianditu
+    source: str  # amap / tmap / baidu / tianditu / osm / user / lexicon
     address: str = ""
     kind: str = "poi"  # poi / district / station / road / transit
 
@@ -214,7 +214,10 @@ class Lexicon:
                     lon=float(e["lon"]),
                     lat=float(e["lat"]),
                     quality=min(1.0, float(e.get("weight", 1.0)) / 5.0),
-                    source="lexicon",
+                    # 词典条目自带真实来源（amap / tianditu / osm / user ...）。
+                    # 早期统一写成 "lexicon"，把「这些坐标其实来自不同基准」
+                    # 这件事抹掉了，配准无法按源做一致性诊断。
+                    source=str(e.get("source") or "lexicon"),
                     address=e.get("address", ""),
                     kind=infer_kind(name),
                 )

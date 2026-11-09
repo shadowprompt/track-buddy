@@ -57,12 +57,16 @@ def _compare(report: dict, baseline_path: Path) -> dict:
             continue
         new = val["p50"]
         higher = key in _HIGHER_BETTER
+        if abs(new - old) < 1e-9:
+            improved = None  # 持平
+        else:
+            improved = new > old if higher else new < old
         out["delta"][key] = {
             "p50_before": old,
             "p50_after": new,
             "change": new - old,
             "higher_is_better": higher,
-            "improved": new > old if higher else new < old,
+            "improved": improved,
         }
     return out
 
@@ -103,7 +107,8 @@ def main(argv: list[str] | None = None) -> int:
         if c and "delta" in c:
             print("\n与基线相比（P50，越小越好）：")
             for key, d in c["delta"].items():
-                flag = "改善" if d["improved"] else "变差"
+                flag = ("持平" if d["improved"] is None
+                        else "改善" if d["improved"] else "变差")
                 print(f"  {key:<22}{d['p50_before']:>10.3f} → "
                       f"{d['p50_after']:>10.3f}  {flag}")
     return 0

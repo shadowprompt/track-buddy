@@ -244,6 +244,7 @@ def synthetic_case(
         pairs.append(AnchorPair(
             name=name, px=float(p[0]), py=float(p[1]), weight=1.0,
             kind="poi", lon=lon, lat=lat, match_quality=1.0,
+            source="tianditu" if i % 2 == 0 else "osm",
         ))
 
     for i in range(n_outliers):
@@ -253,6 +254,7 @@ def synthetic_case(
         pairs.append(AnchorPair(
             name=f"离群{i}", px=float(p[0]), py=float(p[1]), weight=1.0,
             kind="poi", lon=lon, lat=lat, match_quality=0.6,
+            source="osm",
         ))
 
     for i in range(n_fragments):
@@ -262,6 +264,7 @@ def synthetic_case(
         pairs.append(AnchorPair(
             name=f"片段{i}东", px=float(p[0]), py=float(p[1]), weight=1.0,
             kind="road", lon=lon, lat=lat, match_quality=0.5,
+            source="lexicon",
         ))
 
     # 真值轨迹：像素折线 → 经纬度，后续用 reg 反算的轨迹与它比较

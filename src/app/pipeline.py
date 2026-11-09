@@ -152,6 +152,7 @@ DIAG_KEYS: tuple[str, ...] = (
     "track_straightness",
     "anchor_fragments",
     "anchor_bias",
+    "anchor_sources",
     "start_marker",
     "end_marker",
     "online_geocoding",
@@ -563,6 +564,7 @@ class RidePipeline:
                 track_straightness=round(straightness, 3),
                 anchor_fragments=len(reg.fragment_rejected),
                 anchor_bias=reg.anchor_bias,
+                anchor_sources=reg.source_bias,
                 start_marker=list(track.start_marker) if track.start_marker else None,
                 end_marker=list(track.end_marker) if track.end_marker else None,
                 # ⚠️ 这个字段的语义是「本次识别**真的用到**了在线源」，
@@ -782,6 +784,7 @@ class RidePipeline:
                         lon=r.lon,
                         lat=r.lat,
                         match_quality=r.quality,
+                        source=r.source,
                     )
                 )
             # 词典命中不代表坐标一定对——也让冷启动查一遍，两边候选一起
@@ -884,6 +887,7 @@ class RidePipeline:
                         lon=p.lon,
                         lat=p.lat,
                         match_quality=0.6 * p.score,
+                        source="osm",
                     )
                 )
         return pairs
@@ -2209,6 +2213,7 @@ def _anchor_dict(a: AnchorPair) -> dict[str, Any]:
         "lon": round(a.lon, 7) if a.lon is not None else None,
         "lat": round(a.lat, 7) if a.lat is not None else None,
         "quality": round(a.match_quality, 2),
+        "source": a.source,
     }
 
 
