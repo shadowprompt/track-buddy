@@ -90,6 +90,46 @@ def test_render_page_injects_basemap_provider() -> None:
     assert "__WB_BASEMAP_PROVIDER__" not in html
 
 
+def test_page_placeholder_not_nested_in_variable_name() -> None:
+    """页面里的占位符不能出现在 JS 变量名中。
+
+    否则渲染时占位符子串会被一并替换：
+    ``window.__WB_BASEMAP_PROVIDER__`` 会变成 ``window.tmap``——
+    变量名被悄悄改掉，语义全错，而且**不报任何错**。
+
+    只看代码行（跳过注释），注释里可以自由提及占位符名。
+    """
+    html = HTML.read_text(encoding="utf-8")
+    code_lines = [
+        ln for ln in html.splitlines()
+        if "__WB_BASEMAP_PROVIDER__" in ln and not ln.strip().startswith("//")
+    ]
+    for ln in code_lines:
+        assert "window.__WB_BASEMAP_PROVIDER__" not in ln, \
+            f"占位符名被用作 JS 变量名，渲染时会被连带替换: {ln.strip()}"
+    assert any(
+        "window.__WB_MAP_PROVIDER__ = '__WB_BASEMAP_PROVIDER__'" in ln
+        for ln in code_lines
+    ), "provider 变量名与占位符冲突"
+
+
+def test_render_page_does_not_corrupt_variable_names() -> None:
+    """渲染后的页面里变量名必须保持原样。"""
+    from app.tmap_proxy import render_page
+
+    html = render_page(HTML.read_text(encoding="utf-8"), 8848, "sec",
+                        basemap_provider="tmap")
+    assert "window.__WB_MAP_PROVIDER__ = 'tmap'" in html, \
+        "provider 变量名在渲染后被占位符替换破坏了"
+    # 代码行里不能再出现被连带替换出来的 window.tmap
+    code_lines = [
+        ln for ln in html.splitlines()
+        if not ln.strip().startswith("//")
+    ]
+    assert not any("window.tmap" in ln for ln in code_lines), \
+        "渲染后代码行里出现了 window.tmap（占位符连带替换）"
+
+
 def test_render_page_amap_sdk_only_when_selected() -> None:
     from app.tmap_proxy import render_page
 

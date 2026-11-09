@@ -87,11 +87,10 @@ def test_env_file_change_takes_effect_without_restart():
     改文件不改进程环境变量，于是新 key 必须重启服务才生效，
     而现象是「明明改了却不生效」，非常难查。
 
-    现在每次取值都重新读 .env 文件（按 mtime 缓存），
+    现在每次取值都重新读 .env 文件（按内容指纹缓存），
     所以改完立刻可用。
     """
     import shutil
-    import time
 
     from app.config import AppConfig
 
@@ -105,9 +104,14 @@ def test_env_file_change_takes_effect_without_restart():
     try:
         cfg = AppConfig(env_path=tmp)
         before = cfg.amap_key
+        # ⚠️ 不要在这里 sleep 等 mtime 变化——
+        # 文件系统的 mtime 精度取决于时间刻度，两次写入可能落在
+        # 同一刻度内（实测同一秒内「复制 + 覆写」有 3/8 概率
+        # mtime 完全相同），等再久也等不到变化。
+        # 生产代码已改用 (mtime_ns, size, 内容 sha256) 指纹判断变更，
+        # 这里直接读即可。
         tmp.write_text("AMAP_KEY=deadbeefdeadbeefdeadbeefdeadbeef\n",
                        encoding="utf-8")
-        time.sleep(0.05)
         after = cfg.amap_key
         assert before != after, "改 .env 后取值没变化（需重启才生效）"
         assert after.startswith("deadbeef"), f"未读到文件新值：{after}"

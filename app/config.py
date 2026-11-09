@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -143,10 +144,11 @@ class AppConfig:
     road_fit_anchor_worsen_ratio: float = 2.5
     # .env 文件位置（改完不用重启服务就能生效，见 _env_value）
     env_path: Path = ROOT / ".env"
-    # .env 解析结果的缓存（按 mtime 失效）
+    # .env 解析结果的缓存（按内容指纹失效）
     _env_cache: dict[str, str] = field(
         default_factory=dict, repr=False, compare=False)
-    _env_cache_mtime: float = field(default=-1.0, repr=False, compare=False)
+    _env_cache_fingerprint: tuple = field(
+        default=(), repr=False, compare=False)
 
     def _file_env_value(self, name: str) -> str | None:
         """读 .env 文件里当前的 key 值（按 mtime 缓存，避免重复读盘）。
@@ -156,16 +158,30 @@ class AppConfig:
         .env 文件后**必须重启服务**才能生效——而 key 属性是
         ``@property``，看起来像是「实时读取」，容易误判。
 
-        这里每次都重新读文件（mtime 没变就用缓存），
+        这里每次都重新读文件（指纹没变就用缓存），
         改完 .env 立即生效，不用重启。
+
+        ⚠️ **为什么不能只看 mtime**：文件系统的 mtime 精度取决于
+        时间刻度，两次写入**可能落在同一刻度内**——实测同一秒内的
+        「复制 + 覆写」有 3/8 概率 mtime 完全相同。
+        只看 mtime 会把「文件已改」误判成「没改」，
+        用户改了 .env 却读不到新值，而且**不报任何错**。
+        所以指纹用 (mtime_ns, size, 内容 sha256) 三者组合：
+        mtime_ns 抓「同一刻度内的两次写入」，sha256 兜底。
         """
         try:
-            mtime = self.env_path.stat().st_mtime
+            st = self.env_path.stat()
+            raw = self.env_path.read_bytes()
         except OSError:
             return None
-        if mtime != self._env_cache_mtime:
+        fingerprint = (
+            st.st_mtime_ns,
+            st.st_size,
+            hashlib.sha256(raw).hexdigest(),
+        )
+        if fingerprint != self._env_cache_fingerprint:
             self._env_cache = _read_env_file(self.env_path)
-            self._env_cache_mtime = mtime
+            self._env_cache_fingerprint = fingerprint
         val = self._env_cache.get(name, "").strip()
         return val or None
 

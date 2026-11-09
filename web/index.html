@@ -276,8 +276,11 @@ __WB_AMAP_SDK__
   let picked = null, lastResult = null;
   // 底图适配层：业务代码只依赖 RideBasemap.Adapter，不再直接碰 TMap.*。
   // 服务商名由服务端按配置注入（BASEMAP_PROVIDER），改 .env 即可切换。
-  window.__WB_BASEMAP_PROVIDER__ = '__WB_BASEMAP_PROVIDER__';
-  const basemap = RideBasemap.create(window.__WB_BASEMAP_PROVIDER__ || 'tmap',
+  // ⚠️ 变量名不能与占位符 __WB_BASEMAP_PROVIDER__ 同名：
+  //    否则渲染时占位符子串会被一并替换，`window.__WB_BASEMAP_PROVIDER__`
+  //    变成 `window.tmap`，语义被悄悄改掉。
+  window.__WB_MAP_PROVIDER__ = '__WB_BASEMAP_PROVIDER__';
+  const basemap = RideBasemap.create(window.__WB_MAP_PROVIDER__ || 'tmap',
                                     { container: 'map', zoom: 14 });
   // 当前轨迹的坐标数组（{lat, lon}，GCJ-02），供 fitMapToTrack 缩放视野用
   let lastPath = [];

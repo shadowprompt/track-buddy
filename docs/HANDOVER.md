@@ -4194,3 +4194,66 @@ amap_key(cfg=None) -> str | None
 - 后台精修 `refine=True` 重跑整条 pipeline、锚点源随配额波动的遗留
   未动——那是**行为修复**而非去重复，混进重构会破坏归因。
 - `app/trajmap.py`（对比页）仍直接用 `TMap.*`，未纳入前端适配层。
+
+### 22.33.1 阶段 3 的一个隐蔽 bug：占位符与 JS 变量名嵌套
+
+阶段 3 验收时用真实 HTTP 拉页面，发现渲染结果是：
+
+```js
+window.tmap = 'tmap';   // ← 不是 window.__WB_BASEMAP_PROVIDER__ = 'tmap'
+```
+
+原因：页面里原本写的是
+
+```js
+window.__WB_BASEMAP_PROVIDER__ = '__WB_BASEMAP_PROVIDER__';
+```
+
+服务端 `render_page()` 做的是**朴素字符串替换**：
+
+```python
+html = html.replace(PLACEHOLDER_BASEMAP, basemap_provider)
+```
+
+于是第一处（变量名里的同名子串）也被替换成 `tmap`，
+得到 `window.tmap = 'tmap'`——**不报任何错**，只是变量名被悄悄改掉。
+当时因为默认值恰好也是 `tmap`，行为上看不出异常；一旦切到高德就会炸。
+
+修法：变量名与占位符名脱钩（`window.__WB_MAP_PROVIDER__`），
+并在 `tests/test_frontend_basemap.py` 加了两条回归：
+
+1. 页面代码行（跳过注释）里不得出现 `window.__WB_BASEMAP_PROVIDER__`；
+2. 渲染后的页面必须仍含 `window.__WB_MAP_PROVIDER__ = 'tmap'`，
+   且代码行里不得出现 `window.tmap`。
+
+**通用教训**：服务端渲染的占位符不能与前端任何标识符同名。
+凡是「同一个字符串在页面里出现两次以上」的地方，都要检查
+其中一处是否会被连带替换。
+
+### 22.33.2 顺手修掉的一个真实缺陷：.env 热加载只看 mtime 会漏改
+
+阶段 3 的全量回归里，`tests/test_geocode_config.py` 偶发失败
+（`改 .env 后取值没变化`）。追下去发现**这不是测试的问题，是生产代码
+的缺陷**：
+
+`AppConfig._file_env_value()` 原先只看 `st_mtime` 判断「文件是否变了」。
+但文件系统的 mtime 精度取决于时间刻度，**两次写入可能落在同一刻度内**——
+实测同一秒内「复制 + 覆写」有 3/8 概率 mtime 完全相同：
+
+```
+0 float differs: False  ns differs: False
+1 float differs: False  ns differs: False
+2 float differs: True   ns differs: True
+...
+```
+
+后果：用户改了 `.env`，服务**读不到新值**，而且不报任何错——
+「明明改了却不生效」，正是这个项目最早踩过的坑。
+
+修法：缓存指纹从 `st_mtime` 换成 `(st_mtime_ns, st_size, 内容 sha256)`：
+
+- `st_mtime_ns` 抓「同一刻度内的两次写入」；
+- `st_size` + `sha256` 兜底任何 mtime 精度问题。
+
+代价是每次取值多读一次文件内容——`.env` 只有几十行，
+而配置读取不在热点路径上，这个代价可以忽略。
