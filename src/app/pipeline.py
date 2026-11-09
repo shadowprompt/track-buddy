@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -63,6 +64,41 @@ class PipelineResult:
     # 的分数差只有 0.1%，但地理位置分散在 900-1600 米范围内。
     # 只给一个答案等于替用户乱猜，不如把几个候选摆出来。
     alternatives: list[dict[str, Any]] = field(default_factory=list)
+    # 后台精修要复用的中间产物（只存在进程内，不进接口 payload）。
+    # ``_build_payload*`` 是显式字段白名单，所以这里不会被序列化。
+    refine_context: Any = None
+
+
+@dataclass
+class RefineContext:
+    """主请求留下的中间产物，供后台精修复用。
+
+    后台精修原先会重跑整条 ``run()``：大画布上 OCR、轨迹提取、锚点
+    地理编码、配准全部再来一遍（12 图拼接实测多花 4 分钟），而且
+    **在线配额波动会让后台拿到与主请求不同的锚点集合**，出现「主请求
+    判该精修、后台却判不该精修」的不稳定结果。
+
+    这里把「阶段 1-4 + 备选位置 + 缩放评估」的结果留下来，后台只补算
+    平移量再重投影。字段与 ``run()`` 的局部变量一一对应；刻意不保存
+    图片本身——拼接画布动辄几千万像素，常驻内存不划算。
+    """
+
+    reg: Any
+    track: Any
+    simplified: Any                       # np.ndarray，像素空间简化折线
+    anchors: list[Any]
+    pairs: list[Any]
+    texts: list[Any]
+    zoom: dict[str, Any]
+    alternatives: list[Any]
+    road_name_fit: dict[str, Any]
+    med_px: float
+    city: str = ""
+    output_crs: str = "WGS-84"
+    allow_online: bool = True
+    road_names: list[str] | None = None
+    image_size: tuple[int, int] = (0, 0)
+    online_geocoding: bool = False
 
 
 # diagnostics 的完整键集。
@@ -446,6 +482,28 @@ class RidePipeline:
             debug={"track_mask": track.mask},
             track_polyline_px=[[int(px), int(py)] for px, py in simplified],
             image_size=(int(img.shape[1]), int(img.shape[0])),
+            # 只有**成功配准**的结果才留下上下文；早退分支没有 reg。
+            # 后台精修据此复用，不必重新读图、OCR 和查在线锚点。
+            refine_context=RefineContext(
+                reg=reg,
+                track=track,
+                simplified=simplified,
+                anchors=anchors,
+                pairs=pairs,
+                texts=texts,
+                zoom=zoom,
+                alternatives=alternatives,
+                road_name_fit=road_name_fit,
+                med_px=med_px,
+                city=city,
+                output_crs=output_crs,
+                allow_online=allow_online,
+                road_names=road_names,
+                image_size=(int(img.shape[1]), int(img.shape[0])),
+                online_geocoding=bool(
+                    self.cfg.has_online_key and allow_online
+                    and not getattr(self.geocoder, "_online_failures", [])),
+            ),
         )
 
     def _assess_zoom_level(
@@ -1438,8 +1496,16 @@ class RidePipeline:
                 continue
         return out
 
-    def _road_refine(self, reg: Registration, track: TrackResult):
+    def _road_refine(self, reg: Registration, track: TrackResult,
+                     mode: str = "auto"):
         """路网约束精修：用「轨迹必须走在真实道路上」纠正配准的绝对位置。
+
+        ``mode``：
+          * ``auto``   —— 按截图尺度自动选修正 / 校验模式（同步识别默认）。
+          * ``verify`` —— 强制「校验 + 命名」，只算贴路距离与路名、不平移。
+            多图拼接画布只有一个刚体配准，链式拼接的累积漂移会被当成
+            「配准误差」，用一个平移量去纠正容易压到平行主干道上；
+            因此多图后台精修默认走这一档。
 
         两种模式，按截图尺度自动切换：
 
@@ -1467,6 +1533,8 @@ class RidePipeline:
             return {"ok": False, "notes": ["路网精修已关闭"]}, None
 
         low_zoom = reg.scale > self.cfg.road_fit_low_zoom_m_per_px
+        if mode == "verify":
+            low_zoom = True
         # 路网等级：**主干道 + 次干道 + 三级路 + 居住路**，
         # 但排除 service / footway / path 之类的细碎小路。
         #
@@ -1564,6 +1632,116 @@ class RidePipeline:
                 [fit.shift_e_m, fit.shift_n_m], dtype=float
             )
         return fit.to_dict(), net
+
+    def refine_existing(
+        self,
+        base: PipelineResult,
+        *,
+        mode: str = "auto",
+        allow_online_roadname: bool = False,
+    ) -> PipelineResult:
+        """在主请求结果上补算路网精修，**不重跑整条流水线**。
+
+        只做三件事：补算平移量 → 把简化折线按新的 ``reg`` 重投影 →
+        重算置信度、路名归属与 warnings。OCR、轨迹提取、锚点地理编码、
+        配准、备选位置这些最贵的阶段直接复用 ``base.refine_context``。
+
+        ``allow_online_roadname`` 默认关闭：后台任务不该再悄悄打一次
+        商业在线接口（配额波动会让同一张图两次结果不一致）。精修成功时
+        路名本来就直接由 OSM 几何判定，不依赖在线服务。
+        """
+        t0 = time.time()
+        ctx: RefineContext | None = base.refine_context
+        if ctx is None:
+            raise ValueError("主请求未留下精修上下文，无法复用精修")
+
+        # 主请求那两条说明在精修结果里已经过期：一条说「跳过精修」，
+        # 一条是粗结果的在线路名归属，后台会重新归属。
+        _kept_warnings = [
+            w for w in base.warnings
+            if "跳过路网精修" not in str(w)
+            and "路名归属（" not in str(w)
+        ]
+
+        def _with(base_result: PipelineResult, road_fit: dict[str, Any],
+                  notes: list[str]) -> PipelineResult:
+            return replace(
+                base_result,
+                road_fit=road_fit,
+                warnings=_kept_warnings + notes,
+                elapsed_ms=base_result.elapsed_ms
+                + int((time.time() - t0) * 1000),
+            )
+
+        # 用户路名约束是**强约束**：它会改尺度并整体平移。若在它之后
+        # 再叠一个「贴路最小化」平移，等于把轨迹从用户指定的路上拉走。
+        # 这条路保持主请求结果不变，只把原因写清楚。
+        if (base.road_name_fit or {}).get("ok"):
+            notes = ["已由用户路名约束定位，后台路网平移跳过"
+                     "（避免覆盖用户指定的路线）"]
+            return _with(base, {"ok": False, "notes": notes}, notes)
+
+        # deepcopy：后台任务若被重试，不能在上一次的平移上再叠一次。
+        reg = copy.deepcopy(ctx.reg)
+        road_fit, road_net = self._road_refine(reg, ctx.track, mode=mode)
+        if not road_fit.get("ok"):
+            return _with(base, road_fit, list(road_fit.get("notes", [])))
+
+        # ``_road_refine`` 已把平移并进 ``reg.translation``；形状、尺度、
+        # 朝向都没变，因此对同一条简化折线重新投影一次即可。
+        lonlat_gcj = apply_to_polyline(reg, ctx.simplified)
+        if ctx.output_crs.upper() in ("WGS-84", "WGS84", "EPSG:4326"):
+            lonlat = [gcj02_to_wgs84(lo, la) for lo, la in lonlat_gcj]
+        else:
+            lonlat = lonlat_gcj
+
+        from .geo.coords import haversine
+
+        distance = 0.0
+        for i in range(1, len(lonlat)):
+            distance += haversine(
+                lonlat[i - 1][0], lonlat[i - 1][1],
+                lonlat[i][0], lonlat[i][1],
+            )
+        geojson = _build_geojson(lonlat, reg, ctx.track)
+        geojson_gcj = _build_geojson(lonlat_gcj, reg, ctx.track)
+        geojson_gcj["features"][0]["properties"]["crs"] = "GCJ-02"
+
+        confidence = self._score_confidence(
+            reg, ctx.track, ctx.anchors, ctx.pairs,
+            road_fit, ctx.road_name_fit, ctx.zoom,
+        )
+        road_attr = self._attribute_roads(
+            lonlat_gcj, ctx.simplified, ctx.texts,
+            allow_online=allow_online_roadname,
+            road_fit=road_fit, road_net=road_net, reg=reg,
+        )
+        notes: list[str] = []
+        if road_attr.segments:
+            notes.append(f"路名归属（{road_attr.source}）："
+                         + "、".join(road_attr.roads[:8]))
+        notes.append(
+            f"路网精修：平移 东{road_fit['shift_e_m']:+.0f}m "
+            f"北{road_fit['shift_n_m']:+.0f}m，贴路中位 "
+            f"{road_fit['median_before_m']:.0f}m → "
+            f"{road_fit['median_after_m']:.0f}m"
+        )
+        diag = dict(base.diagnostics or {})
+        diag["refine_reused"] = True
+
+        return replace(
+            base,
+            geojson=geojson,
+            geojson_gcj02=geojson_gcj,
+            confidence=confidence,
+            track_points=len(lonlat),
+            distance_m=round(distance, 1),
+            road_attribution=road_attr.to_dict(),
+            road_fit=road_fit,
+            diagnostics=diag,
+            warnings=_kept_warnings + notes,
+            elapsed_ms=base.elapsed_ms + int((time.time() - t0) * 1000),
+        )
 
     def _verify_roads(
         self, reg: Registration, track: TrackResult, net: Any

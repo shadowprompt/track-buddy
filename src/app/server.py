@@ -391,11 +391,11 @@ async def recognize(
     # 需要后台精修吗？判据见 `_need_background_refine`：
     # 只看「配准有没有出坐标 + 是否还没精修过」，不再用尺度门槛。
     if _need_background_refine(result, want_refine, do_sync_refine):
-        # ⚠️ 必须把 road_names 传进去：后台精修会**重跑整个 pipeline**，
-        # 不传的话用户的路名约束（以及基于它的起终点锚定）全部丢失，
-        # 精修后的结果反而比主流程更差（实测尺度会退回被污染的 15.73）。
-        _start_refine(shot_id, shot_path, city.strip(), output_crs,
-                      allow_online, _names or None)
+        # ⚠️ 直接把主请求结果交给后台。路名约束、起终点锚定、尺度修正
+        # 都已经体现在 result 里，后台只补算平移量再重投影，不会再重跑
+        # OCR / 地理编码（旧实现重跑整条 pipeline，既不慢又会因在线配额
+        # 波动拿到不同的锚点集合）。
+        _start_refine(shot_id, shot_path, base_result=result, mode="auto")
         payload["refine_pending"] = True
         payload["refine_state"] = "running"
     return JSONResponse(payload)
@@ -404,6 +404,11 @@ async def recognize(
 # --- 异步路网精修 ---------------------------------------------------------
 
 _refine_jobs: dict[str, dict[str, Any]] = {}
+# shot_id -> {"base": PipelineResult, "mode": "auto" | "verify", "multi": bool}
+#
+# 主请求把已经算好的中间产物留在这里，后台线程直接复用。任务一结束
+# （成功或失败）就从字典里删掉，避免大画布结果长期占内存。
+_refine_ctx: dict[str, dict[str, Any]] = {}
 _refine_lock = threading.Lock()
 
 
@@ -470,18 +475,23 @@ def _build_payload(result: Any, shot_id: str, shot_path: Path) -> dict[str, Any]
     }
 
 
-def _run_refine(
-    shot_id: str, shot_path: Path, city: str,
-    output_crs: str, allow_online: bool,
-    road_names: list[str] | None = None,
-) -> None:
+def _run_refine(shot_id: str, shot_path: Path) -> None:
+    """后台精修：**复用主请求上下文**，只补算平移量再重投影。
+
+    旧实现是 ``imread_unicode`` + ``_pipeline.run(refine=True)``，等于把
+    OCR、轨迹提取、在线锚点地理编码、配准全部重跑一遍——12 图拼接画布上
+    这一遍要 4 分钟，而且后台会重新取在线锚点，配额一波动就和主请求
+    的判定对不上。现在只调 ``Pipeline.refine_existing``，图上那几个最贵
+    的阶段一次都不重跑。
+    """
     try:
-        img = imread_unicode(shot_path)
-        result = _pipeline.run(
-            img, city=city, allow_online=allow_online,
-            output_crs=output_crs, refine=True,
-            road_names=road_names or None,
-        )
+        with _refine_lock:
+            ctx = _refine_ctx.get(shot_id)
+        if ctx is None:
+            # 按「配置哪个就用哪个、失败直接提示」的原则，不静默降级
+            # 回旧的重跑逻辑；明确报错，让用户重新识别即可。
+            raise RuntimeError("精修上下文已失效，请重新识别该截图")
+        result = _pipeline.refine_existing(ctx["base"], mode=ctx["mode"])
         payload = _build_payload(result, shot_id, shot_path)
         with _refine_lock:
             _refine_jobs[shot_id] = {"state": "done", "payload": payload}
@@ -504,20 +514,30 @@ def _run_refine(
     except Exception as exc:  # noqa: BLE001
         with _refine_lock:
             _refine_jobs[shot_id] = {"state": "error", "message": str(exc)}
+    finally:
+        # 上下文只在任务执行期间需要；无论成败都立刻释放。
+        with _refine_lock:
+            _refine_ctx.pop(shot_id, None)
 
 
 def _start_refine(
-    shot_id: str, shot_path: Path, city: str,
-    output_crs: str, allow_online: bool,
-    road_names: list[str] | None = None,
+    shot_id: str, shot_path: Path, *,
+    base_result: Any,
+    mode: str = "auto",
 ) -> None:
+    """登记并启动一次后台精修。
+
+    ``base_result`` 是主请求刚算出的 ``PipelineResult``（含
+    ``refine_context``）。``mode`` 见 ``Pipeline._road_refine``。
+    """
     with _refine_lock:
         if shot_id in _refine_jobs:
             return
         _refine_jobs[shot_id] = {"state": "running"}
+        _refine_ctx[shot_id] = {"base": base_result, "mode": mode}
     th = threading.Thread(
         target=_run_refine,
-        args=(shot_id, shot_path, city, output_crs, allow_online, road_names),
+        args=(shot_id, shot_path),
         daemon=True,
     )
     th.start()
