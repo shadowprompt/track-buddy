@@ -25,7 +25,8 @@ def test_road_fit_checkbox_exists() -> None:
 
 def test_switch_only_affects_multi_shot() -> None:
     h = _html()
-    assert "const syncFit = !!(multi && $('roadFit') && $('roadFit').checked);" in h
+    assert "const syncFit = !!(hasCanvas && $('roadFit') && $('roadFit').checked);" in h
+    assert "const hasCanvas = paired || detailsOnly;" in h
     assert "if (syncFit) fd.append('refine', 'on');" in h
 
 

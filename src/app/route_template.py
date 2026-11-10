@@ -27,6 +27,12 @@ GCJ-02 坐标。但它**只在主流程判定为宽泛概览图时**才被调用
 形状搜索已被证明不可行（HANDOVER §21.4：前 12 候选分数差 0.1%，位置差
 900-1600m），因此匹配范围严格限定在**已沉淀的模板集合**内。反推出来的
 坐标没有当次地理核验，调用方必须标成「参考级/未核验」并封顶置信度。
+
+P2 起增加 ``shape_domain`` 与 ``register_pair()``：一次请求同时给出
+「概览单图」和「可选的多张街道级细节图」时，用多图配准出的真值地理折线
+按弧长投影到概览图的形状上，注册成 ``overview`` 域模板。之后相似的
+概览图只需单独上传即可命中，不必再带多图。``locate()`` 查询概览图时
+只比对 ``overview`` 域，旧的 ``detail`` 域模板保留但不参与定位。
 """
 from __future__ import annotations
 
@@ -76,6 +82,17 @@ MIN_SHAPE_ASPECT = 4.0
 MIN_LOCATE_COVERAGE_B = 0.85
 # 参考级定位的置信度上限：形状对齐没有任何当次地理核验。
 TEMPLATE_CONFIDENCE_CAP = 0.45
+
+# --- P2：形状域与配对注册 ---------------------------------------------
+# 实测教训（§22.45）：模板的 px_points 来自细节图/拼接画布，而 locate()
+# 的 query 永远是概览图，两个形状域混用会让 3.7km 的局部路线误命中
+# 十几公里的概览图。配对注册把「概览图形状 ↔ 多图地理真值」直接绑定，
+# 之后 key 与 query 同域，假阳性自然收敛。
+SHAPE_DOMAIN_OVERVIEW = "overview"
+SHAPE_DOMAIN_DETAIL = "detail"
+# 配对时多图真值必须覆盖单图整条路线的比例下限。低于它说明只截了局部，
+# 模板的地理折线会不完整，project_to_geo 会把子段外夹到端点、固化错误。
+MIN_PAIR_COVERAGE = 0.85
 # 模板地理里程的合理区间（米），挡住被污染的错误模板。
 MIN_TEMPLATE_LENGTH_M = 100.0
 MAX_TEMPLATE_LENGTH_M = 200_000.0
@@ -428,6 +445,10 @@ class TemplateStore:
             "templates": len(items),
             "verified": sum(1 for x in items if x.get("verified")),
             "hits": sum(int(x.get("hit_count", 0) or 0) for x in items),
+            "overview": sum(
+                1 for x in items
+                if (x.get("shape_domain") or SHAPE_DOMAIN_DETAIL)
+                == SHAPE_DOMAIN_OVERVIEW),
         }
 
     # --- 沉淀 -----------------------------------------------------------
@@ -443,8 +464,14 @@ class TemplateStore:
         verified: bool = False,
         self_consistent: bool = True,
         input_ok: bool = True,
+        shape_domain: str = SHAPE_DOMAIN_DETAIL,
     ) -> dict[str, Any]:
-        """裁决并沉淀一条模板；失败也返回原因，绝不抛给调用方。"""
+        """裁决并沉淀一条模板；失败也返回原因，绝不抛给调用方。
+
+        ``shape_domain`` 区分模板形状来自哪一种图：``detail`` 是细节图/
+        拼接画布（P0 默认），``overview`` 是概览单图（P2 配对注册）。
+        ``locate()`` 查询概览图时只比对后者，避免跨缩放形状假阳性。
+        """
         px = _as_points(px_polyline)
         geo = _as_points(geo_polyline)
         try:
@@ -488,6 +515,9 @@ class TemplateStore:
                         "verified": bool(verified or hit.get("verified")),
                         "source": source,
                         "shot_id": shot_id,
+                        # 配对注册可以把一条旧的 detail 模板升级成 overview，
+                        # 否则它会永远无法参与概览图定位。
+                        "shape_domain": str(shape_domain or SHAPE_DOMAIN_DETAIL),
                     })
                 self.save()
                 return {"written": False, "reason": "deduped",
@@ -498,6 +528,7 @@ class TemplateStore:
                 "created_at": int(time.time()),
                 "city": str(city or ""),
                 "source": str(source or "auto"),
+                "shape_domain": str(shape_domain or SHAPE_DOMAIN_DETAIL),
                 "verified": bool(verified or source == "user"),
                 "confidence": round(conf, 4),
                 "hit_count": 1,
@@ -578,6 +609,7 @@ class TemplateStore:
         query_px: Sequence[Sequence[float]],
         *,
         city_hint: str = "",
+        shape_domain: str | None = None,
     ) -> dict[str, Any] | None:
         """形状命中后直接给出 GCJ-02 折线；任何一道门槛不过就返回 ``None``。
 
@@ -587,12 +619,16 @@ class TemplateStore:
         * 新图与模板**两侧**都要有足够形状信息（挡细长直线假阳性）；
         * 模板地理里程必须落在合理区间；
         * ``template_in_query`` 需要 coverage≥0.85，避免大段无地理对应；
-        * 投影坐标必须合法。
+        * 投影坐标必须合法；
+        * 指定 ``shape_domain`` 时只比对同域模板（概览图不碰细节图模板）。
         """
         if not shape_has_enough_info(query_px):
             return None
         best: dict[str, Any] | None = None
         for tpl in self.templates:
+            if shape_domain is not None and (
+                    tpl.get("shape_domain") or SHAPE_DOMAIN_DETAIL) != shape_domain:
+                continue
             if city_hint and tpl.get("city") and city_hint not in str(tpl["city"]):
                 continue
             if not shape_has_enough_info(tpl.get("px_points")):
@@ -632,3 +668,86 @@ class TemplateStore:
                     best["match"]["residual"] - 0.02 * best["match"]["coverage"]):
                 best = row
         return best
+
+    def register_pair(
+        self,
+        *,
+        overview_px: Sequence[Sequence[float]],
+        detail_px: Sequence[Sequence[float]],
+        geo_polyline: Sequence[Sequence[float]],
+        confidence: float,
+        city: str = "",
+        shot_id: str = "",
+        self_consistent: bool = True,
+        input_ok: bool = True,
+    ) -> dict[str, Any]:
+        """「概览单图 + 多图真值」配对注册，产出 ``overview`` 域模板。
+
+        ``detail_px`` 与 ``geo_polyline`` 来自同一次多图配准，二者按弧长
+        一一对应。这里复用 :func:`project_to_geo` 把真值投影到概览图的
+        弧长参数化上，再以「概览形状 ↔ 地理折线」沉淀，于是模板的 key
+        与将来 ``locate()`` 的 query 都是概览图，形状域统一。
+
+        失败一律返回 ``{"written": False, "reason": ...}``，不抛异常——
+        配对注册是附加能力，绝不能让识别请求失败。
+        """
+        px = _as_points(overview_px)
+        dp = _as_points(detail_px)
+        geo = _as_points(geo_polyline)
+        if (len(px) < MIN_TRACK_POINTS or len(dp) < MIN_TRACK_POINTS
+                or len(geo) < MIN_TRACK_POINTS):
+            return {"written": False, "reason": "not_enough_points"}
+        if not (np.isfinite(px).all() and np.isfinite(dp).all()
+                and np.isfinite(geo).all()):
+            return {"written": False, "reason": "invalid_value"}
+        if not (np.all(geo[:, 0] >= -180) and np.all(geo[:, 0] <= 180)
+                and np.all(geo[:, 1] >= -90) and np.all(geo[:, 1] <= 90)):
+            return {"written": False, "reason": "invalid_coordinate"}
+        if not shape_has_enough_info(px) or not shape_has_enough_info(dp):
+            return {"written": False, "reason": "degenerate_shape"}
+
+        # match_shape / project_to_geo 都以「重采样后 64 点」的下标解释
+        # span，临时真值模板必须先按弧长重采样，不能喂原始点数（78 点等）。
+        dp_rs = resample_by_arc(dp)
+        geo_rs = resample_by_arc(geo)
+        if dp_rs is None or geo_rs is None:
+            return {"written": False, "reason": "degenerate_shape"}
+        truth = {"px_points": dp_rs, "geo_points": geo_rs}
+
+        m = match_shape(px, truth)
+        info = m.as_dict()
+        if not m.accepted:
+            return {"written": False, "reason": f"shape_{m.reason}",
+                    "pair_match": info}
+        # coverage 是「匹配子段占所在折线的比例」，两种 mode 下都表示
+        # 多图真值与概览图的覆盖是否一致；低于门槛说明多图只截了局部，
+        # 或概览图有大段没有地理对应。project_to_geo 的子段外一律夹到
+        # 端点（绝不外推），0.85 以上的缺口最多影响 15% 的采样点。
+        # ⚠️ 不能再限定 mode：实测完全同形的两条折线，滑窗打分会偏好
+        # template_in_query，写死 query_in_template 会把正常配对全拒掉。
+        if m.coverage < MIN_PAIR_COVERAGE:
+            return {"written": False, "reason": "partial_route",
+                    "pair_match": info}
+        coords = project_to_geo(px, truth, m)
+        if coords is None:
+            return {"written": False, "reason": "projection_failed",
+                    "pair_match": info}
+        if not (np.all(coords[:, 0] >= -180) and np.all(coords[:, 0] <= 180)
+                and np.all(coords[:, 1] >= -90) and np.all(coords[:, 1] <= 90)):
+            return {"written": False, "reason": "invalid_coordinate",
+                    "pair_match": info}
+
+        out = self.remember(
+            px_polyline=px,
+            geo_polyline=coords,
+            confidence=confidence,
+            city=city,
+            shot_id=shot_id,
+            source="paired",
+            self_consistent=self_consistent,
+            input_ok=input_ok,
+            shape_domain=SHAPE_DOMAIN_OVERVIEW,
+        )
+        out["pair_match"] = info
+        out["shape_domain"] = SHAPE_DOMAIN_OVERVIEW
+        return out

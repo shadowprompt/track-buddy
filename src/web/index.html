@@ -45,6 +45,10 @@
   .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
   .drop .big { font-size: 14px; margin-bottom: 4px; }
   .drop .hint { font-size: 12px; color: var(--text-3); }
+  .drop.sub { padding: 14px; border-style: dashed; }
+  .uplabel { margin-top: 12px; font-weight: 500; color: var(--text-2); }
+  .uplabel.first { margin-top: 0; }
+  .minor { font-size: 12px; color: var(--text-3); margin-top: 8px; }
   .row { display:flex; gap:10px; margin-top:14px; }
   .row > * { flex:1; }
   label { display:block; font-size:12px; color:var(--text-2); margin-bottom:5px; }
@@ -130,23 +134,36 @@
     <div>
       <div class="card">
         <h2>上传截图</h2>
+
+        <label class="uplabel first" for="file">① 概览单图（必选）</label>
         <div class="drop" id="drop">
-          <div class="big">点击选择，或拖拽图片到此处</div>
-          <div class="hint">支持 JPG / PNG / WebP，最大 20MB</div>
-          <input type="file" id="file" accept="image/*" multiple hidden>
+          <div class="big">点击选择整条路线的概览图</div>
+          <div class="hint">支持 JPG / PNG / WebP，最大 20MB · 缩放太高看不清街道名也能用</div>
+          <input type="file" id="file" accept="image/*" hidden>
         </div>
 
+        <label class="uplabel" for="details">② 街道级细节图（可选）</label>
+        <div class="drop sub" id="dropDetails">
+          <div class="big">仅当概览图缩放太高、模板库里还没有同类路线时补传</div>
+          <div class="hint">沿路线连续截 2–6 张，相邻约 1/3 重叠</div>
+          <input type="file" id="details" accept="image/*" multiple hidden>
+        </div>
+        <label class="minor" style="display:flex; align-items:center; gap:6px; margin-top:8px;">
+          <input type="checkbox" id="detailsOnly" style="width:auto;">
+          没有概览图，只用细节图识别（旧的多图模式）
+        </label>
+
         <div class="note" id="multiNote" style="margin-top:10px; display:none;">
-          <b>已选 <span id="fileCount">0</span> 张</b>：
+          <b>已选 <span id="fileCount">0</span> 张细节图</b>：
           <span id="fileNames"></span>
           <div style="margin-top:6px;">
-            骑行路线较长、一张图盖不下时，可沿路线滑动地图连续截图，
-            相邻两张保持约 1/3 重叠后一起上传——服务端会自动拼成一张大图再识别。
-            街道级截图能看清街道走向，比城市级截图准确得多。
+            细节图会由服务端拼成大图做完整地理配准，本次返回真值坐标；
+            同时把这张概览图的形状注册进模板库，<b>以后形状接近的概览图只需单独上传</b>，
+            不必再带细节图。
           </div>
           <button id="clearFiles" type="button"
                   style="margin-top:8px; font-size:12px; padding:4px 10px;">
-            清空已选
+            清空细节图
           </button>
         </div>
 
@@ -289,8 +306,11 @@ __WB_AMAP_SDK__
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
-  const drop = $('drop'), fileInput = $('file'), go = $('go'), status = $('status');
-  let picked = null, lastResult = null;
+  const drop = $('drop'), fileInput = $('file'),
+        dropDetails = $('dropDetails'), detailsInput = $('details'),
+        go = $('go'), status = $('status');
+  // picked 是单张概览图；pickedDetails 是可选的街道级细节图列表。
+  let picked = null, pickedDetails = [], lastResult = null;
   // 底图适配层：业务代码只依赖 RideBasemap.Adapter，不再直接碰 TMap.*。
   // 服务商名由服务端按配置注入（BASEMAP_PROVIDER），改 .env 即可切换。
   // ⚠️ 变量名不能与占位符 __WB_BASEMAP_PROVIDER__ 同名：
@@ -314,46 +334,78 @@ __WB_AMAP_SDK__
   };
 
   // ---------- 上传交互 ----------
-  drop.onclick = () => fileInput.click();
-  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
-  drop.ondragleave = () => drop.classList.remove('over');
-  drop.ondrop = (e) => {
-    e.preventDefault(); drop.classList.remove('over');
-    if (e.dataTransfer.files && e.dataTransfer.files.length) {
-      setFiles(Array.from(e.dataTransfer.files));
-    }
-  };
-  fileInput.onchange = () => {
-    if (fileInput.files.length) setFiles(Array.from(fileInput.files));
-  };
+  // 两个入口：概览单图（必选，决定形状）与可选细节图（拼大图拿地理真值）。
+  // 细节图只在首次 / 换路线时补传；注册成功后相似概览图可单独识别。
+  function bindDrop(zone, input, handler, multi) {
+    zone.onclick = () => input.click();
+    zone.ondragover = (e) => { e.preventDefault(); zone.classList.add('over'); };
+    zone.ondragleave = () => zone.classList.remove('over');
+    zone.ondrop = (e) => {
+      e.preventDefault(); zone.classList.remove('over');
+      const fs = e.dataTransfer && e.dataTransfer.files;
+      if (fs && fs.length) handler(multi ? Array.from(fs) : fs[0]);
+    };
+    input.onchange = () => {
+      if (input.files.length) {
+        handler(multi ? Array.from(input.files) : input.files[0]);
+      }
+    };
+  }
+  bindDrop(drop, fileInput, setOverview, false);
+  bindDrop(dropDetails, detailsInput, setDetails, true);
+
   $('clearFiles').onclick = (e) => {
     e.stopPropagation();
-    fileInput.value = '';
-    setFiles([]);
+    detailsInput.value = '';
+    setDetails([]);
   };
+  $('detailsOnly').onchange = () => { updateGo(); hideStatus(); };
 
-  function setFiles(list) {
-    picked = list.length ? list : null;
-    go.disabled = !picked;
-    const note = $('multiNote');
-    if (!picked) {
-      note.style.display = 'none';
-      drop.querySelector('.big').textContent = '点击选择，或拖拽图片到此处';
-      drop.querySelector('.hint').textContent = '支持 JPG / PNG / WebP，最大 20MB';
-    } else if (picked.length === 1) {
-      note.style.display = 'none';
-      drop.querySelector('.big').textContent = picked[0].name;
+  function updateGo() {
+    const detailsOnly = $('detailsOnly').checked;
+    go.disabled = detailsOnly ? pickedDetails.length === 0 : !picked;
+  }
+
+  function runPrecheckAll() {
+    runPrecheck([...(picked ? [picked] : []), ...pickedDetails]);
+  }
+
+  function setOverview(f) {
+    picked = f || null;
+    if (picked) {
+      drop.querySelector('.big').textContent = picked.name;
       drop.querySelector('.hint').textContent =
-        (picked[0].size / 1024 / 1024).toFixed(2) + ' MB · 点击可重新选择';
+        (picked.size / 1024 / 1024).toFixed(2) + ' MB · 点击可重新选择';
     } else {
-      note.style.display = '';
-      $('fileCount').textContent = picked.length;
-      $('fileNames').textContent = picked.map(f => f.name).join('、');
-      drop.querySelector('.big').textContent = '已选择 ' + picked.length + ' 张图片';
-      drop.querySelector('.hint').textContent = '点击可重新选择';
+      drop.querySelector('.big').textContent = '点击选择整条路线的概览图';
+      drop.querySelector('.hint').textContent =
+        '支持 JPG / PNG / WebP，最大 20MB · 缩放太高看不清街道名也能用';
     }
+    updateGo();
     hideStatus();
-    runPrecheck(list);
+    runPrecheckAll();
+  }
+
+  function setDetails(list) {
+    pickedDetails = list || [];
+    const note = $('multiNote');
+    if (pickedDetails.length) {
+      note.style.display = '';
+      $('fileCount').textContent = pickedDetails.length;
+      $('fileNames').textContent = pickedDetails.map(f => f.name).join('、');
+      dropDetails.querySelector('.big').textContent =
+        '已选择 ' + pickedDetails.length + ' 张细节图';
+      dropDetails.querySelector('.hint').textContent = '点击可重新选择';
+    } else {
+      note.style.display = 'none';
+      dropDetails.querySelector('.big').textContent =
+        '仅当概览图缩放太高、模板库里还没有同类路线时补传';
+      dropDetails.querySelector('.hint').textContent =
+        '沿路线连续截 2–6 张，相邻约 1/3 重叠';
+    }
+    updateGo();
+    hideStatus();
+    runPrecheckAll();
   }
 
   // ---------- 上传前输入预检 ----------
@@ -422,35 +474,41 @@ __WB_AMAP_SDK__
 
   // ---------- 识别 ----------
   go.onclick = async () => {
-    if (!picked) return;
+    const detailsOnly = $('detailsOnly').checked;
+    const paired = !detailsOnly && pickedDetails.length > 0;
+    if (detailsOnly ? !pickedDetails.length : !picked) return;
     go.disabled = true;
-    const multi = picked.length > 1;
-    const syncFit = !!(multi && $('roadFit') && $('roadFit').checked);
+    const hasCanvas = paired || detailsOnly;
+    const syncFit = !!(hasCanvas && $('roadFit') && $('roadFit').checked);
     showStatus(syncFit
       ? '<span class="spin"></span> 正在拼接并同步执行贴路校正（大画布可能需要数分钟）…'
-      : multi
-        ? '<span class="spin"></span> 正在拼接 ' + picked.length + ' 张截图并识别…'
-        : '<span class="spin"></span> 正在识别：提取轨迹线、OCR 识别地名、地理配准中…');
+      : paired
+        ? '<span class="spin"></span> 正在拼接 ' + pickedDetails.length +
+          ' 张细节图、配准并注册概览图模板…'
+        : detailsOnly
+          ? '<span class="spin"></span> 正在拼接 ' + pickedDetails.length + ' 张截图并识别…'
+          : '<span class="spin"></span> 正在识别：提取轨迹线、OCR 识别地名、地理配准中…');
 
     const fd = new FormData();
-    if (multi) {
-      // 多图：走拼接接口
-      for (const f of picked) fd.append('files', f, f.name);
+    if (detailsOnly) {
+      // 纯多图（没有概览图）：保留旧的拼接接口
+      for (const f of pickedDetails) fd.append('files', f, f.name);
     } else {
-      fd.append('file', picked[0], picked[0].name);
+      fd.append('file', picked, picked.name);
+      for (const f of pickedDetails) fd.append('details', f, f.name);
     }
     fd.append('city', $('city').value.trim());
     fd.append('output_crs', $('crs').value);
     fd.append('online', $('online').value);
-    // 只对多图生效：单图默认就走完整的后台贴路校正，勾了反而把
-    // 后台任务变成同步等待。多图默认只校验+命名，勾选才允许平移。
+    // 只对拼接场景生效：纯单图默认就走完整的后台贴路校正，勾了反而把
+    // 后台任务变成同步等待。配对 / 纯多图默认不平移，勾选才同步执行。
     if (syncFit) fd.append('refine', 'on');
     const rn = $('roadNames').value.trim();
     if (rn) fd.append('road_names', rn);
 
     let data;
     try {
-      const r = await fetch(multi ? '/api/recognize_multi' : '/api/recognize',
+      const r = await fetch(detailsOnly ? '/api/recognize_multi' : '/api/recognize',
                             { method: 'POST', body: fd });
       data = await r.json();
       if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));

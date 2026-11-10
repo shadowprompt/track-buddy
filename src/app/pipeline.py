@@ -24,6 +24,7 @@ from .input_quality import (
 from .ocr_anchor import Anchor, build_anchors, classify_text, ocr_texts
 from .register import AnchorPair, Registration, apply_to_polyline, register
 from .route_template import TEMPLATE_CONFIDENCE_CAP, TemplateStore, polyline_length_m
+from .route_template import SHAPE_DOMAIN_OVERVIEW
 from .template_fallback import assess_broad_overview, reference_confidence
 from .track import TrackResult, extract_track
 
@@ -478,8 +479,12 @@ class RidePipeline:
         if self.templates is not None and broad["broad_overview"]:
             located: dict[str, Any] | None = None
             try:
+                # 这里进来的必然是概览图，只比对「概览图形状」注册的模板。
+                # 旧的 detail 域模板（细节图/拼接画布）形状域不同，放进来
+                # 会把局部小路线误判成整条概览（§22.45 实测假阳性）。
                 located = self.templates.locate(
-                    track.polyline, city_hint=city.strip())
+                    track.polyline, city_hint=city.strip(),
+                    shape_domain=SHAPE_DOMAIN_OVERVIEW)
             except Exception as exc:  # noqa: BLE001 — 兜底失败必须回落原流程
                 warnings.append(
                     f"轨迹模板匹配异常，已回落原流程：{type(exc).__name__}")

@@ -23,7 +23,8 @@ def _html() -> str:
 def test_precheck_element_and_hook():
     h = _html()
     assert 'id="precheck"' in h
-    assert "runPrecheck(list);" in h
+    assert "runPrecheckAll();" in h
+    assert "runPrecheck([" in h
     assert "async function runPrecheck(list)" in h
     assert "readImageSize" in h
     assert "shortSide < 600" in h
@@ -34,7 +35,7 @@ def test_precheck_element_and_hook():
 def test_precheck_is_advisory_only():
     """预检只提示，不能 disable 上传按钮或清空已选文件。"""
     h = _html()
-    assert "go.disabled = !picked;" in h
+    assert "go.disabled = detailsOnly ? pickedDetails.length === 0 : !picked;" in h
     assert "不拦截上传" in h
     assert "建议使用未压缩的原图" in h
 

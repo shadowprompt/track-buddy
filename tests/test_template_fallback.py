@@ -24,6 +24,7 @@ from app.config import CONFIG
 from app.pipeline import PipelineResult
 from app.route_template import (
     MIN_LOCATE_COVERAGE_B,
+    SHAPE_DOMAIN_OVERVIEW,
     TEMPLATE_CONFIDENCE_CAP,
     ShapeMatch,
     TemplateStore,
@@ -90,10 +91,16 @@ def _scaled(px, k=1.7, dx=40, dy=-20):
     return [[x * k + dx, y * k + dy] for x, y in px]
 
 
-def _store(tmp_path: Path, px, geo=None, *, city="上海", confidence=0.8):
+def _store(tmp_path: Path, px, geo=None, *, city="上海", confidence=0.8,
+           shape_domain=SHAPE_DOMAIN_OVERVIEW):
+    """P1 的 locate 查询一定是概览图，模板默认按 overview 域沉淀。
+
+    P2 起主流程只比对 overview 域；要用旧细节图模板验证隔离时显式传
+    ``shape_domain=SHAPE_DOMAIN_DETAIL``。
+    """
     s = TemplateStore(tmp_path / "route_templates.json")
     s.remember(px_polyline=px, geo_polyline=geo or _geo_for(px),
-               confidence=confidence, city=city)
+               confidence=confidence, city=city, shape_domain=shape_domain)
     return s
 
 

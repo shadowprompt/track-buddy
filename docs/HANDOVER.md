@@ -5197,3 +5197,122 @@ _capture_template → {"written": False, "reason": "template_derived_result"}
 - 全量 pytest（Python 3.11）：**426 passed / 2 warnings（248.10 s）**，
   较 P0 的 407 净增 19 项，无回归（2 个 warning 仍是既有前端测试写法提示）。
 - **未启动、未重启 8848 服务**（用户自行重启）；未写项目运行期模板库。
+
+---
+
+## §22.45 P2：双上传入口、配对注册与形状域统一
+
+### 要解决的问题
+
+§22.44 交付后做的一次离线压力测试暴露了根因：**模板库的 key 与 query
+不属于同一个形状域**。模板的 `px_polyline` 由 P0 的 `_capture_template()`
+从细节图 / 拼接画布沉淀，而 `locate()` 只在「宽泛概览图」判据触发时被调用，
+`query_px` 必然是概览图。拿 `data/last_stitch.json`（3.665 km、78 点、
+bbox 长宽比 2.41、`input_quality=ok`）建模板查真实概览图9（829 点）：
+
+```
+accepted  residual 0.05357  coverage 0.8594  signature 0.2986
+mode=template_in_query  → 产出 64 点 GCJ-02 坐标
+```
+
+两条**不是同一条路线**（北新泾局部 vs 市中心→上海南站十几公里）。
+`shape_has_enough_info()` 只挡「直线度 ≥0.80 且长宽比 ≥4」的极端扁长直线，
+aspect 2.41 顺利过关；coverage 0.8594 又刚好压在 0.85 之上。所以 P1 的
+参考级结果存在把错误路线坐标套上去的风险，光调阈值治不了本。
+
+### 设计：把形状域统一到概览图
+
+上传语义反转——**概览单图是主入口，多图只在缩放过高时补传一次**：
+
+| 分支 | 请求 | 行为 |
+|---|---|---|
+| 纯单图 | `file` | P1 路径一字未改；`template_capture` 照常、`paired_registration` 不存在 |
+| 配对 | `file` + `details` | 细节图拼接配准拿真值 → 返回真值结果 → 把「概览形状 ↔ 真值」注册成 `overview` 模板 |
+| 仅多图 | `/api/recognize_multi` | 旧端点保留，前端用「只用细节图」开关进入 |
+
+之后形状接近（含反向、不同裁切）的概览图只传 `file` 即可命中，不必再带
+多图——这就是用户要的「逐渐进化」飞轮。冷启动从「无限等待」缩短为
+「每条路线首次补传一次多图」。
+
+### 改动
+
+* `src/app/route_template.py`
+  - 常量 `SHAPE_DOMAIN_OVERVIEW` / `SHAPE_DOMAIN_DETAIL` / `MIN_PAIR_COVERAGE=0.85`；
+  - `remember(..., shape_domain=...)` 写入模板，去重命中时会把旧 `detail`
+    模板**升级**为 `overview`，否则它永远无法参与概览图定位；
+  - `locate(..., shape_domain=None)` 指定域时只比对同域模板；旧模板缺字段按
+    `detail` 处理（向后兼容，`find_similar` 语义不变）；
+  - 新增 `TemplateStore.register_pair()`：把 `detail_px` 与 `geo_polyline`
+    先按弧长重采样到 64 点，用 `match_shape(overview_px, truth)` 求对齐，
+    再由 `project_to_geo()` 把真值投影到概览图的弧长参数化上，最后以
+    「概览形状 ↔ 地理折线」沉淀。复用 P1 的投影逻辑，不重写几何。
+  - `stats()` 增 `overview` 计数，`/api/health` 可直接看注册进度。
+* `src/app/pipeline.py`：阶段 2.5 调用 `locate(shape_domain=overview)`，
+  旧 `detail` 域模板不再参与概览图定位。
+* `src/app/server.py`
+  - `/api/recognize` 增 `details: list[UploadFile] | None = File(None)`；
+    `file` 保持必填；新增 `_capture_paired_template()`；
+  - 配对分支返回**多图真值结果**，`shot_url` 指向 `_stitched.png`（与
+    `track_polyline_px` 同坐标系，避免前端叠加错位），单图放 `overview_url`，
+    `payload` 增 `paired_registration` / `n_shots`；配对时**不**再沉淀 detail
+    模板、**不**启动后台精修（result 来自画布而 `shot_path` 是单图，会串图；
+    且拼接画布有链式累积漂移，本来就不该平移）；
+  - 注册失败只写进 warnings，绝不影响识别结果。
+* `src/web/index.html`：单个 `multiple` 控件拆成「① 概览单图（必选、单选）」
+  +「② 街道级细节图（可选、多选）」两个入口，统一走 `/api/recognize`；
+  新增「没有概览图，只用细节图」开关保留纯多图旧端点。`runPrecheck` 改为
+  对两组文件合并检查。
+* 测试：`tests/test_paired_registration.py` 18 项；`test_template_fallback.py`
+  的 `_store()` fixture 默认按 `overview` 域建模板（P1 的查询本就是概览图）；
+  前端两个测试文件的三处旧字符串断言同步更新为新语义。
+
+### 几何正确性的两个坑
+
+1. **临时真值模板必须先重采样**。`match_shape` 与 `project_to_geo` 都用
+   「重采样后 64 点」的下标解释 `span`；直接喂原始 78 点 `detail_px` 会让
+   `n_t` 与 span 下标错位。`register_pair()` 先做 `resample_by_arc`。
+2. **不能写死 `mode == query_in_template`**。实测完全同形的两条折线，滑窗
+   打分（带 `COVERAGE_PENALTY`）会偏好 `template_in_query`、span `[0,63]`
+   、coverage 0.9844。写死 mode 会把正常配对全部拒成 `partial_route`。
+   `coverage` 在两种 mode 下都表示「多图真值与概览图的覆盖是否一致」，
+   单靠 `≥0.85` 就足以挡住只截局部的多图；`project_to_geo` 的子段外一律
+   夹到端点、绝不外推。
+
+### 实测
+
+```
+跨渲染（非均匀缩放 1.6x/1.25x + 抖动）弧长重采样 64 点：
+  shape_distance 0.01435   signature_diff 0.1202
+register_pair: written=True  residual 0.01565  coverage 1.0
+  shape_domain=overview  source=paired
+反向概览图 locate(domain=overview): reversed=True  coverage 0.9844
+  residual 0.06695  → 64 点坐标
+locate(domain=detail) 对同一条 overview 模板 → None（域隔离生效）
+服务端 TestClient：纯单图 200 + template_capture / 无 paired_registration；
+  配对 200 + shot_url=_stitched.png + overview_url + n_shots=2 +
+  paired_registration.written=True + template_capture 不存在
+```
+
+### 边界与未做
+
+* 🔴 参考级坐标**仍没有当次地理核验**：`source="template"`、confidence
+  封顶 0.45、`quality=reference_only_unverified` 一条都没放松。配对分支
+  本次返回的是多图真值（可靠），但以后纯单图命中的是模板投影（参考级）。
+* 🔴 首次配对要求多图**覆盖整条路线**（coverage ≥0.85）；只截中间一段会
+  返回 `partial_route` 并提示补截，否则模板地理折线不完整、子段外会被
+  夹到端点，把错误固化。
+* 🟡 配对注册沿用自动写入的四项防毒判据；`data/last_result.json`（19:11）
+  与 `data/last_stitch.json`（10:55）分别因 `self_inconsistent=False` /
+  `confidence=0.2 < 0.35` 都进不了模板库，这是冷启动偏严的真实原因。
+* 未做：旋转不变匹配、`/api/feedback` 对模板的 verified 人工核验提权、
+  同类模板聚类去重之外的置信度反哺、概览图给拼接画布做全局漂移约束
+  （原 P2 计划，现让位给配对注册，顺延）。
+
+### 验证
+
+- 新增 `tests/test_paired_registration.py` **18 项**；P0 24 项 + P1 19 项
+  保持通过（合计 61 项模板相关测试）。
+- 全量 pytest（Python 3.11）：**444 passed / 2 warnings（335.13 s）**，
+  较 P1 的 426 净增 18 项、无回归（2 个 warning 仍是既有前端测试写法提示）。
+- **未启动、未重启 8848 服务**（用户自行重启）；所有验证为进程内
+  TestClient / 纯函数级，运行期目录与模板库一律指向 `tmp_path`。

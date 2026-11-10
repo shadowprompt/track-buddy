@@ -21,6 +21,7 @@ from .multishot import stitch as stitch_images
 from .pipeline import RidePipeline, _result_is_self_consistent
 from .route_template import TemplateStore
 from .tmap_proxy import create_proxy_router, make_secret, render_page
+from .track import extract_track
 
 load_dotenv()
 
@@ -234,6 +235,46 @@ def _capture_template(result: Any, payload: dict[str, Any], *,
         return {"written": False, "reason": f"error:{type(exc).__name__}"}
 
 
+def _capture_paired_template(
+    *,
+    overview_img: np.ndarray,
+    truth_payload: dict[str, Any],
+    truth_result: Any,
+    city: str,
+    shot_id: str,
+) -> dict[str, Any]:
+    """把「概览单图形状 ↔ 多图配准真值」注册成 ``overview`` 域模板。
+
+    这是 P2 飞轮的入口：多图只需首次（或换路线时）补传一次，之后形状
+    接近的概览单图上传时由 ``pipeline`` 阶段 2.5 直接命中模板，不必再带
+    多图。``register_pair()`` 会校验多图覆盖整条路线并把真值按弧长投影
+    到单图形状上；失败只写进 payload，绝不影响本次识别结果。
+    """
+    try:
+        tr = extract_track(overview_img, CONFIG.vision)
+        overview_px = tr.polyline.tolist()
+        detail_px = truth_payload.get("track_polyline_px") or []
+        gj = (truth_payload.get("geojson_gcj02")
+              or truth_payload.get("geojson") or {})
+        feats = gj.get("features") or []
+        geo = feats[0]["geometry"]["coordinates"] if feats else []
+        diag = truth_result.diagnostics or {}
+        iq = diag.get("input_quality") or {}
+        input_ok = bool(iq.get("usable", True)) if isinstance(iq, dict) else True
+        return _templates.register_pair(
+            overview_px=overview_px,
+            detail_px=detail_px,
+            geo_polyline=geo,
+            confidence=float(truth_result.confidence or 0.0),
+            city=city,
+            shot_id=shot_id,
+            self_consistent=_result_is_self_consistent(diag),
+            input_ok=input_ok,
+        )
+    except Exception as exc:  # noqa: BLE001 — 配对注册是附加能力
+        return {"written": False, "reason": f"error:{type(exc).__name__}"}
+
+
 @app.post("/api/recognize_multi")
 async def recognize_multi(
     files: list[UploadFile] = File(...),
@@ -433,8 +474,24 @@ async def recognize(
     allow_online: bool = Form(True),
     refine: str = Form("auto"),
     road_names: str = Form(""),
+    details: list[UploadFile] | None = File(None),
 ) -> JSONResponse:
-    """上传截图，识别轨迹并返回 GeoJSON。"""
+    """上传**一张概览单图**识别；缩放过高时可补传多张街道级细节图。
+
+    两个上传入口的语义
+    ------------------
+    * ``file``（必填）：整条路线的概览单图。平时只传它即可——若形状
+      已通过配对注册沉淀过，由 ``pipeline`` 阶段 2.5 直接命中模板。
+    * ``details``（可选）：沿路线滑动截的街道级细节图，仅在概览图
+      缩放过高、模板库里还没有同类路线时补传。服务端拼成大图做完整
+      地理配准，把**真值坐标**作为本次结果返回，同时把「概览图形状
+      ↔ 真值」注册成 ``overview`` 域模板；之后形状接近的概览图就不必
+      再带多图（P2 飞轮）。
+
+    配对模式返回的叠加底图是拼接画布（与 ``track_polyline_px`` 同坐标系），
+    单图本身放在 ``overview_url``；两者混用会让前端轨迹叠加错位。仅多图、
+    没有概览图的场景仍走 ``/api/recognize_multi``。
+    """
     data = await file.read()
     max_bytes = CONFIG.vision.max_upload_mb * 1024 * 1024
     if len(data) > max_bytes:
@@ -471,9 +528,58 @@ async def recognize(
         if _p and _p not in _names:
             _names.append(_p)
 
+    # --- 可选多图入口：拼接成画布做完整配准，拿到地理真值 -----------
+    run_img = img
+    paired_mode = False
+    canvas_url: str | None = None
+    n_details = 0
+    pair_notes: list[str] = []
+    if details:
+        imgs: list[np.ndarray] = []
+        for f in details:
+            d = await f.read()
+            if not d:
+                continue
+            if len(d) > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"{f.filename or '文件'} 超过 {CONFIG.vision.max_upload_mb}MB 限制",
+                )
+            _, sp = _save_upload(d, f.filename)
+            try:
+                imgs.append(imread_unicode(sp))
+            except (ValueError, FileNotFoundError) as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"细节图解析失败: {exc}") from exc
+        if imgs:
+            paired_mode = True
+            n_details = len(imgs)
+            run_img = imgs[0]
+            if len(imgs) > 1:
+                try:
+                    st = stitch_images(imgs)
+                except Exception as exc:  # noqa: BLE001 — 拼接失败不该 500
+                    st = None
+                    pair_notes.append(f"拼接失败: {exc}")
+                if st is not None and st.ok and st.canvas is not None:
+                    run_img = st.canvas
+                else:
+                    pair_notes.append(
+                        "细节图拼接未成功，已退回用第 1 张识别——"
+                        "请确认相邻两张至少约 1/3 重叠")
+            # 画布必须存 PNG：JPEG 有损会在接缝产生块状噪声。
+            canvas_name = f"{shot_id}_stitched.png"
+            try:
+                cv2.imwrite(str(UPLOAD_DIR / canvas_name), run_img)
+                canvas_url = f"/api/shots/{canvas_name}"
+            except Exception:  # noqa: BLE001 — 预览图存不下不影响识别
+                canvas_url = f"/api/shots/{shot_id}{ext}"
+            pair_notes.insert(
+                0, f"已用 {n_details} 张细节图拼接配准，本次结果为地理真值")
+
     try:
         result = _pipeline.run(
-            img,
+            run_img,
             city=city.strip(),
             allow_online=allow_online,
             output_crs=output_crs,
@@ -483,14 +589,39 @@ async def recognize(
     except Exception as exc:  # noqa: BLE001 — 兜底，避免单次请求打挂服务
         raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc
 
-    payload = _build_payload_from(result, shot_id, f"/api/shots/{shot_id}{ext}")
-    payload["template_capture"] = _capture_template(
-        result, payload, city=city.strip(), shot_id=shot_id)
+    shot_url = canvas_url or f"/api/shots/{shot_id}{ext}"
+    payload = _build_payload_from(result, shot_id, shot_url)
+    if paired_mode:
+        payload["overview_url"] = f"/api/shots/{shot_id}{ext}"
+        payload["n_shots"] = n_details
+        cap = _capture_paired_template(
+            overview_img=img, truth_payload=payload, truth_result=result,
+            city=city.strip(), shot_id=shot_id)
+        payload["paired_registration"] = cap
+        if cap.get("written"):
+            pair_notes.append(
+                "这张概览图已注册进轨迹模板库；以后形状接近的概览图"
+                "只需单独上传，不必再带细节图")
+        else:
+            pair_notes.append(
+                f"概览图未能注册（{cap.get('reason')}）：请确认细节图覆盖"
+                "整条路线且识别自洽；下次同类图仍需补传")
+        payload["warnings"] = list(result.warnings) + pair_notes
+    else:
+        payload["template_capture"] = _capture_template(
+            result, payload, city=city.strip(), shot_id=shot_id)
     _persist_last_result(payload)
 
     # 需要后台精修吗？判据见 `_need_background_refine`：
     # 只看「配准有没有出坐标 + 是否还没精修过」，不再用尺度门槛。
-    if _need_background_refine(result, want_refine, do_sync_refine):
+    # ⚠️ 配对模式的 result 来自拼接画布，而 shot_path 是概览单图；拿单图
+    # 路径去校验画布结果会串图，且多图画布有链式累积漂移，本来就不该平移。
+    if paired_mode:
+        if want_refine:
+            payload["warnings"] = list(payload.get("warnings") or []) + [
+                "配对模式不启动后台路网精修：结果来自拼接画布，"
+                "平移会放大链式累积漂移"]
+    elif _need_background_refine(result, want_refine, do_sync_refine):
         # ⚠️ 直接把主请求结果交给后台。路名约束、起终点锚定、尺度修正
         # 都已经体现在 result 里，后台只补算平移量再重投影，不会再重跑
         # OCR / 地理编码（旧实现重跑整条 pipeline，既不慢又会因在线配额

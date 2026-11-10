@@ -1053,7 +1053,10 @@ wgs = gcj02_to_wgs84(lon, lat)   # GCJ-02 → WGS-84（不动点迭代，精确�
 - **地名词典**：`(城市, 地名) → [经纬度候选 + 权重]`。无限增长，是护城河；
   但只在「同一个地名再次出现」时生效，帮不了没有地名的概览图
 - **轨迹模板**：`(像素折线 ↔ 地理折线)`，按弧长一一对应。让同类轨迹复用
-  历史变换，是「只放一张高缩放图也能识别」的前提（见下节）
+  历史变换，是「只放一张高缩放图也能识别」的前提（见下节）。P2 起按
+  `shape_domain` 区分 `overview` / `detail`：**只有「概览单图 + 可选多图」
+  配对注册才新增 overview 模板**，普通识别沉淀的 detail 模板不参与概览图
+  定位，避免跨缩放假阳性
 - **视觉锚点模板**：图标+文字+像素偏移。有天花板（该城市标注种类有限）
 - **评估样本**：`(截图, 真值)` 二元组。价值在于回归测试，不用于训练
 
@@ -1160,6 +1163,60 @@ coverage 0.9844，产出 64 点坐标且方向正确；拿那条扁长直线模�
 
 验证：`tests/test_template_fallback.py` 19 项 + `tests/test_route_template.py`
 24 项；全量 pytest（Python 3.11）**426 passed / 2 warnings**，无回归。
+
+## 双上传入口与配对注册（P2）
+
+P1 留下的根因是**模板形状域混用**：模板的 `px_polyline` 来自细节图/拼接画布，
+而 `locate()` 的查询永远是概览图。实测拿 3.7 km 的北新泾局部模板查十几公里的
+概览图，`residual=0.054`、`coverage=0.86` 仍会命中——不同路线被判成同类。
+`shape_has_enough_info()` 只挡住长宽比 ≥4 的极端扁长直线，挡不住一般细长曲线。
+
+P2 把上传语义反过来：**概览单图是主入口，多图只在缩放过高时补传一次**。
+
+| 入口 | 必填 | 作用 |
+|---|---|---|
+| `file` | ✅ | 整条路线的概览单图，决定形状；平时只传它 |
+| `details` | ❌ | 沿路线连续截的街道级细节图，拼成大图做完整地理配准，提供真值坐标 |
+
+首次同传时，服务端用 `project_to_geo()` 把多图真值按弧长投影到概览图的形状上，
+注册成 `shape_domain="overview"` 的模板；之后形状接近（含反向、不同裁切）的
+概览图只传 `file` 就能命中，不必再带细节图。`locate()` 查询概览图时**只比对
+overview 域**，旧的 `detail` 域模板保留但不再参与定位，假阳性从根上收敛。
+
+```bash
+# 首次 / 换路线：单图 + 可选细节图（本次返回多图配准的真值坐标）
+curl -F "file=@whole_route.jpg" -F "details=@shot1.jpg" \
+     -F "details=@shot2.jpg" -F "city=上海" \
+     http://127.0.0.1:8848/api/recognize
+
+# 之后：只传概览单图，命中已注册的模板
+curl -F "file=@whole_route.jpg" -F "city=上海" \
+     http://127.0.0.1:8848/api/recognize
+```
+
+配对分支返回的叠加底图是拼接画布（`shot_url` 指向 `_stitched.png`，与
+`track_polyline_px` 同坐标系），单图放在 `overview_url`；`paired_registration`
+给出注册结果与 `pair_match` 诊断。纯单图路径一字未改（`template_capture` 照常
+工作、无 `paired_registration`）；没有概览图的纯多图场景仍走
+`/api/recognize_multi`。前端对应两个上传控件，并保留「只用细节图」开关。
+
+**配对注册门槛**：三条折线各 ≥10 点、坐标合法、双侧形状信息量充足；
+`match_shape` accepted 且 `coverage ≥0.85`（多图必须覆盖整条路线，否则
+`partial_route` 拒收并提示补截）；沿用自动写入的防毒判据（自洽、
+`input_quality.usable`、置信度 ≥0.35）。参考级结果带 `template_derived`
+标记，**永不沉淀**——飞轮里只有配对注册能新增 overview 模板。
+
+实测（真实概览图折线 + 缩放抖动模拟的多图画布）：跨渲染弧长重采样 64 点
+`shape_distance=0.0144`、方向签名差 0.120；注册 coverage 1.0、residual 0.0157；
+反向概览图 `reversed=true`、coverage 0.984、产出 64 点坐标。
+
+🔴 **仍是参考级**：注册后的坐标没有当次地理核验，绝对尺度来自历史真值，
+`source="template"` / confidence ≤0.45 / `quality=reference_only_unverified`
+的约束一条都没放松。
+🟡 冷启动改为「每条路线首次补传一次多图」，不再是无限等待。
+
+验证：`tests/test_paired_registration.py` 18 项；全量 pytest（Python 3.11）
+**444 passed / 2 warnings**，较 P1 的 426 净增 18 项、无回归。
 
 ---
 
