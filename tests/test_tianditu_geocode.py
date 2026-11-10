@@ -245,3 +245,71 @@ def test_old_ds_format_not_reintroduced():
     contracts = (ROOT / "src" / "app" / "maps" / "contracts.py").read_text(
         encoding="utf-8")
     assert "def to_gcj02" in contracts and "wgs84_to_gcj02" in contracts
+
+
+def test_legacy_site_dropped(tmp_path, monkeypatch):
+    """旧址/旧址/原址/老院区是不同物理位置，必须剔除，不能当锚点。
+
+    同仁医院旧址（长治路）与新址（仙霞路）相距 ~10km，若被当成锚点会把
+    尺度/配准撑爆。当前截图只标现址，故直接弃用。
+    """
+    payload = {
+        "status": {"cndesc": "ok", "infocode": 1000},
+        "resultType": 1,
+        "count": 2,
+        "pois": [
+            {"name": "上海市同仁医院", "lonlat": "121.37654,31.20828",
+             "address": "上海市长宁区仙霞路1111号"},
+            {"name": "同仁医院旧址", "lonlat": "121.49241,31.24734",
+             "address": "长治路159"},
+        ],
+    }
+    _, g = _mk(tmp_path, monkeypatch, payload=payload)
+    out = g._tianditu("同仁医院", "上海")
+    names = [c.name for c in out]
+    assert "同仁医院旧址" not in names, "旧址不应参与配准"
+    assert any("同仁医院" in n for n in names), "现址仍应保留"
+
+
+def test_spatially_ambiguous_name_dropped(tmp_path, monkeypatch):
+    """同名候选地理跨度过大（泛指/残片）整组弃用，避免错配撑爆尺度。
+
+    「医学院附属」匹配到仁济/瑞金/新华等相距 ~10km 的分院，取第一个就错
+    10km；跨度 >5km 视为歧义，弃用整组，让 RANSAC 靠无歧义锚点配准。
+    """
+    payload = {
+        "status": {"cndesc": "ok", "infocode": 1000},
+        "resultType": 1,
+        "count": 3,
+        "pois": [
+            {"name": "上海交通大学医学院附属仁济医院", "lonlat": "121.48432,31.23373",
+             "address": "上海市黄浦区山东中路145号"},
+            {"name": "上海交通大学医学院附属瑞金医院", "lonlat": "121.46677,31.21135",
+             "address": "上海市黄浦区瑞金二路197号"},
+            {"name": "上海交通大学医学院附属新华医院", "lonlat": "121.51692,31.27401",
+             "address": "上海市杨浦区控江路1665号"},
+        ],
+    }
+    _, g = _mk(tmp_path, monkeypatch, payload=payload)
+    out = g._tianditu("医学院附属", "上海")
+    assert out == [], "地理分散的泛指/残片名应整组弃用"
+
+
+def test_coherent_candidates_kept(tmp_path, monkeypatch):
+    """同址子建筑（跨度 <5km）不受空间歧义过滤影响，正常保留。"""
+    payload = {
+        "status": {"cndesc": "ok", "infocode": 1000},
+        "resultType": 1,
+        "count": 3,
+        "pois": [
+            {"name": "上海动物园", "lonlat": "121.35808,31.19487",
+             "address": "上海市长宁区虹桥路2381号"},
+            {"name": "上海动物园-公交站", "lonlat": "121.36357,31.19195",
+             "address": "上海动物园"},
+            {"name": "上海动物园-停车场", "lonlat": "121.36000,31.19500",
+             "address": "上海动物园"},
+        ],
+    }
+    _, g = _mk(tmp_path, monkeypatch, payload=payload)
+    out = g._tianditu("上海动物园", "上海")
+    assert len(out) >= 2, "同址候选应保留"

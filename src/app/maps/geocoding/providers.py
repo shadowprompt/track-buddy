@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from typing import Any, Callable
 
@@ -338,6 +339,38 @@ class BaiduProvider(_BaseGeocodingProvider):
         return ProbeResult(False, error=str(data.get("message") or "未知错误"))
 
 
+def _anchor_spread_m(cands: list) -> float:
+    """候选锚点（GCJ-02）之间的粗略最大跨度（米）。
+
+    只用前 6 个（排序后最贴近查询词的），足够判断「是否泛指 / 残片」。
+    """
+    pts = [c.point.gcj02 for c in cands[:6] if c.point is not None]
+    if len(pts) < 2:
+        return 0.0
+    lons = [p[0] for p in pts]
+    lats = [p[1] for p in pts]
+    mlat = sum(lats) / len(lats)
+    dlat = (max(lats) - min(lats)) * 111320.0
+    dlon = (max(lons) - min(lons)) * 111320.0 * math.cos(math.radians(mlat))
+    return math.hypot(dlat, dlon)
+
+
+def _drop_spatially_ambiguous(
+    cands: list, max_span_m: float = 5000.0
+) -> list:
+    """同名候选地理跨度过大（> ``max_span_m``）则整组弃用。
+
+    跨度大说明该名字是泛指或 OCR 残片，多个候选落在相距很远的位置，
+    无法确定截图上到底是哪一个。弃用后 RANSAC 仍可依靠其它无歧义锚点
+    配准，避免单个错配把尺度撑爆。阈值 5km 远大于同址子建筑间距（<1km）。
+    """
+    if len(cands) < 2:
+        return cands
+    if _anchor_spread_m(cands) > max_span_m:
+        return []
+    return cands
+
+
 class TiandituProvider(_BaseGeocodingProvider):
     """天地图「地名搜索 V2.0」：输出 CGCS2000，由契约层换算到 GCJ-02。
 
@@ -483,6 +516,13 @@ class TiandituProvider(_BaseGeocodingProvider):
                 quality = 0.8
             else:
                 quality = 0.7
+            # ⚠️ 「旧址 / 旧址 / 原址 / 老院区」是**不同物理位置**的候选：
+            # 当前地图截图只会标注现址，若把它当锚点会把尺度/配准撑爆
+            # （同仁医院旧址长治路 vs 新址仙霞路相差 ~10km，正是 18km
+            # 拉伸的元凶之一）。直接剔除，不参与配准；东门/西门/住院部
+            # 等「同址子建筑」不受影响。
+            if re.search(r"旧址|旧址|原址|老院区", title):
+                continue
             out.append(self._candidate(
                 name=title, lon=wlon, lat=wlat, quality=quality,
                 address=address,
@@ -493,7 +533,13 @@ class TiandituProvider(_BaseGeocodingProvider):
         out.sort(key=lambda c: (-c.quality, len(c.name)))
         if city and out:
             out.sort(key=lambda r: (0 if city in r.address else 1, -r.quality))
-        return out
+        # ⚠️ 同名候选地理分散 → 名字泛指 / OCR 残片，无法定位到具体哪一个，
+        # 若当作锚点，错配会把尺度 / 配准撑爆
+        # （「医学院附属」匹配到仁济 / 瑞金 / 新华等一堆相距 ~10km 的分院，
+        # 取第一个就错 10km，正是 18km 拉伸的元凶）。跨度 >5km（远大于
+        # 同址子建筑 <1km 间距）视为歧义，整组弃用——缺失一个锚点远好过
+        # 一个错 10km 的锚点毁掉整次配准。
+        return _drop_spatially_ambiguous(out)
 
     def probe(self) -> ProbeResult:
         post = {"keyWord": "北京大学", "queryType": 1, "level": 12,
