@@ -2,7 +2,7 @@
 
 守住四个实测踩过的坑：
 
-1. `.env` 里用户写的是 ``TIANDITU_API_KEY``，旧代码只读 ``TIANDITU_KEY``；
+1. `.env` 里用户写的是 ``TIANDITU_API_KEY``（天地图 key 单一环境变量）；
 2. `/v2/search` 必须用 ``postStr + type=query``，旧 ``ds={"keyword":...}``
    是地理编码接口的参数，实测直接 HTTP 400；
 3. 天地图返回 CGCS2000（≈WGS-84），项目内部锚点按 GCJ-02，漏转会凭空
@@ -17,16 +17,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from app.config import (AppConfig, ONLINE_PROVIDERS,
-                        TIANDITU_MAP_BOUND_DEFAULT)
+from app.config import (AppConfig, TIANDITU_MAP_BOUND_DEFAULT)
 from app.geo.coords import lonlat_to_mercator, wgs84_to_gcj02
 from app.geocode import Geocoder, Lexicon
 
 _ENV_NAMES = (
     "AMAP_KEY", "TMAP_KEY", "BAIDU_MAP_KEY",
-    "TIANDITU_KEY", "TIANDITU_API_KEY", "TIANDITU_TK",
-    "GEOCODE_PROVIDER_ORDER", "MAP_GEOCODING_ORDER",
-    "TIANDITU_MAP_BOUND",
+    "TIANDITU_API_KEY", "MAP_GEOCODING_ORDER", "TIANDITU_MAP_BOUND",
 )
 
 
@@ -78,17 +75,11 @@ def _mk(tmp_path, monkeypatch, payload=None, extra_env=None, env_name=".env"):
     return cfg, g
 
 
-def test_alias_and_defaults(tmp_path, monkeypatch):
-    """TIANDITU_API_KEY 能被读到，且默认顺序/视野不含城市硬编码。"""
+def test_key_read_and_defaults(tmp_path, monkeypatch):
+    """TIANDITU_API_KEY 能被读到，且默认视野不含城市硬编码。"""
     cfg, _ = _mk(tmp_path, monkeypatch)
     assert cfg.tianditu_key == "test_tianditu_tk"
-    assert cfg.online_provider_order == ONLINE_PROVIDERS
     assert cfg.tianditu_map_bound == TIANDITU_MAP_BOUND_DEFAULT
-
-    legacy = tmp_path / "legacy.env"
-    legacy.write_text("TIANDITU_KEY=legacy_tk\n", encoding="utf-8")
-    cfg2 = AppConfig(env_path=legacy)
-    assert cfg2.tianditu_key == "legacy_tk"
 
 
 def test_v2_request_and_gcj02_conversion(tmp_path, monkeypatch):
@@ -131,7 +122,7 @@ def test_v2_request_and_gcj02_conversion(tmp_path, monkeypatch):
 def test_provider_order_and_fallback(tmp_path, monkeypatch):
     """配置可把天地图提到首位；默认顺序下上游返回空会自动落到天地图。"""
     _, g = _mk(tmp_path, monkeypatch,
-               extra_env={"GEOCODE_PROVIDER_ORDER": "tianditu,amap"})
+               extra_env={"MAP_GEOCODING_ORDER": "tianditu,amap"})
     calls = []
     g._amap = lambda name, city: calls.append("amap") or []
     res = g.geocode("上海动物园", city="上海", allow_online=True,

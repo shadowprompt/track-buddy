@@ -18,8 +18,7 @@ from app.maps.contracts import CRS, Capability
 
 _ENV_NAMES = (
     "AMAP_KEY", "TMAP_KEY", "BAIDU_MAP_KEY",
-    "TIANDITU_KEY", "TIANDITU_API_KEY", "TIANDITU_TK",
-    "GEOCODE_PROVIDER_ORDER", "MAP_GEOCODING_ORDER", "TIANDITU_MAP_BOUND",
+    "TIANDITU_API_KEY", "MAP_GEOCODING_ORDER", "TIANDITU_MAP_BOUND",
 )
 
 _AMAP_URL = "restapi.amap.com/v3/place/text"
@@ -105,18 +104,6 @@ def test_env_order_switches_provider_without_code_change(tmp_path, monkeypatch):
     assert out2 and out2[0].source == "tianditu", "上游返回空应自动落天地图"
     assert any(_AMAP_URL in u for u in s2.urls)
     assert any(_TDT_URL in u for u in s2.urls)
-
-
-def test_legacy_order_env_still_honoured(tmp_path, monkeypatch):
-    s = _RoutingSession(**{_TDT_URL: _tdt_ok(), _AMAP_URL: _amap_ok()})
-    _, g = _mk(tmp_path, monkeypatch, [
-        "TIANDITU_API_KEY=tk", "AMAP_KEY=ak",
-        "GEOCODE_PROVIDER_ORDER=tianditu,amap",
-    ], s)
-    out = g.geocode("上海动物园", city="上海", allow_online=True,
-                    allow_cold_start=False)
-    assert out[0].source == "tianditu"
-    assert g.registry.order(Capability.GEOCODING)[0] == "tianditu"
 
 
 def test_cross_city_same_name_is_not_written_back(tmp_path, monkeypatch):

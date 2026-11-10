@@ -109,10 +109,9 @@ def test_place_candidate_exposes_only_gcj02_coordinates():
 
 # ---------------------------------------------------------------- 凭证
 
-def test_credentials_resolve_alias_in_order():
-    store = CredentialStore(_Cfg(TIANDITU_KEY="", TIANDITU_API_KEY="tk-a",
-                                 TIANDITU_TK="tk-b"))
-    assert store.resolve("TIANDITU_KEY", "TIANDITU_API_KEY", "TIANDITU_TK") == "tk-a"
+def test_credentials_resolve_single_env_name():
+    store = CredentialStore(_Cfg(TIANDITU_API_KEY="tk-a"))
+    assert store.resolve("TIANDITU_API_KEY") == "tk-a"
     assert store.has("TIANDITU_API_KEY")
     assert not store.has("MISSING_KEY")
 
@@ -127,9 +126,8 @@ def test_credentials_fall_back_to_process_env(monkeypatch):
 
 # ---------------------------------------------------------------- 注册表
 
-def test_registry_order_uses_new_env_name_first():
-    cfg = _Cfg(MAP_GEOCODING_ORDER="tianditu,amap",
-               GEOCODE_PROVIDER_ORDER="amap,tianditu")
+def test_registry_order_honours_configured_env():
+    cfg = _Cfg(MAP_GEOCODING_ORDER="tianditu,amap")
     reg = ProviderRegistry(cfg)
     for n in ("amap", "tmap", "baidu", "tianditu"):
         reg.register(_StubProvider(n))
@@ -137,8 +135,8 @@ def test_registry_order_uses_new_env_name_first():
     assert reg.order(Capability.GEOCODING)[2:] == ("tmap", "baidu")
 
 
-def test_registry_legacy_env_unknown_names_and_duplicates():
-    cfg = _Cfg(GEOCODE_PROVIDER_ORDER="tianditu,typo,tianditu,amap")
+def test_registry_env_unknown_names_and_duplicates_ignored():
+    cfg = _Cfg(MAP_GEOCODING_ORDER="tianditu,typo,tianditu,amap")
     reg = ProviderRegistry(cfg)
     for n in ("amap", "tianditu"):
         reg.register(_StubProvider(n))

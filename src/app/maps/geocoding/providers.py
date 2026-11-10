@@ -385,7 +385,7 @@ class TiandituProvider(_BaseGeocodingProvider):
 
     name = "tianditu"
     output_crs = CRS.CGCS2000
-    credential_aliases = ("TIANDITU_KEY", "TIANDITU_API_KEY", "TIANDITU_TK")
+    credential_aliases = ("TIANDITU_API_KEY",)
 
     def _bounds(self, city: str) -> tuple[str, bool]:
         """派生搜索视野（minx,miny,maxx,maxy）与是否「已收窄」。

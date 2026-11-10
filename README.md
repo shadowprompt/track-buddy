@@ -922,8 +922,7 @@ budget = canvas_pixel_budget(总输入像素)   # 内存预算 ∩ 输入规模
 
 返回多个候选时全部交给 RANSAC，由几何一致性挑选，天然处理同名地点歧义。
 
-**天地图的三个注意点**：一是控制台变量名写法不统一，
-`TIANDITU_API_KEY` / `TIANDITU_KEY` / `TIANDITU_TK` 都能识别，
+**天地图的三个注意点**：一是 tk 只认环境变量 `TIANDITU_API_KEY`（单一变量名），
 `/api/health` 会主动探测 tk 是否真的可用；二是天地图返回 CGCS2000
 （工程精度上等同 WGS-84），而项目内部锚点按 GCJ-02 处理；坐标换算统一由
 `src/app/maps/contracts.py::to_gcj02` 按 provider 声明的 `output_crs` 完成——
@@ -938,7 +937,7 @@ budget = canvas_pixel_budget(总输入像素)   # 内存预算 ∩ 输入规模
 - `MAP_GEOCODING_ORDER=amap,tianditu` → 显式声明多源，此时才启用依次回退；
 - **不配** → 用默认顺序里第一个有 key 的源（当前是高德），同样失败不换源。
 
-改这个值不需要重启服务（`.env` 每次读取）。旧名 `GEOCODE_PROVIDER_ORDER` 仍兼容。
+改这个值不需要重启服务（`.env` 每次读取）。顺序只由 `MAP_GEOCODING_ORDER` 这一个环境变量决定。
 
 > ⚠️ 早期版本是「高德失败就静默落天地图」。实测高德当日配额用尽
 > （`USER_DAILY_QUERY_OVER_LIMIT`）时，每个地名都先打高德再打天地图——
@@ -1087,14 +1086,13 @@ AMAP_KEY=你的密钥
 # 或腾讯 / 百度 / 天地图
 TMAP_KEY=
 BAIDU_MAP_KEY=
-# 天地图 tk 三种变量名都能识别
+# 天地图 tk（只认这一个变量名）
 TIANDITU_API_KEY=
 # 可选：在线地理编码服务商（**单源严格模式**）
 #   配了哪家就用哪家，失败直接提示，不自动换源。
 #   写一个名字 = 只用它；写多个 = 才启用依次回退；不写 = 用默认第一个可用的。
 # MAP_GEOCODING_ORDER=tianditu
 # MAP_GEOCODING_ORDER=amap,tianditu     # 显式多源才回退
-# 旧名 GEOCODE_PROVIDER_ORDER 仍兼容
 # MAP_ROADNAME_ORDER=amap             # 路名能力，新增实现后可在这里排序
 # MAP_ROAD_GEOMETRY_ORDER=osm         # 道路几何（公共 Overpass）
 # MAP_ROUTE_VALIDATION_ORDER=osrm,valhalla

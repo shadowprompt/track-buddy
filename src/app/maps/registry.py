@@ -3,8 +3,7 @@
 调用方只说「我要 geocoding」，不写厂商名。加厂商 = 注册一个实现 +
 （可选）在 .env 的顺序里加一个名字，调用方零改动。
 
-顺序环境变量统一为 ``MAP_<CAPABILITY>_ORDER``；为兼容已部署配置，
-地理编码仍读取旧的 ``GEOCODE_PROVIDER_ORDER``（新名优先）。
+顺序环境变量统一为 ``MAP_<CAPABILITY>_ORDER``（每个能力只对应一个环境变量）。
 未知名称直接忽略，不会让一个拼错的 provider 打断整条链路。
 """
 
@@ -24,7 +23,7 @@ DEFAULT_ORDER: dict[Capability, tuple[str, ...]] = {
 }
 
 ORDER_ENV: dict[Capability, tuple[str, ...]] = {
-    Capability.GEOCODING: ("MAP_GEOCODING_ORDER", "GEOCODE_PROVIDER_ORDER"),
+    Capability.GEOCODING: ("MAP_GEOCODING_ORDER",),
     Capability.ROADNAME: ("MAP_ROADNAME_ORDER",),
     Capability.ROAD_GEOMETRY: ("MAP_ROAD_GEOMETRY_ORDER",),
     Capability.ROUTE_VALIDATION: ("MAP_ROUTE_VALIDATION_ORDER",),

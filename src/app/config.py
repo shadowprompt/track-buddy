@@ -52,17 +52,12 @@ DATA_DIR = ROOT / "data"
 AMAP_KEY_ENV = "AMAP_KEY"
 TMAP_KEY_ENV = "TMAP_KEY"
 BAIDU_KEY_ENV = "BAIDU_MAP_KEY"
-TIANDITU_KEY_ENV = "TIANDITU_KEY"
-# 天地图 tk 在不同控制台版本/部署习惯里的变量名并不统一，全部兼容。
-# 顺序即优先级；改 .env 不用重启服务（见 _env_value）。
-TIANDITU_KEY_ALIASES = ("TIANDITU_KEY", "TIANDITU_API_KEY", "TIANDITU_TK")
+# 天地图 tk 的环境变量名（单一，与 AMAP_KEY / TMAP_KEY 保持一致风格）。
+TIANDITU_KEY_ENV = "TIANDITU_API_KEY"
 TIANDITU_SEARCH_URL = "https://api.tianditu.gov.cn/v2/search"
 TIANDITU_MAP_BOUND_ENV = "TIANDITU_MAP_BOUND"
 TIANDITU_MAP_BOUND_DEFAULT = "-180,-90,180,90"
-# 在线地理编码源的默认顺序：与美团底图同源的优先，天地图兜底。
-# 可用 GEOCODE_PROVIDER_ORDER 覆盖（逗号分隔，例如 tianditu,amap）。
-GEOCODE_PROVIDER_ORDER_ENV = "GEOCODE_PROVIDER_ORDER"
-ONLINE_PROVIDERS = ("amap", "tmap", "baidu", "tianditu")
+# 在线地理编码源的默认顺序（注册表 DEFAULT_ORDER）由 MAP_GEOCODING_ORDER 覆盖。
 
 # 网页底图（前端适配层）配置。
 # BASEMAP_PROVIDER 决定前端用哪个底图实现（tmap / amap）；
@@ -292,28 +287,8 @@ class AppConfig:
 
     @property
     def tianditu_key(self) -> str | None:
-        """天地图 tk：兼容 TIANDITU_KEY / TIANDITU_API_KEY / TIANDITU_TK。"""
-        for name in TIANDITU_KEY_ALIASES:
-            val = self._env_value(name)
-            if val:
-                return val
-        return None
-
-    @property
-    def online_provider_order(self) -> tuple[str, ...]:
-        """在线地理编码源顺序；未配置时用「同源优先」的默认顺序。
-
-        用户可在 .env 写 GEOCODE_PROVIDER_ORDER=tianditu,amap 来改为
-        天地图优先。未知名称直接忽略；配置为空等价于默认顺序。
-        """
-        raw = self._env_value(GEOCODE_PROVIDER_ORDER_ENV) or ""
-        picked = tuple(
-            dict.fromkeys(
-                x.strip() for x in raw.split(",")
-                if x.strip() in ONLINE_PROVIDERS
-            )
-        )
-        return picked or ONLINE_PROVIDERS
+        """天地图 tk（环境变量 ``TIANDITU_API_KEY``）。"""
+        return self._env_value(TIANDITU_KEY_ENV)
 
     @property
     def tianditu_map_bound_custom(self) -> str | None:

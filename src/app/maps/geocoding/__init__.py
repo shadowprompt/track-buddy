@@ -29,7 +29,7 @@ def build_geocoding_registry(
 ) -> tuple[ProviderRegistry, dict[str, Any]]:
     """装配地理编码注册表，返回 (注册表, 名称 -> 实现)。
 
-    顺序读 ``MAP_GEOCODING_ORDER``（兼容 ``GEOCODE_PROVIDER_ORDER``），
+    顺序读 ``MAP_GEOCODING_ORDER``，
     未知名称在注册表里直接忽略，不会打断回退链。
     """
     creds = credentials or CredentialStore(cfg)

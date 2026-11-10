@@ -113,7 +113,7 @@ print(res.geojson)         # GPS 设备 / Strava / GIS 用这个
 |---|---|---|
 | `AMAP_KEY` | 地理编码 + 路名归属（与美团底图同源，**精度最高**） | 退到词典 + OSM 冷启动，绝对精度受限 100–300m |
 | `TMAP_KEY` | 地理编码 + 网页底图 | 底图回退到腾讯官方公开示例 key（仅本地代理内部使用） |
-| `BAIDU_MAP_KEY` / `TIANDITU_KEY` | 地理编码备选 | 同上 |
+| `BAIDU_MAP_KEY` / `TIANDITU_API_KEY` | 地理编码备选 | 同上 |
 
 配置方式：环境变量，或项目根目录 `.env` 文件。
 
@@ -3836,6 +3836,12 @@ HTTP 端到端确认初次与精修 done 的 GCJ-02 首点相差 272 米，
 
 ## 22.28 天地图接入：变量名、V2 接口格式与坐标系（本轮未提交）
 
+> ⚠️ **本节是历史记录，其中的变量名已过时**：当时为兼容控制台不同写法引入了
+> `TIANDITU_KEY` / `TIANDITU_API_KEY` / `TIANDITU_TK` 三个别名，顺序开关也叫
+> `GEOCODE_PROVIDER_ORDER`。按「同一功能只用一个环境变量」的原则，现已在
+> **§22.41 统一为 `TIANDITU_API_KEY` 与 `MAP_GEOCODING_ORDER` 两个单一变量名**，
+> 其余全部下线。配置请以 §22.41 与 README 为准。
+
 **背景**：用户提出「地名、路名各家地图都一样，只是 GPS 体系不同，是不是可以
 换成天地图」，并在 `.env` 写入 `TIANDITU_API_KEY`；当时高德 key 配额超限。
 
@@ -3964,7 +3970,7 @@ HTTP `/api/recognize` 200 且与离线结果逐字段一致，词典仅新增 1 
 
 判据是「`.env` 从 `tianditu,amap` 改成 `amap,tianditu`，**不改任何 Python 代码**即可切换并正确回退，同一批截图识别结果逐字段一致」。
 
-- `tests/test_maps_geocoding_integration.py` 5 项：新环境变量切换顺序、上游返回空自动回退、旧名 `GEOCODE_PROVIDER_ORDER` 兼容、跨市同名不写回、四家 CRS 声明与 probe 形状。
+- `tests/test_maps_geocoding_integration.py` 5 项：新环境变量切换顺序、上游返回空自动回退、旧名 `GEOCODE_PROVIDER_ORDER` 兼容（**该兼容用例已于 §22.41 移除，旧名不再支持**）、跨市同名不写回、四家 CRS 声明与 probe 形状。
 - `tests/test_maps_roadname.py` 5 项：注册表按能力隔离同名 provider、`_amap_key` 走凭证层、`attribute_by_online` 走注册表且无 key 降级、health 静态护栏。
 - 静态护栏随实现迁移：`test_old_ds_format_not_reintroduced` 从检查 `geocode.py::_tianditu` 改为检查 `providers.py::TiandituProvider`，额外要求 `CRS.CGCS2000` 声明与契约层换算。
 - **A/B**：`git archive 04b81a0` 导出基线，同一张用户验收图、离线 `refine=False`，两边 `confidence / distance_m / track_points / GCJ-02 首末点 / model / inliers / outliers / rmse_m / scale_ground_m_per_px` 逐字段 **IDENTICAL**（0.2 / 4021.2 m / 221 点 / 121.3873328,31.2142736 / north_up / 9 / 10 / 195.86 m / 4.5802 m·px⁻¹）。
@@ -4868,3 +4874,50 @@ p2 与 p1 完全一致，说明「锚点源贯通 + 跨源降权」在合成基�
 `data/last_stitch.json`、`data/uploads/`、`data/cache/`、
 `data/confidence_calibration.json`（本轮新增，已 gitignore）、`output/`。
 每次只 `git add` 明确的源码 / 测试 / 文档路径，不 `git add -A`。
+
+---
+
+## §22.41 环境变量收敛：同一功能只用一个变量名（2026-11-10）
+
+**动因**：用户指出「同一个功能不要使用超过一个的环境变量，太容易混乱了」。
+排查发现两处历史遗留的双/多变量名，读代码时无法判断哪个才是真正生效的，
+`.env` 里写错名字也不会报错，只是静默失效。
+
+### 现状（唯一生效的两个变量名）
+
+| 功能 | 唯一环境变量 | 当前 `.env` 取值 |
+|---|---|---|
+| 在线地理编码源顺序 | `MAP_GEOCODING_ORDER` | `tianditu` |
+| 天地图 tk | `TIANDITU_API_KEY` | 已配置 |
+
+其余 `GEOCODE_PROVIDER_ORDER`、`TIANDITU_KEY`、`TIANDITU_TK` **全部下线**，
+写进 `.env` 不再有任何效果。其余能力（`MAP_ROADNAME_ORDER` /
+`MAP_ROAD_GEOMETRY_ORDER` / `MAP_ROUTE_VALIDATION_ORDER`）本来就各只有一个名字，不变。
+
+选择保留名的依据：`.env` 与全部既有测试实际写的就是 `MAP_GEOCODING_ORDER`
+和 `TIANDITU_API_KEY`，改动零破坏性——不需要改 `.env`、不需要用户迁移配置。
+
+### 改动清单
+
+- `src/app/maps/registry.py`：`ORDER_ENV[GEOCODING]` 由
+  `("MAP_GEOCODING_ORDER", "GEOCODE_PROVIDER_ORDER")` 收敛为单元素；节首注释删掉
+  「兼容旧名」表述，明确「每个能力只对应一个环境变量」。
+- `src/app/config.py`：删除 `GEOCODE_PROVIDER_ORDER_ENV`、`TIANDITU_KEY_ALIASES`、
+  死属性 `online_provider_order`（全仓零引用）、死常量 `ONLINE_PROVIDERS`；
+  `TIANDITU_KEY_ENV` 定为 `"TIANDITU_API_KEY"`，`tianditu_key` 由「遍历三个别名」
+  简化为单次读取。
+- `src/app/maps/geocoding/providers.py`：`TiandituProvider.credential_aliases`
+  由三别名收敛为 `("TIANDITU_API_KEY",)`。
+- 注释：`geocode.py`、`maps/geocoding/__init__.py` 去掉「兼容 GEOCODE_PROVIDER_ORDER」。
+- 测试：4 个文件的 `_ENV_NAMES` 清理；删除 `test_legacy_order_env_still_honoured`、
+  把 `test_credentials_resolve_alias_in_order` / `test_alias_and_defaults` 改为
+  单变量名语义，registry 旧名用例改用新名；
+  `test_tianditu_geocode.py::test_provider_order_and_fallback` 的 `extra_env` 改用新名。
+- 文档：README 配置段与 `.env` 模板删除三别名/旧名兼容说明；§22.28、
+  §22.31 加「历史记录、变量已过时」标注；本节为现行唯一依据。
+
+### 验证
+
+- 相关 4 个测试文件 48 项全过；`.py` 全仓 grep 旧变量名 0 命中。
+- 服务重启后 `configured_order(GEOCODING) == ('tianditu',)`，amap 不被调用
+  （本月配额已耗尽，本就不该再尝试）。

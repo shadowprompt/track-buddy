@@ -26,6 +26,7 @@ data/last_stitch.json
 data/feedback.json
 data/lexicon.json.bak
 data/lexicon.json.bak-*
+data/lexicon.json.pre-restore-*
 data/lexicon.human.json
 # 由含真实轨迹的评测样本离线拟合，属运行/个人数据，不入库
 data/confidence_calibration.json

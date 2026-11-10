@@ -686,8 +686,7 @@ class Geocoder:
         """地理编码一个地名，返回候选列表（GCJ-02）。
 
         优先级：用户确认 > 在线服务 > 本地词典 > OSM 冷启动。
-        在线源顺序由 ``MAP_GEOCODING_ORDER``（兼容
-        ``GEOCODE_PROVIDER_ORDER``）配置驱动，任一源返回空就落到下一源。
+        在线源顺序由 ``MAP_GEOCODING_ORDER`` 配置驱动，任一源返回空就落到下一源。
 
         词典种子来自 OSM/Nominatim，与美团底图同源的国内 POI 数据可差
         100-300 米，所以在线优先；未配密钥时仍可离线跑通，只是绝对精度
