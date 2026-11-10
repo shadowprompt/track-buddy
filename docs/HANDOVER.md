@@ -5002,3 +5002,115 @@ boost、标 `verified`、绕过自动门槛）。
 - `tests/test_lexicon_guard.py` 22 项全过（新增 6 例：capped 冷启动、
   无证据仍拒、崩塌仍拒、被拒不建空 key、flush 按 key 裁决、pipeline 端到端）。
 - 全量 pytest 见本节提交记录。
+
+---
+
+## §22.43 轨迹模板（P0）：概览图独立通道 + 形状沉淀
+
+### 起因与判断
+
+用户提出：多图场景额外上传一张「原始概览单图」（缩放等级高、细节看不清），
+希望程序逐渐进化到「后续同类轨迹只放一张高缩放等级图也能识别」。
+
+只读调研结论：
+
+1. `/api/recognize_multi`（`server.py`）把所有 `files` 交给 `multishot.stitch`
+   拼成一张画布，再走**一次**单图流程；概览图尺度差一个量级，不能混入。
+2. OCR 为空 → `build_anchors` 返回 `[]` → `register()` 要求 ≥2 有效锚点
+   （`register.py:881-887`）→ `pipeline.py:444-465` 早退，`confidence=0`；
+   用户填 `road_names` 也救不回（`_apply_road_names` 在配准成功之后）。
+3. `Lexicon` 的 key 是归一化地名、value 是点坐标；`lookup` 必须给名字，
+   尺度每次由当次锚点重算（`_estimate_scale_prior`），历史点只派生
+   `city_bounds / core_radius_m`。**所以「越用越准」只在同名地名再现时生效**，
+   增加词典条目永远无法让无地名的图变准。
+4. 全项目没有「保存成功轨迹几何供复用」的持久化；`data/last_result.json`
+   只给核对页看且不进 pipeline，`RefineContext` 只在进程内。
+5. §21.4 记录城市级底图 Chamfer 模板匹配失败（前 12 候选分数差 0.1%，
+   位置差 900-1600 m），`simfit` ICP 同样失败。但「同类轨迹」的问题不是
+   全城搜索，而是**在有限模板集合内对齐**，可行性高得多。
+
+结论：需要第二种资产「轨迹模板」，lexicon 承担不了。
+
+### 本轮改动
+
+| 文件 | 改动 |
+|---|---|
+| `src/app/route_template.py`（新增） | `TemplateStore` / `match_shape` / 折线归一化 / 写入裁决 / 去重 |
+| `src/app/server.py` | `overview` 独立字段（不进 `stitch_images`）；单图、多图成功后 `_capture_template`；`/api/health` 增 `templates` |
+| `src/app/config.py` | `template_path = DATA_DIR / "route_templates.json"` |
+| `.gitignore` | 忽略 `data/route_templates.json*`（含真实位置） |
+| `tests/test_route_template.py`（新增） | 24 项 |
+| `README.md` / 本节 | 数据飞轮从「三个资产」改为四个；新增用户侧说明 |
+
+### 数据结构：为什么是「两条折线」而不是存配准矩阵
+
+模板同时存 `px_points`（像素）与 `geo_points`（GCJ-02），各按弧长等距重采样
+到 64 点、**一一对应**。这样模板本身就是一张「像素 → 地理」查找表：将来形状
+对齐后按弧长插值即可出坐标，完全不必理解 `Registration` 的 `matrix/model`
+格式；只匹配上其中一段时，也能只对那一段给高置信坐标。
+
+其余字段：`shape`（质心原点 + bbox 对角归一）、`signature`（16 段有序方向角）、
+`confidence / verified / hit_count / city / source / shot_id / length_px`。
+
+### 形状匹配：同类但不完全一样
+
+`shape_distance = 0.6·Chamfer + 0.4·逐点对应`。只用 Chamfer 会丢掉连接顺序
+（反向变体形同虚设、交叉路线可能误判），只用逐点对应又对「中间多绕一段」
+过敏。再叠三道：
+
+* `signature_distance`：16 段有序方向角的平均环形差，`> 0.45 rad` 直接拒识；
+* 滑窗：正反两个方向枚举连续子段（起点/长度各按 8 点步进，最短 60%），
+  支持「新图只截一段」与「新图多绕一段」；
+* `coverage`：匹配弧长占较短折线的比例，`< 0.60` 拒识，防止一小段碰巧相似。
+
+窗口打分 `r + 0.03·(1-coverage) + 0.05·signature`，避免短子段归一化后
+更容易拟合、把整条相同的轨迹也判成局部匹配。
+
+实测（合成折线，120 点）：
+
+| 变体 | residual | coverage | signature | 结论 |
+|---|---|---|---|---|
+| 同一条 | 8e-05 | 1.00 | 0.0001 | 命中 |
+| 缩放 1.7 倍 + 平移 | 8e-05 | 1.00 | 0.0001 | 命中 |
+| 反向 | 8e-05 | 1.00 | 0.0001 | 命中（`reversed=true`） |
+| 只截中间 62.5% | 0.0288 | 0.7344 | 0.3197 | 命中 |
+| 另一条不同波浪线 | 0.0751 | 0.9844 | 1.1250 | **拒识**（方向签名） |
+| 只截 15% 碎片 | — | 过低 | — | **拒识**（覆盖度） |
+
+注意：「另一条不同波浪线」的 residual 0.0751 原本低于 0.085 会被误收，
+是方向签名把它挡住的——细长轨迹按 bbox 对角归一化会压扁纵向差异，
+**单靠点集距离不够**。这是本轮实测踩到的坑，阈值不是拍脑袋定的。
+
+### 写入裁决与去重
+
+与 `lexicon_guard` 同源：`self_consistent`（复用 `_result_is_self_consistent`
+的四项一票否决）、`input_ok`、`confidence ≥ 0.35`、坐标合法、点数 ≥ 10；
+`verified / source="user"` 绕过自动门槛。形状几乎相同（去重 residual ≤ 0.045
+且 coverage ≥ 0.92）不新增条目，只累加 `hit_count` 并在置信度更高时刷新折线；
+上限 200 条，按 `(verified, confidence, hit_count)` 淘汰。
+
+### P0 边界与后续
+
+* **不改识别结果**：`find_similar` 只判定相似度、不产出坐标，主流程
+  （`pipeline.py:444` 的无锚点早退）一字未动。服务由用户自行重启。
+* **P1**：在配准失败早退前插模板兜底，用匹配子段求「当前图像素 → 模板像素」
+  的相似变换，再按弧长插值出地理坐标；必须标 `source="template"`、
+  confidence 封顶（建议 ≤ 0.45）、warnings 写「参考级 / 未核验」、
+  diagnostics 增 `template_match`；门槛不满足就保持现在的空结果，绝不硬给坐标。
+* **P2**：概览图作为拼接画布的全局形状约束（挂 `_insert_seam_paths` /
+  pose graph）；前端加概览图选择 UI（本轮只做后端通道）。
+* **P3**：同类模板聚类去重、`/api/feedback` 核验提权、命中次数反哺置信度。
+
+前提：概览图本身要能提取出 ≥10 点轨迹线（`pipeline.py:367`）；没有可读
+比例尺时绝对尺度只能来自历史模板，结果只能标「参考级」；冷启动必须先
+有若干次含地名的成功识别沉淀模板，因此是「逐渐进化」而非立刻生效。
+
+### 验证
+
+- `tests/test_route_template.py` 24 项：折线归一化、同形/缩放/反向/局部子段、
+  异形与碎片拒识、写入裁决与去重、损坏文件降级、概览图不参与拼接、
+  单图与多图沉淀、health 字段。
+- 全量 pytest（Python 3.11）：**407 passed / 2 warnings（409.58 s）**，
+  较 P0 前 383 passed 净增 24 项，无回归（2 个 warning 是既有前端测试写法提示）。
+- 本轮**未启动、未重启 8848 服务**（按用户约定由用户自行重启）；接口验证
+  只用进程内 `TestClient`，未触发真实 OCR / 在线地理编码。

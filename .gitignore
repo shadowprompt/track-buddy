@@ -28,6 +28,9 @@ data/lexicon.json.bak
 data/lexicon.json.bak-*
 data/lexicon.json.pre-restore-*
 data/lexicon.human.json
+# 轨迹模板含真实骑行位置（像素折线 ↔ 地理折线），运行期数据不入库
+data/route_templates.json
+data/route_templates.json.bak-*
 # 由含真实轨迹的评测样本离线拟合，属运行/个人数据，不入库
 data/confidence_calibration.json
 

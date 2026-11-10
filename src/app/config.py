@@ -135,6 +135,8 @@ class AppConfig:
     vision: VisionConfig = field(default_factory=VisionConfig)
     # 词典库：本地地名词典，随使用积累
     lexicon_path: Path = DATA_DIR / "lexicon.json"
+    # 轨迹模板库：成功识别的「像素折线 ↔ 地理折线」，含真实位置，不入库
+    template_path: Path = DATA_DIR / "route_templates.json"
     feedback_path: Path = DATA_DIR / "feedback.json"
     # 是否启用在线地理编码（无 key 时自动降级为纯本地词典模式）
     allow_online: bool = True

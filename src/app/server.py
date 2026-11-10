@@ -18,7 +18,8 @@ from fastapi.staticfiles import StaticFiles
 from .config import CONFIG, DATA_DIR, ROOT, SRC_ROOT, load_dotenv
 from .cv_utils import imread_unicode
 from .multishot import stitch as stitch_images
-from .pipeline import RidePipeline
+from .pipeline import RidePipeline, _result_is_self_consistent
+from .route_template import TemplateStore
 from .tmap_proxy import create_proxy_router, make_secret, render_page
 
 load_dotenv()
@@ -30,6 +31,8 @@ app = FastAPI(
 )
 
 _pipeline = RidePipeline(CONFIG)
+# 轨迹模板库：与词典并列的第二种资产，启动时加载一次（含真实位置，不入库）
+_templates = TemplateStore(CONFIG.template_path)
 UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -119,6 +122,7 @@ def health() -> dict[str, Any]:
         "geocoding": geo,
         "maps": maps_status,
         "lexicon": _pipeline.lexicon.stats(),
+        "templates": _templates.stats(),
     }
 
 
@@ -198,6 +202,34 @@ def _persist_last_result(payload: dict[str, Any]) -> None:
         pass
 
 
+def _capture_template(result: Any, payload: dict[str, Any], *,
+                      city: str, shot_id: str) -> dict[str, Any]:
+    """把一次成功识别沉淀成轨迹模板（失败绝不影响接口返回）。
+
+    判据与词典写入保持同源：复用 ``_result_is_self_consistent`` 的四项
+    一票否决，再由 ``TemplateStore`` 裁决置信度、坐标合法性、信息量与
+    形状去重。P0 只沉淀，不拿模板参与识别，因此这一步对结果是只读的。
+    """
+    try:
+        gj = payload.get("geojson_gcj02") or payload.get("geojson") or {}
+        feats = gj.get("features") or []
+        coords = feats[0]["geometry"]["coordinates"] if feats else []
+        diag = result.diagnostics or {}
+        iq = diag.get("input_quality") or {}
+        input_ok = bool(iq.get("usable", True)) if isinstance(iq, dict) else True
+        return _templates.remember(
+            px_polyline=payload.get("track_polyline_px") or [],
+            geo_polyline=coords,
+            confidence=float(result.confidence or 0.0),
+            city=city,
+            shot_id=shot_id,
+            self_consistent=_result_is_self_consistent(diag),
+            input_ok=input_ok,
+        )
+    except Exception as exc:  # noqa: BLE001 — 沉淀失败不能拖垮识别请求
+        return {"written": False, "reason": f"error:{type(exc).__name__}"}
+
+
 @app.post("/api/recognize_multi")
 async def recognize_multi(
     files: list[UploadFile] = File(...),
@@ -206,6 +238,7 @@ async def recognize_multi(
     allow_online: bool = Form(True),
     refine: str = Form("auto"),
     road_names: str = Form(""),
+    overview: UploadFile | None = File(None),
 ) -> JSONResponse:
     """上传**多张**街道级截图，拼成一张大图后识别。
 
@@ -222,6 +255,11 @@ async def recognize_multi(
     拼成大图还顺带解决了**尺度**问题：
     单张街道级图的尺度会算成 16 米/像素（偏差 8 倍），
     而大图上的 POI 标注铺开在数公里范围内，尺度能被稳定定出来。
+
+    ``overview`` 是可选的「原始概览单图」（缩放等级高、盖住整条路线、
+    地名看不清）。它**不参与拼接**：与街道级细节图尺度差一个量级，
+    混进 ``files`` 会让 SIFT 拼不上甚至触发「退回第 1 张」。P0 只单独
+    保存并标记，P2 会用它给拼接画布做全局形状约束。
     """
     if not files:
         raise HTTPException(status_code=400, detail="没有收到图片")
@@ -250,6 +288,15 @@ async def recognize_multi(
     if not imgs:
         raise HTTPException(status_code=400, detail="没有可用的图片")
 
+    # --- 概览图（可选，独立通道）---
+    # ⚠️ 绝不 append 到 imgs：概览图只用于保存/后续全局约束，不进拼接。
+    overview_id: str | None = None
+    overview_path: Path | None = None
+    if overview is not None:
+        ov = await overview.read()
+        if ov and len(ov) <= max_bytes:
+            overview_id, overview_path = _save_upload(ov, overview.filename)
+
     # --- 拼接 ---
     stitch_info: dict[str, Any] = {}
     canvas = imgs[0]
@@ -272,6 +319,12 @@ async def recognize_multi(
     else:
         stitch_info = {"ok": True, "notes": ["只有一张图，无需拼接"], "used": [0]}
 
+    # 拼接阶段会整体覆盖 stitch_info，概览图标记必须在那之后补上。
+    if overview_path is not None:
+        stitch_info["overview_present"] = True
+        stitch_info.setdefault("notes", []).append(
+            "概览图已单独保存，不参与 SIFT 拼接（P2 将用作全局形状约束）")
+
     # --- 识别（复用单图流程）---
     want_refine = refine.strip().lower() in ("1", "true", "yes", "on", "auto")
     do_sync_refine = refine.strip().lower() in ("1", "true", "yes", "on")
@@ -291,6 +344,10 @@ async def recognize_multi(
     payload = _build_payload_from(result, shot_id, f"/api/shots/{shot_id}{shot_path.suffix}")
     payload["stitch"] = stitch_info
     payload["n_shots"] = len(imgs)
+    if overview_path is not None:
+        payload["overview_url"] = f"/api/shots/{overview_id}{overview_path.suffix}"
+    payload["template_capture"] = _capture_template(
+        result, payload, city=city.strip(), shot_id=shot_id)
     warns = list(result.warnings)
     # 多图 auto 现在会启动后台精修。pipeline 里那句通用提示没说清
     # 「只校验不平移」，留着会和后面的准确说明并存甚至矛盾，先去掉。
@@ -423,6 +480,8 @@ async def recognize(
         raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc
 
     payload = _build_payload_from(result, shot_id, f"/api/shots/{shot_id}{ext}")
+    payload["template_capture"] = _capture_template(
+        result, payload, city=city.strip(), shot_id=shot_id)
     _persist_last_result(payload)
 
     # 需要后台精修吗？判据见 `_need_background_refine`：
