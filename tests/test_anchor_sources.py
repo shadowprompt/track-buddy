@@ -14,7 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from app.anchor_quality import apply_source_consistency, source_bias_report
+from app.anchor_quality import (
+    apply_source_consistency,
+    dedupe_cross_source_candidates,
+    source_bias_report,
+)
 from app.eval import synthetic_case
 from app.geo.coords import mercator_to_lonlat
 from app.register import AnchorPair, register
@@ -49,6 +53,47 @@ def test_single_source_candidates_are_untouched():
     out, report = apply_source_consistency([a, b], max_sep_m=50.0)
     assert report["n_conflicted"] == 0
     assert all(p.match_quality == 1.0 for p in out)
+
+
+def test_dedupe_cross_source_keeps_most_reliable_source():
+    # 同名锚点：amap（可靠，正确）与 osm（冷启动，偏差 ~2.9km）冲突。
+    reliable = _p("甲", "amap", 121.0000, 31.0000, quality=0.9)
+    wrong = _p("甲", "osm", 121.0260, 31.0000, quality=0.9)  # 约 2.9km 东
+    out, report = dedupe_cross_source_candidates([reliable, wrong])
+    assert report["n_conflicted_dropped"] == 1
+    assert report["dropped_count"] == 1
+    assert report["conflicted"]["甲"]["preferred_source"] == "amap"
+    assert report["conflicted"]["甲"]["dropped_sources"] == ["osm"]
+    # 只保留 amap 候选，坐标与原来的 amap 一致
+    assert len(out) == 1
+    assert out[0].source == "amap"
+    assert (out[0].lon, out[0].lat) == (reliable.lon, reliable.lat)
+
+
+def test_dedupe_prefers_online_over_lexicon_and_osm():
+    tmap = _p("乙", "tmap", 121.0000, 31.0000, quality=0.7)
+    lex = _p("乙", "lexicon", 121.0040, 31.0000, quality=0.9)  # 约 420m
+    osm = _p("乙", "osm", 121.0100, 31.0000, quality=0.9)       # 约 1km
+    out, report = dedupe_cross_source_candidates([tmap, lex, osm])
+    # tmap 可靠性最高，lexicon/osm 被剔除
+    assert report["n_conflicted_dropped"] == 1
+    assert {p.source for p in out} == {"tmap"}
+
+
+def test_dedupe_does_not_touch_agreeing_multi_source():
+    # 多源坐标彼此一致（< 200m）时不剔除，留待几何挑选。
+    a = _p("丙", "amap", 121.0000, 31.0000)
+    b = _p("丙", "tianditu", 121.0010, 31.0000)  # 约 100m
+    out, report = dedupe_cross_source_candidates([a, b])
+    assert report["n_conflicted_dropped"] == 0
+    assert len(out) == 2
+
+
+def test_dedupe_skips_single_source_name():
+    a = _p("丁", "osm", 121.0000, 31.0000)
+    out, report = dedupe_cross_source_candidates([a])
+    assert report["n_conflicted_dropped"] == 0
+    assert len(out) == 1
 
 
 class _SrcReg:

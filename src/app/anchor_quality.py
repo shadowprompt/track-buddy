@@ -188,6 +188,99 @@ def apply_source_consistency(
     return out, report
 
 
+# --- 跨源冲突「硬剔除」 -------------------------------------------------------
+#
+# ``apply_source_consistency`` 只降权、留待几何一致性裁决（见上方与测试
+# ``test_cross_source_conflict_is_downweighted_not_deleted``）。但实测在
+# 「仅 3 个内点」的退化情形里，RANSAC 会选错那个冲突候选，把尺度撑大数倍
+# （22 m/px vs 真值 ~2 m/px）：1-2km 的短轨迹被拉伸成 18km，RMSE 1800m。
+# 几何裁决在退化情形下失效，所以冲突严重时必须**从源头剔除**低可靠源的候选，
+# 只保留最可靠源的坐标，杜绝「基准打架」引发的尺度崩塌。
+#
+# 仅作用于**同一地名**出现多源冲突的情形；不同地名各自单源、或多源坐标彼此
+# 一致（< max_sep_m）的情形完全不受影响，因此不会误伤「同名异地地点」这类
+# 合法多候选。
+_SOURCE_RELIABILITY: dict[str, int] = {
+    "user": 50, "verified": 50,
+    "amap": 40, "tmap": 40, "baidu": 40, "tianditu": 40,
+    "lexicon": 30,
+    "osm": 10,
+}
+
+
+def _source_rank(source: str) -> int:
+    return _SOURCE_RELIABILITY.get((source or "").lower(), 0)
+
+
+def dedupe_cross_source_candidates(
+    pairs: Iterable["AnchorPair"],
+    max_sep_m: float = _CROSS_SOURCE_SEP_M,
+) -> tuple[list["AnchorPair"], dict[str, Any]]:
+    """同名锚点跨源坐标冲突时，只保留最可靠源的候选。
+
+    返回 (保留的候选, 报告)。不改变坐标、不降权——与 ``apply_source_consistency``
+    分工：它负责「同存但降权」，本函数负责「冲突严重时剔除非优选源」。
+
+    可靠性排序：用户核验 > 在线源(amap/tmap/baidu/tianditu) > 本地词典 >
+    OSM 冷启动。同档时取 ``match_quality`` 高者。OSM 冷启动坐标系统性偏差
+    最大，是跨源冲突的主要来源，优先剔除它。
+    """
+    items = list(pairs)
+    idx_of = {id(p): i for i, p in enumerate(items)}
+    by_name: dict[str, list["AnchorPair"]] = defaultdict(list)
+    for p in items:
+        by_name[p.name or ""].append(p)
+
+    drop_idx: set[int] = set()
+    conflicted: dict[str, dict[str, Any]] = {}
+    for name, group in by_name.items():
+        if len(group) < 2:
+            continue
+        sources = {p.source or "unknown" for p in group}
+        if len(sources) < 2:
+            continue
+        sep = 0.0
+        for a, b in combinations(group, 2):
+            if (a.source or "") == (b.source or ""):
+                continue
+            if None in (a.lon, a.lat, b.lon, b.lat):
+                continue
+            sep = max(sep, haversine(a.lon, a.lat, b.lon, b.lat))
+        if sep <= max_sep_m:
+            continue  # 多源一致，留待几何挑选
+        # 冲突：选最可靠源（同档取 match_quality 高者）
+        def _pref(src: str) -> tuple[int, float]:
+            best = max(
+                (p for p in group if (p.source or "") == src),
+                key=lambda p: float(p.match_quality),
+            )
+            return (_source_rank(src), float(best.match_quality))
+
+        preferred = max(sources, key=_pref)
+        dropped_srcs: list[str] = []
+        for p in group:
+            if (p.source or "") != preferred:
+                drop_idx.add(idx_of[id(p)])
+                s = p.source or "unknown"
+                if s not in dropped_srcs:
+                    dropped_srcs.append(s)
+        conflicted[name] = {
+            "sep_m": round(sep, 1),
+            "preferred_source": preferred,
+            "dropped_sources": dropped_srcs,
+        }
+
+    kept = [p for i, p in enumerate(items) if i not in drop_idx]
+    report = {
+        "n_names": len(by_name),
+        "n_conflicted_dropped": len(conflicted),
+        "dropped_count": len(drop_idx),
+        "conflicted": conflicted,
+        "max_sep_m": max_sep_m,
+    }
+    return kept, report
+
+
 def source_bias_report(reg: Any) -> dict[str, Any]:
     """按坐标源分组统计内点残差，识别「混用基准」的系统性偏差。
 

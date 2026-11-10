@@ -38,6 +38,7 @@ import numpy as np
 
 from .anchor_quality import (
     apply_source_consistency,
+    dedupe_cross_source_candidates,
     point_anchor_rmse,
     source_bias_report,
     split_anchor_quality,
@@ -857,9 +858,20 @@ def register(
     # 结果的离群列表里，方便追溯「为什么这个地名没被用上」。
     valid, fragments = split_anchor_quality(valid_all)
     valid, source_consistency = apply_source_consistency(valid)
+    # 跨源冲突严重时剔除低可靠源候选，从源头消除「基准打架 → 尺度崩塌」。
+    # 必须在分组与拟合之前做，否则错误的候选会被 RANSAC 当成合法证据。
+    valid, dedup_report = dedupe_cross_source_candidates(valid)
+    source_consistency["dedup"] = dedup_report
     if fragments:
         notes.append(
             f"剔除 {len(fragments)} 个疑似 OCR 残片路名锚点（不参与配准）"
+        )
+    if dedup_report["dropped_count"]:
+        names = "、".join(list(dedup_report["conflicted"])[:6])
+        notes.append(
+            f"剔除 {dedup_report['dropped_count']} 个跨源冲突候选"
+            f"（同名锚点坐标相差 >{int(dedup_report['max_sep_m'])}m，"
+            f"保留最可靠源）：{names}"
         )
     if source_consistency.get("n_conflicted"):
         notes.append(
