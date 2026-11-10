@@ -284,6 +284,8 @@ class RidePipeline:
         self._last_calibration: dict[str, Any] = {
             "enabled": False, "status": "uncalibrated", "n_samples": 0,
         }
+        # 最近一次配准的内点地名（规范化后），供词典写入做锚点级证据裁决。
+        self._last_anchor_keys: set[str] = set()
         # 大模型是**可选增强**：没配 LLM_BASE_URL/LLM_API_KEY 就完全跳过，
         # 现有行为一字不变。
         self.llm = None
@@ -316,6 +318,8 @@ class RidePipeline:
             "enabled": False, "status": "uncalibrated", "n_samples": 0,
             "note": "本次未计算置信度（早退路径）",
         }
+        # 每次识别重置：早退/异常路径没有内点证据，自动写入应全部拒绝。
+        self._last_anchor_keys = set()
         self.lexicon.begin_capture()
         try:
             result = self._run_impl(
@@ -332,6 +336,7 @@ class RidePipeline:
             confidence=result.confidence,
             self_consistent=_result_is_self_consistent(diag),
             input_ok=bool(iq.get("usable", True)),
+            anchor_keys=self._last_anchor_keys,
         )
         diag["lexicon_write_guard"] = guard
         diag["confidence_calibration"] = self._last_calibration
@@ -631,6 +636,14 @@ class RidePipeline:
             reg, track, anchors, pairs, road_fit, road_name_fit, zoom,
             scale_check=scale_check, route_check=route_check,
         )
+
+        # 记录本轮真正支撑配准的地名：整图置信度不足时，词典写入改用
+        # 「锚点级证据」裁决（见 lexicon_guard.evaluate_write），避免
+        # position_ok=False 的 0.2 封顶与 0.35 写入门槛形成冷启动死锁。
+        self._last_anchor_keys = {
+            self.lexicon.normalize(a.name) for a in reg.inliers
+            if (a.name or "").strip()
+        }
 
         # --- 退化配准的置信度封顶（诚实化）---
         #

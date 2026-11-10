@@ -14,7 +14,8 @@ import pytest
 from app.config import AppConfig
 from app.geocode import Lexicon
 from app.lexicon_guard import (
-    AUTO_WEIGHT_CAP, MIN_AUTO_CONFIDENCE, evaluate_write,
+    AUTO_WEIGHT_CAP, MIN_ANCHOR_CONFIDENCE, UNKNOWN_CONFIDENCE_BOOST,
+    evaluate_write,
 )
 from app.pipeline import PipelineResult, RidePipeline, _result_is_self_consistent
 
@@ -220,3 +221,85 @@ def test_pipeline_discards_pending_writes_on_exception(tmp_path, monkeypatch):
         pipe.run(np.zeros((8, 8, 3), dtype=np.uint8))
     assert pipe.lexicon._capture is None
     assert len(pipe.lexicon.lookup_exact("示例地标")) == 0
+
+
+# --- 低置信截图的锚点级证据通道（修复「词典永不增长」死锁）---
+
+
+def _low_conf(**kw):
+    base = dict(key=Lexicon.normalize("示例地标"), lon=LON, lat=LAT,
+                source="tianditu", boost=0.5, entries=[], confidence=0.2)
+    base.update(kw)
+    return evaluate_write(**base)
+
+
+def test_low_confidence_with_anchor_evidence_cold_starts_capped():
+    """position_ok=False 的 0.2 封顶不再把词典锁死，但只给最小 boost。"""
+    d = _low_conf(anchor_evidence=True)
+    assert d.allowed is True
+    assert d.reason == "low_conf_anchor_capped"
+    assert d.boost <= UNKNOWN_CONFIDENCE_BOOST
+    assert d.weight_cap == AUTO_WEIGHT_CAP
+
+
+def test_low_confidence_without_anchor_evidence_still_rejected():
+    d = _low_conf(anchor_evidence=False)
+    assert d.allowed is False
+    assert d.reason == "low_confidence"
+
+
+def test_collapsed_result_rejected_even_with_anchor_evidence():
+    d = _low_conf(confidence=MIN_ANCHOR_CONFIDENCE - 0.01,
+                  anchor_evidence=True)
+    assert d.allowed is False
+    assert d.reason == "low_confidence"
+
+
+def test_rejected_write_does_not_create_empty_entry(tmp_path):
+    """被拒的写入不能 setdefault 建空 key，否则 stats 虚高、文件却没变。"""
+    lex = _lex(tmp_path)
+    assert lex.remember(**_auto(confidence=0.1)).reason == "low_confidence"
+    assert lex.stats()["entries"] == 0
+    assert lex.lookup_exact("示例地标") == []
+
+
+def test_flush_uses_anchor_keys_as_evidence(tmp_path):
+    lex = _lex(tmp_path)
+    lex.begin_capture()
+    lex.remember(**_auto(name="西郊宾馆"))
+    lex.remember(**_auto(name="无关候选"))
+    report = lex.flush_capture(
+        confidence=0.2,
+        anchor_keys={Lexicon.normalize("西郊宾馆")},
+    )
+    assert report["anchor_keys"] == 1
+    assert report["written"] == 1
+    assert report["reasons"] == {"low_confidence": 1}
+    assert len(lex.lookup_exact("西郊宾馆")) == 1
+    assert len(lex.lookup_exact("无关候选")) == 0
+    assert lex.lookup_exact("西郊宾馆")[0]["weight"] <= UNKNOWN_CONFIDENCE_BOOST
+
+
+def test_pipeline_passes_inlier_anchors_as_write_evidence(tmp_path, monkeypatch):
+    cfg = AppConfig(lexicon_path=tmp_path / "lexicon.json")
+    pipe = RidePipeline(cfg)
+
+    def fake_impl(self, img, **kwargs):
+        self.lexicon.remember(
+            "示例地标", LON, LAT, city="上海", source="tianditu", boost=0.5)
+        self._last_anchor_keys = {Lexicon.normalize("示例地标")}
+        return PipelineResult(
+            geojson={}, confidence=0.2,
+            diagnostics={
+                "input_quality": {"level": "ok", "usable": True},
+                "scale_check": {"consistent": True},
+                "anchor_bias": {"systematic": False},
+            },
+        )
+
+    monkeypatch.setattr(RidePipeline, "_run_impl", fake_impl)
+    res = pipe.run(np.zeros((8, 8, 3), dtype=np.uint8))
+    guard = res.diagnostics["lexicon_write_guard"]
+    assert guard["written"] == 1
+    assert guard["anchor_keys"] == 1
+    assert len(pipe.lexicon.lookup_exact("示例地标")) == 1

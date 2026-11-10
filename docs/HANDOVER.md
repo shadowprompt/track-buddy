@@ -4921,3 +4921,84 @@ p2 与 p1 完全一致，说明「锚点源贯通 + 跨源降权」在合成基�
 - 相关 4 个测试文件 48 项全过；`.py` 全仓 grep 旧变量名 0 命中。
 - 服务重启后 `configured_order(GEOCODING) == ('tianditu',)`，amap 不被调用
   （本月配额已耗尽，本就不该再尝试）。
+
+---
+
+## §22.42 词典永不增长：置信度封顶与写入门槛的互斥死锁（2026-11-10）
+
+### 现象
+
+用户清空 `data/lexicon.json` 后连续跑了约 10 张截图，词典始终不增长。
+最近一次 `data/last_result.json` 的 `diagnostics.lexicon_write_guard` 给出
+直接证据：
+
+```json
+{"pending": 6, "written": 0, "rejected": 6,
+ "reasons": {"low_confidence": 6}, "confidence": 0.2,
+ "self_consistent": true, "input_ok": true}
+```
+
+候选**捕获到了**（6 个），是裁决环节全部拒绝，不是没有识别、也不是
+`save()` 失败。
+
+### 根因：两个独立设计的常量形成死锁
+
+| 位置 | 行为 |
+|---|---|
+| `pipeline._score_confidence` | `if zoom and not zoom["position_ok"]: conf = min(conf, 0.2)` |
+| `lexicon_guard.MIN_AUTO_CONFIDENCE` | 自动写入要求 `conf >= 0.35` |
+
+`_assess_zoom_level()` 里 `position_ok = bool(has_road_names or street)`：
+截图没有街道级锚点、用户也没填路名约束时就是 `False` —— 这是街区级
+/城市级截图的**常态**，也是冷启动最常见的一类输入。于是 `0.2 < 0.35`
+恒成立，这类截图永远写不进词典；空词典 → 无本地基准 → 更难有街道级
+锚点 → `position_ok` 更容易为 False → 更写不进，形成冷启动死锁。
+
+更根本的**逻辑错配**：`Lexicon.remember()` 沉淀的是在线地理编码
+（tianditu / osm）返回的 **POI 坐标**，属于外部权威源数据；而 confidence
+衡量的是「这一整条轨迹还原得准不准」。因为轨迹没配准好就丢弃天地图
+给的正确地名坐标，把两件独立的事绑在了一起。
+
+顺带发现 `_commit()` 在裁决**之前**就 `self._data.setdefault(key, [])`：
+被拒绝的写入会在内存里留下空 key，使 `stats()["entries"]` 虚高、磁盘
+文件却没变化（实测 `last_result` 里 entries=12 而 `/api/health` 只有 8），
+看起来像「写进去了又消失」。
+
+### 修复：锚点级证据通道（不放松防毒）
+
+- `lexicon_guard.py`：新增 `MIN_ANCHOR_CONFIDENCE = 0.15` 与
+  `evaluate_write(..., anchor_evidence=False)`。`conf < 0.35` 时，只有
+  `anchor_evidence=True` 且 `conf >= 0.15` 才放行，且 `boost` 压到
+  `UNKNOWN_CONFIDENCE_BOOST`(0.2)、`weight_cap` 仍为 `AUTO_WEIGHT_CAP`(3.0)，
+  reason = `low_conf_anchor_capped`。崩塌/早退结果（conf 趋近 0 或 nan）
+  仍一律拒绝；无证据的候选仍 `low_confidence` 拒绝。
+- `pipeline.py`：`run()` 每轮重置 `_last_anchor_keys`；`_run_impl()` 在算出
+  confidence 后把 `reg.inliers` 的地名规范化存入该集合；`flush_capture()`
+ 传入。早退路径没有内点证据 → 自动写入全部拒绝（保持安全）。
+- `geocode.py`：`flush_capture(..., anchor_keys=None)` 按 key 逐条传
+  `anchor_evidence`；report 增 `anchor_keys` 便于审计；`_commit()` 的
+  `setdefault` 移到裁决通过之后，杜绝空 key 虚高。
+
+**保留的不变量**：`source="user"` / `verified` 仍绕过一切门槛；名称合法性、
+坐标合法性、`self_consistent`、`input_ok`、异源 200m~10km 冲突、未核验权重
+封顶 3.0 全部不变。低置信通道只是让「确实参与配准的地名坐标」以最慢速度
+冷启动，绝不会因为一次轨迹没配准好就写入垃圾。
+
+### 实测（`data/uploads/` 用户真实截图，新代码）
+
+| 截图 | confidence | guard | 结果 |
+|---|---|---|---|
+| `1794277357_ca2d0f79.jpg` | 0.20 | pending 6 → **written 2**，reasons `{low_confidence: 4}` | 死锁解除，仍拒 4 个无证据候选 |
+| `1794276987_201446e0.jpg`（34 km 失败例） | 0.20 | pending 0 → written 0 | 防毒照常挡住 |
+| `1794276937_8bb61def.jpg` | 0.79 | pending 6 → **written 6** | 正常高置信路径不受影响 |
+
+磁盘词典 **8 → 10 条**。注意「增长」有两种形式：新增 key（`entries` 数）
+与已有 key 加权（`weight`），后者不增加条目数但同样是积累。若想快速
+建立高可信基准，用 `/api/feedback` 提交人工核验（`source="user"` 全额
+boost、标 `verified`、绕过自动门槛）。
+
+### 验证
+
+- `tests/test_lexicon_guard.py` 22 项全过（新增 6 例：capped 冷启动、
+  无证据仍拒、崩塌仍拒、被拒不建空 key、flush 按 key 裁决、pipeline 端到端）。
+- 全量 pytest 见本节提交记录。

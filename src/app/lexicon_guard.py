@@ -19,7 +19,8 @@
 * 自动写入（在线源 / OSM）：
   1. 地名要像地名（长度、含文字、不是「X 公里内免费」这类 UI 文案），
      坐标必须有限且在经纬度范围内；
-  2. 置信度低于 ``MIN_AUTO_CONFIDENCE`` 一律拒绝；
+  2. 置信度达到 ``MIN_AUTO_CONFIDENCE`` 才正常加权；低于它时只有
+     「本次确实作为内点锚点参与配准」的地名，才以最小 boost 冷启动；
   3. 低信息量输入、尺度不一致、系统性锚点偏移一律拒绝；
   4. 与已有**异源且已核验/高权重**条目相距 200 m ~ 10 km 时拒绝，
      避免把「基准不一致」写成「同名候选」；超过 10 km 视为同名异地，
@@ -31,6 +32,22 @@
 没有置信度证据（例如脚本单独调 ``Geocoder``）时**不直接丢弃**，
 而是把 boost 压到 ``UNKNOWN_CONFIDENCE_BOOST`` 并同样封顶 —— 冷启动
 仍然能积累，但积累速度慢、权重有限。
+
+为什么低置信不能一刀切拒绝
+--------------------------
+``pipeline._score_confidence`` 在 ``zoom.position_ok=False``（截图没有
+街道名、用户也没填路名约束）时会把**整图**置信度硬封顶到 0.2，而
+``MIN_AUTO_CONFIDENCE`` 是 0.35 —— 两个常量形成互斥死锁：这类截图
+（恰恰是冷启动最常见的一类）永远写不进词典，空词典再也起不来。
+
+更根本的错配是：``Lexicon.remember()`` 沉淀的是**在线地理编码返回的
+POI 坐标**，属于外部权威源数据；而 confidence 衡量的是「这一整条轨迹
+还原得准不准」。因为轨迹没配准好就丢弃天地图给的正确地名坐标，等于
+把两件独立的事绑在一起。
+
+因此低置信时改用「锚点级证据」裁决：该地名必须进了 ``reg.inliers``
+（本次真的参与并支撑了配准）才算有证据，且只给最小 boost、权重仍
+封顶；真正崩塌的结果（置信度趋近 0）依然一律拒绝。
 """
 from __future__ import annotations
 
@@ -42,6 +59,9 @@ from typing import Any, Sequence
 from .geo.coords import haversine
 
 MIN_AUTO_CONFIDENCE = 0.35
+# 低置信但「有内点锚点证据」时的地板：0.2 的 position_ok 硬封顶仍能通过，
+# 真正崩塌/早退的结果（<0.15）仍然拒绝。
+MIN_ANCHOR_CONFIDENCE = 0.15
 AUTO_WEIGHT_CAP = 3.0
 UNKNOWN_CONFIDENCE_BOOST = 0.2
 MIN_NAME_LEN = 2
@@ -91,6 +111,7 @@ def evaluate_write(
     self_consistent: bool = True,
     input_ok: bool = True,
     verified: bool = False,
+    anchor_evidence: bool = False,
 ) -> WriteDecision:
     """纯函数：给定已有条目与本次证据，判断能不能写。
 
@@ -130,6 +151,14 @@ def evaluate_write(
     except (TypeError, ValueError):
         conf = 0.0
     if not math.isfinite(conf) or conf < MIN_AUTO_CONFIDENCE:
+        # 整图置信度不足时改用锚点级证据：只有本次真的作为内点参与配准的
+        # 地名，才允许以最小 boost 缓慢冷启动。0.2 的「位置不可信」封顶仍
+        # 高于 MIN_ANCHOR_CONFIDENCE，而崩塌/早退的结果依然拒绝。
+        if (anchor_evidence and math.isfinite(conf)
+                and conf >= MIN_ANCHOR_CONFIDENCE):
+            return WriteDecision(
+                True, min(b, UNKNOWN_CONFIDENCE_BOOST),
+                "low_conf_anchor_capped", AUTO_WEIGHT_CAP)
         return _reject("low_confidence")
 
     # --- 异源冲突：近处不同坐标不新增，远处同名异地保留 ---

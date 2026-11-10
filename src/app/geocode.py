@@ -419,8 +419,13 @@ class Lexicon:
         confidence: float | None,
         self_consistent: bool = True,
         input_ok: bool = True,
+        anchor_keys: set[str] | None = None,
     ) -> dict[str, Any]:
-        """用本轮最终结果裁决排队的自动写入；返回可审计的统计。"""
+        """用本轮最终结果裁决排队的自动写入；返回可审计的统计。
+
+        ``anchor_keys`` 是本次配准内点地名的规范化集合。整图置信度不足时，
+        只有落在其中的地名才作为「锚点级证据」放行最小 boost 冷启动。
+        """
         with self._lock:
             pending = list(self._capture or [])
             self._capture = None
@@ -433,12 +438,15 @@ class Lexicon:
                            if confidence is not None else None),
             "self_consistent": bool(self_consistent),
             "input_ok": bool(input_ok),
+            "anchor_keys": len(anchor_keys or ()),
         }
         written = 0
         for item in pending:
+            key = str(item.get("key") or "")
             decision = self._commit(
                 **item, confidence=confidence,
                 self_consistent=self_consistent, input_ok=input_ok,
+                anchor_evidence=bool(anchor_keys) and key in anchor_keys,
             )
             if decision.allowed:
                 written += 1
@@ -506,18 +514,21 @@ class Lexicon:
         confidence: float | None,
         self_consistent: bool,
         input_ok: bool,
+        anchor_evidence: bool = False,
     ) -> WriteDecision:
         """真正改内存中的词典（不落盘，交给调用方批量 save）。"""
         with self._lock:
-            entries = self._data.setdefault(key, [])
+            # 只读已有条目做冲突检查。被拒绝的写入绝不能 setdefault 建空 key，
+            # 否则 stats()["entries"] 虚高、磁盘文件却没变，看起来像"写进去了"。
             decision = evaluate_write(
                 key=key, lon=lon, lat=lat, source=source, boost=boost,
-                entries=entries, confidence=confidence,
+                entries=self._data.get(key, []), confidence=confidence,
                 self_consistent=self_consistent, input_ok=input_ok,
-                verified=verified,
+                verified=verified, anchor_evidence=anchor_evidence,
             )
             if not decision.allowed:
                 return decision
+            entries = self._data.setdefault(key, [])
             is_user = verified or source == "user"
             for e in entries:
                 try:
