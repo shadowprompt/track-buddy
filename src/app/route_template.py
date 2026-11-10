@@ -21,10 +21,12 @@
   一部分；用 ``coverage`` 记录「匹配上的弧长占较短折线的比例」，低于门槛
   一律拒识，避免「一小段形状碰巧相似」被当成整条路线。
 
-⚠️ 本模块在 P0 只负责「沉淀 + 相似度判定」，**不产出坐标、不改变主流程
-识别结果**。把它接进无地名兜底路径是 P1 的事。城市级全域形状搜索已被
-证明不可行（HANDOVER §21.4：前 12 候选分数差 0.1%，位置差 900-1600m），
-因此匹配范围严格限定在**已沉淀的模板集合**内，且必须带拒识门槛。
+P1 起本模块额外提供 ``TemplateStore.locate()``：形状命中后按弧长反推
+GCJ-02 坐标。但它**只在主流程判定为宽泛概览图时**才被调用，且所有拒识
+门槛通过后才会给出坐标；未命中一律回落原流程，绝不硬凑。城市级全域
+形状搜索已被证明不可行（HANDOVER §21.4：前 12 候选分数差 0.1%，位置差
+900-1600m），因此匹配范围严格限定在**已沉淀的模板集合**内。反推出来的
+坐标没有当次地理核验，调用方必须标成「参考级/未核验」并封顶置信度。
 """
 from __future__ import annotations
 
@@ -62,6 +64,21 @@ MAX_TEMPLATES = 200
 # 选窗口时对「只匹配一小段」加惩罚，否则短子段归一化后更容易拟合，
 # 会把整条完全相同的轨迹也判成局部匹配。
 COVERAGE_PENALTY = 0.03
+
+# --- P1：由形状反推坐标的额外门槛 -------------------------------------
+# 实测教训：一条 2km 的「起终点连线」与十几公里的概览图轨迹，归一化后
+# residual 仅 0.0438、signature 0.3873，会被判成同类——形状假阳性。
+# 细长直线本身不携带可区分的走向信息，任一侧是这种形状就禁止用它定位。
+MIN_SHAPE_STRAIGHTNESS = 0.80
+MIN_SHAPE_ASPECT = 4.0
+# template_in_query 模式下新图首尾有一段没有地理对应，只允许极小的缺口，
+# 否则宁可拒识也不凭空外推坐标。
+MIN_LOCATE_COVERAGE_B = 0.85
+# 参考级定位的置信度上限：形状对齐没有任何当次地理核验。
+TEMPLATE_CONFIDENCE_CAP = 0.45
+# 模板地理里程的合理区间（米），挡住被污染的错误模板。
+MIN_TEMPLATE_LENGTH_M = 100.0
+MAX_TEMPLATE_LENGTH_M = 200_000.0
 
 
 def _as_points(raw: Any) -> np.ndarray:
@@ -177,6 +194,10 @@ class ShapeMatch:
     span: tuple[int, int]
     reason: str
     signature: float = 0.0
+    # P1 投影必须知道「谁是谁的子段」，否则弧长映射方向会反：
+    #   query_in_template —— 整条新图落在模板的 [span] 子段内；
+    #   template_in_query —— 整条模板落在新图的 [span] 子段内。
+    mode: str = "query_in_template"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -186,8 +207,101 @@ class ShapeMatch:
             "signature": round(self.signature, 4),
             "reversed": self.reversed,
             "span": list(self.span),
+            "mode": self.mode,
             "reason": self.reason,
         }
+
+
+def shape_has_enough_info(px: Any) -> bool:
+    """形状是否携带足够的「走向」信息，可用于反推坐标。
+
+    判据与 ``pipeline._track_lacks_shape_info`` 保持一致：直线度 ≥0.80
+    且 bbox 长宽比 ≥4.0 的扁长直线，本质是起终点连线，不同路线归一化后
+    几乎长得一样。实测一条 2km 的连线与十几公里的概览图 residual 仅
+    0.0438、signature 0.3873 会被判成同类，所以**任一侧**是这种形状
+    都必须拒识，不能只靠 residual / signature 把关。
+    """
+    p = _as_points(px)
+    if len(p) < MIN_TRACK_POINTS:
+        return False
+    length = float(np.linalg.norm(np.diff(p, axis=0), axis=1).sum())
+    chord = float(np.linalg.norm(p[-1] - p[0]))
+    straightness = chord / max(length, 1e-9)
+    w = float(p[:, 0].max() - p[:, 0].min())
+    h = float(p[:, 1].max() - p[:, 1].min())
+    aspect = max(w, h) / max(1e-6, min(w, h))
+    return not (straightness >= MIN_SHAPE_STRAIGHTNESS
+                and aspect >= MIN_SHAPE_ASPECT)
+
+
+def polyline_length_m(coords: Any) -> float:
+    """同城尺度下的折线长度（米），用于模板里程的合理性检查。"""
+    a = _as_points(coords)
+    if len(a) < 2:
+        return 0.0
+    lat0 = math.radians(float(a[:, 1].mean()))
+    d = np.diff(a, axis=0).copy()
+    d[:, 0] *= 111_320.0 * math.cos(lat0)
+    d[:, 1] *= 110_540.0
+    return float(np.linalg.norm(d, axis=1).sum())
+
+
+def project_to_geo(query_px: Any, template: dict[str, Any],
+                   match: ShapeMatch) -> np.ndarray | None:
+    """把当前图的像素折线按弧长映射到模板的 GCJ-02 折线。
+
+    模板的 ``px_points`` 与 ``geo_points`` 是等弧长重采样的一一对应，所以
+    这里不需要理解配准矩阵：只要求出「新图第 i 个点落在模板弧长的哪个
+    位置」，在 geo_points 上线性插值即可。
+
+    * ``query_in_template``：整条新图对应模板子段，按 span 精确取段；
+    * ``template_in_query``：整条模板对应新图子段，子段外**夹到端点**
+      （绝不外推坐标），因此 ``locate()`` 只在 coverage≥0.85 时放行。
+
+    ``reversed`` 时按模板原方向的逆序取段，保证 GeoJSON 首点仍是起点。
+    """
+    q = resample_by_arc(query_px)
+    geo = _as_points(template.get("geo_points"))
+    tpx = _as_points(template.get("px_points"))
+    if q is None or len(q) < 2 or len(geo) < 2 or len(tpx) < 2:
+        return None
+    n_q, n_t, n_g = len(q), len(tpx), len(geo)
+    start = max(0, min(n_t - 2, int(match.span[0])))
+    end = max(start + 1, min(n_t, int(match.span[1])))
+
+    def geo_at(u: float) -> np.ndarray:
+        """模板弧长参数 u∈[0,1] 处的 GCJ-02 坐标。"""
+        u = max(0.0, min(1.0, float(u)))
+        idx = u * (n_g - 1)
+        i0 = int(math.floor(idx))
+        i1 = min(n_g - 1, i0 + 1)
+        w = idx - i0
+        return geo[i0] * (1.0 - w) + geo[i1] * w
+
+    out: list[np.ndarray] = []
+    if match.mode == "query_in_template":
+        # span 是模板（可能已反转）上的下标；换算回原模板弧长区间。
+        if match.reversed:
+            u_lo = (n_t - end) / (n_t - 1)
+            u_hi = (n_t - 1 - start) / (n_t - 1)
+        else:
+            u_lo = start / (n_t - 1)
+            u_hi = (end - 1) / (n_t - 1)
+        u_from = u_hi if match.reversed else u_lo
+        u_to = u_lo if match.reversed else u_hi
+        for i in range(n_q):
+            f = i / (n_q - 1)
+            out.append(geo_at(u_from + f * (u_to - u_from)))
+    else:
+        for i in range(n_q):
+            f = (i - start) / max(1.0, (end - 1) - start)
+            f = max(0.0, min(1.0, f))
+            out.append(geo_at(1.0 - f if match.reversed else f))
+
+    arr = np.asarray(out, dtype=float)
+    if arr.shape != (n_q, 2) or not np.isfinite(arr).all():
+        return None
+    return arr
 
 
 def _window_span(n: int) -> list[tuple[int, int]]:
@@ -225,7 +339,7 @@ def match_shape(query_px: Any, template: dict[str, Any]) -> ShapeMatch:
     if qn is None:
         return ShapeMatch(False, float("inf"), 0.0, False, (0, 0), "degenerate_shape")
 
-    best = (float("inf"), 0.0, False, (0, 0), 0.0)
+    best = (float("inf"), 0.0, False, (0, 0), 0.0, "query_in_template")
     best_score = float("inf")
     for rev in (False, True):
         tv = t[::-1] if rev else t
@@ -245,7 +359,7 @@ def match_shape(query_px: Any, template: dict[str, Any]) -> ShapeMatch:
                      + SIGNATURE_PENALTY * sig)
             if score < best_score:
                 best_score = score
-                best = (r, cov, rev, (start, end), sig)
+                best = (r, cov, rev, (start, end), sig, "query_in_template")
         # B) 整条模板对齐 query 的某个子段（新图多绕了一段）
         for start, end in _SPANS:
             sub = q[start:end]
@@ -259,18 +373,18 @@ def match_shape(query_px: Any, template: dict[str, Any]) -> ShapeMatch:
                      + SIGNATURE_PENALTY * sig)
             if score < best_score:
                 best_score = score
-                best = (r, cov, rev, (start, end), sig)
+                best = (r, cov, rev, (start, end), sig, "template_in_query")
 
-    r, cov, rev, span, sig = best
+    r, cov, rev, span, sig, mode = best
     if not math.isfinite(r):
         return ShapeMatch(False, float("inf"), 0.0, False, (0, 0), "no_shape")
     if cov < MIN_MATCH_COVERAGE:
-        return ShapeMatch(False, r, cov, rev, span, "low_coverage", sig)
+        return ShapeMatch(False, r, cov, rev, span, "low_coverage", sig, mode)
     if r > MAX_SHAPE_RESIDUAL:
-        return ShapeMatch(False, r, cov, rev, span, "shape_mismatch", sig)
+        return ShapeMatch(False, r, cov, rev, span, "shape_mismatch", sig, mode)
     if sig > MAX_SIGNATURE_DIFF:
-        return ShapeMatch(False, r, cov, rev, span, "direction_mismatch", sig)
-    return ShapeMatch(True, r, cov, rev, span, "ok", sig)
+        return ShapeMatch(False, r, cov, rev, span, "direction_mismatch", sig, mode)
+    return ShapeMatch(True, r, cov, rev, span, "ok", sig, mode)
 
 
 class TemplateStore:
@@ -457,3 +571,64 @@ class TemplateStore:
             out.append(row)
         out.sort(key=lambda x: (x["residual"] - 0.02 * x["coverage"]))
         return out[:max(0, limit)]
+
+    # --- 定位（P1：命中才产出坐标）--------------------------------------
+    def locate(
+        self,
+        query_px: Sequence[Sequence[float]],
+        *,
+        city_hint: str = "",
+    ) -> dict[str, Any] | None:
+        """形状命中后直接给出 GCJ-02 折线；任何一道门槛不过就返回 ``None``。
+
+        绝不「凑一个最像的模板」：宁可让调用方回落到原流程，也不能把
+        错误坐标包装成一个看起来精确的结果。相对 ``find_similar`` 额外加：
+
+        * 新图与模板**两侧**都要有足够形状信息（挡细长直线假阳性）；
+        * 模板地理里程必须落在合理区间；
+        * ``template_in_query`` 需要 coverage≥0.85，避免大段无地理对应；
+        * 投影坐标必须合法。
+        """
+        if not shape_has_enough_info(query_px):
+            return None
+        best: dict[str, Any] | None = None
+        for tpl in self.templates:
+            if city_hint and tpl.get("city") and city_hint not in str(tpl["city"]):
+                continue
+            if not shape_has_enough_info(tpl.get("px_points")):
+                continue
+            length_m = polyline_length_m(tpl.get("geo_points"))
+            if not (MIN_TEMPLATE_LENGTH_M <= length_m <= MAX_TEMPLATE_LENGTH_M):
+                continue
+            if (not tpl.get("verified")
+                    and float(tpl.get("confidence", 0) or 0) < MIN_TEMPLATE_CONFIDENCE):
+                continue
+            m = match_shape(query_px, tpl)
+            if not m.accepted:
+                continue
+            if m.mode == "template_in_query" and m.coverage < MIN_LOCATE_COVERAGE_B:
+                continue
+            coords = project_to_geo(query_px, tpl, m)
+            if coords is None:
+                continue
+            if not (np.all(coords[:, 0] >= -180) and np.all(coords[:, 0] <= 180)
+                    and np.all(coords[:, 1] >= -90) and np.all(coords[:, 1] <= 90)):
+                continue
+            row = {
+                "coords_gcj": [[round(float(lo), 7), round(float(la), 7)]
+                               for lo, la in coords],
+                "match": m.as_dict(),
+                "template": {
+                    "id": tpl.get("id"),
+                    "city": tpl.get("city"),
+                    "confidence": tpl.get("confidence"),
+                    "verified": bool(tpl.get("verified")),
+                    "hit_count": tpl.get("hit_count"),
+                },
+                "length_m": round(length_m, 1),
+            }
+            score = m.residual - 0.02 * m.coverage
+            if best is None or score < (
+                    best["match"]["residual"] - 0.02 * best["match"]["coverage"]):
+                best = row
+        return best

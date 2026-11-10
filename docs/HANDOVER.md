@@ -5093,10 +5093,8 @@ boost、标 `verified`、绕过自动门槛）。
 
 * **不改识别结果**：`find_similar` 只判定相似度、不产出坐标，主流程
   （`pipeline.py:444` 的无锚点早退）一字未动。服务由用户自行重启。
-* **P1**：在配准失败早退前插模板兜底，用匹配子段求「当前图像素 → 模板像素」
-  的相似变换，再按弧长插值出地理坐标；必须标 `source="template"`、
-  confidence 封顶（建议 ≤ 0.45）、warnings 写「参考级 / 未核验」、
-  diagnostics 增 `template_match`；门槛不满足就保持现在的空结果，绝不硬给坐标。
+* **P1**：已在 §22.44 实施。注意真实概览图的失败点不是「配准失败」，而是
+  「宽泛锚点主导」——所以兜底前移到在线地理编码**之前**，不是等配准失败。
 * **P2**：概览图作为拼接画布的全局形状约束（挂 `_insert_seam_paths` /
   pose graph）；前端加概览图选择 UI（本轮只做后端通道）。
 * **P3**：同类模板聚类去重、`/api/feedback` 核验提权、命中次数反哺置信度。
@@ -5114,3 +5112,88 @@ boost、标 `verified`、绕过自动门槛）。
   较 P0 前 383 passed 净增 24 项，无回归（2 个 warning 是既有前端测试写法提示）。
 - 本轮**未启动、未重启 8848 服务**（按用户约定由用户自行重启）；接口验证
   只用进程内 `TestClient`，未触发真实 OCR / 在线地理编码。
+
+---
+
+## 22.44 P1：宽泛概览图的参考级定位（2026-11-10）
+
+### 真实概览图实测：推翻了 §22.43 的两个假设
+
+用户提供 `美团骑车截图8.jpg` / `9.jpg`（1260×2720，同一条徐汇滨江↔长宁
+路线的**往返两个方向**）。全部为离线纯函数验证，未启动服务、未写运行期
+模板库（临时库在 `tempfile`）。
+
+| 检查项 | 结果 | 影响 |
+|---|---|---|
+| `extract_track` | 872 / 829 点，confidence 0.95，起终点徽章定位、拓扑校验通过 | ≥10 点门槛毫无问题，形状可用 |
+| 离线 OCR | 42 / 46 条文本：行政区（普陀区/静安区/徐汇区…）、地铁线号（3/12/14号线、4号线内圈…）、高架高速（中环路/外环高速/南北高架路…）、大 POI（上海南站/大宁公园/西岸艺术中心…） | **不是 OCR 为空**，所以「无锚点早退」不是真实失败点 |
+| 街道级路名 | 仅「龙吴路」1 条 | 宽泛锚点主导；这些标注位置与真实点位实测差 0.8-16 km（§21.4 表） |
+| 两图形状互匹配（图8 作模板） | 原始全局 `shape_distance=0.2529`、`signature_diff=2.2963`；经反向+滑窗后 residual **0.06695**、coverage 0.9844、signature 0.3799、`reversed=True` → **命中** | 证明分段/反向设计必需；两图底图偏移、点数/bbox 都不同，属「同类但不完全一样」 |
+| 跨缩放/跨路线假阳性 | 用另一次识别（2.04 km、61 点、2.56 m/px、`input_quality=reject` 的扁长直线）作模板查概览图8：residual **0.04381**、coverage 1.0、signature 0.3873 → **accepted** | 🔴 形状描述子对细长线区分度不足；不是「匹配不上」而是「太容易匹配上」 |
+
+结论：概览图的问题不是没形状、也不是没地名，而是**地名锚点的空间精度
+只有公里级**；继续在线地理编码就会把垃圾锚点喂进配准，重演尺度崩坏。
+所以用户选定的方案是「**宽泛锚点直跳**」——在编码之前识别并绕开。
+
+### 实现
+
+* `src/app/template_fallback.py`（新）：`assess_broad_overview()` 纯文本判据。
+  文本 ≥10、宽泛地名 ≥6 且占比 ≥0.35、街道路名 ≤2、用户未手填路名，
+  五条同时成立才触发。`is_broad_name` 遵循既有约定**不把「大道」当大范围
+  对象**（世纪大道仍是有效街道级参考）。`reference_confidence()` 封顶 0.45。
+* `src/app/route_template.py`：
+  - `ShapeMatch.mode` 区分 `query_in_template` / `template_in_query`——
+    不区分就无法知道弧长投影该往哪个方向取段；
+  - `project_to_geo()` 按弧长把新图 64 点插值到模板 GCJ-02 折线；
+    `reversed` 换算回模板原方向取段，保证 GeoJSON 首点仍是起点；
+    `template_in_query` 的子段外**夹到端点，绝不外推**；
+  - `shape_has_enough_info()`：直线度 ≥0.80 且 bbox 长宽比 ≥4.0 的扁长直线
+    禁用（与 `pipeline._track_lacks_shape_info` 同判据）；
+  - `TemplateStore.locate()`：形状命中才产出坐标，双侧形状信息、模板里程
+    100 m–200 km、`template_in_query` coverage ≥0.85、坐标合法性逐条裁决。
+* `src/app/pipeline.py`：阶段 **2.5**（OCR 后、`_resolve_anchors` 前）插入
+  兜底。`RidePipeline(cfg, *, templates=None)` 由 server 注入；**未命中
+  继续原流程、未注入则整条通道关闭**，保证零回归。`_template_result()`
+  产出 `source="template"` / `template_derived=True` / `template_match`
+  诊断 / `input_quality.usable=False` / `_template_geojson()`
+  （`quality=reference_only_unverified`）。
+* `src/app/server.py`：`_templates` 提前到 `_pipeline` 之前创建并注入；
+  `_capture_template` 拦截 `template_derived` → `template_derived_result`。
+
+**为什么不会污染词典/模板/精修**：`usable=False` 让 `flush_capture` 拒绝
+本轮全部自动写入（实测 `written=0`）；不设 `scale_ground_m_per_px` 让
+`_need_background_refine` 直接返回 False；`template_derived` 让模板沉淀
+直接短路。三道闸门避免「模板推导出坐标 → 又沉淀成模板」的自我强化。
+
+### 端到端实测（真实图，OCR 文本用离线清单桩件替换，无联网）
+
+```
+confidence 0.414  track_points 64  crs WGS-84  source=template
+template_match: residual 0.06695 / coverage 0.9844 / signature 0.3799
+                reversed=True / span [0,63] / mode=query_in_template
+input_quality.usable=False → lexicon_write_guard written=0
+need_background_refine=False   refine_context=None
+_capture_template → {"written": False, "reason": "template_derived_result"}
+空模板库 → _resolve_anchors 确实被调用（回落），并给出明确 warning
+```
+
+### 边界与未做
+
+* 🔴 **冷启动仍然存在**：`data/route_templates.json` 当时仍不存在；模板库
+  为空时概览图只能回落原流程。需要先有若干次含街道名的成功识别。
+* 参考级坐标**没有当次地理核验**，绝对尺度完全来自历史模板，只能当轮廓
+  参考；接口必须靠 warnings / GeoJSON properties 明示，不能当精确轨迹。
+* `/api/recognize_multi` 的 `overview` 仍是独立存档字段（P2 才用于拼接
+  全局约束）；单图接口 `/api/recognize` 没有该字段，也不需要——P1 之后
+  只把那一张概览图传到 `/api/recognize` 即可。
+* 未做：概览图形状本身的模板变体（当前模板形状来自细节图/拼接画布）、
+  旋转不变匹配、前端概览图选择 UI、模板 verified 人工核验提权（P3）。
+
+### 验证
+
+- 新增 `tests/test_template_fallback.py` **19 项**；P0 的
+  `tests/test_route_template.py` 24 项全部保持通过（`mode` 字段为向后兼容
+  的追加，未改变 `find_similar` 语义）。
+- 全量 pytest（Python 3.11）：**426 passed / 2 warnings（248.10 s）**，
+  较 P0 的 407 净增 19 项，无回归（2 个 warning 仍是既有前端测试写法提示）。
+- **未启动、未重启 8848 服务**（用户自行重启）；未写项目运行期模板库。

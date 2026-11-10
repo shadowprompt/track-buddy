@@ -23,6 +23,8 @@ from .input_quality import (
 )
 from .ocr_anchor import Anchor, build_anchors, classify_text, ocr_texts
 from .register import AnchorPair, Registration, apply_to_polyline, register
+from .route_template import TEMPLATE_CONFIDENCE_CAP, TemplateStore, polyline_length_m
+from .template_fallback import assess_broad_overview, reference_confidence
 from .track import TrackResult, extract_track
 
 # 能作为「强约束」的锚点类型。地铁线号（transit）与高架路（road）
@@ -276,8 +278,12 @@ _EXPRESSWAY_MARKERS = ("高速", "国道", "省道", "高架", "环线")
 class RidePipeline:
     """完整的识别流水线。"""
 
-    def __init__(self, cfg: AppConfig):
+    def __init__(self, cfg: AppConfig, *,
+                 templates: TemplateStore | None = None):
         self.cfg = cfg
+        # P1 的轨迹模板库由 server 注入；单元测试不注入时整条兜底通道
+        # 完全关闭，保证既有行为一字不变。
+        self.templates = templates
         self.lexicon = Lexicon(cfg.lexicon_path)
         self.geocoder = Geocoder(cfg, self.lexicon)
         # 最近一次 _score_confidence 的校准状态，写进 diagnostics。
@@ -344,6 +350,81 @@ class RidePipeline:
         result.diagnostics = diag
         return result
 
+    def _template_result(
+        self,
+        located: dict[str, Any],
+        *,
+        img: np.ndarray,
+        track: TrackResult,
+        texts: list[Any],
+        broad: dict[str, Any],
+        output_crs: str,
+        t0: float,
+        warnings: list[str],
+    ) -> PipelineResult:
+        """构造「参考级」结果：坐标来自历史同类轨迹，没有当次地理核验。
+
+        刻意把 ``input_quality.usable`` 设为 False：既让 ``flush_capture``
+        拒绝本轮词典自动写入，也让 server 的 ``_capture_template`` 不会
+        把模板推导出的坐标再沉淀成新模板（否则错误会自我强化）。
+        不设 ``scale_ground_m_per_px``，后台精修判据据此直接跳过。
+        """
+        coords_gcj = [tuple(float(x) for x in p) for p in located["coords_gcj"]]
+        crs_norm = str(output_crs or "").upper().replace("-", "")
+        use_wgs = crs_norm in ("WGS84", "WGS")
+        lonlat = ([gcj02_to_wgs84(lo, la) for lo, la in coords_gcj]
+                  if use_wgs else coords_gcj)
+        main_crs = "WGS-84" if use_wgs else "GCJ-02"
+        match = located["match"]
+        conf = reference_confidence(match, cap=TEMPLATE_CONFIDENCE_CAP)
+        ref_warns = list(warnings) + [
+            "⚠️ 参考级定位（未核验）：本图地名多为行政区/地铁线/高架，"
+            "空间精度只有公里级，本次未做地理配准；坐标是把轨迹形状对齐到"
+            "一条历史同类路线后按弧长插值得到的，仅供轮廓参考，"
+            "不能当作精确轨迹使用。",
+            "如需街区级精度，请放大地图到能看到街道名后重新截图，"
+            "或用人工核验反馈把这条路线标为已核验。",
+        ]
+        diag = _base_diagnostics(
+            source="template",
+            template_derived=True,
+            template_match={
+                **match,
+                "template": located["template"],
+                "template_length_m": located["length_m"],
+                "broad_overview": broad,
+            },
+            input_quality={
+                "level": "reject",
+                "usable": False,
+                "reasons": ["参考级定位：坐标来自历史轨迹模板，无当次地理核验"],
+                "suggestions": ["放大地图后重新截图，或用人工反馈核验路线"],
+            },
+            ocr_texts=len(texts),
+            track_points_px=len(track.polyline),
+            bbox_px=list(track.bbox),
+            start_marker=(list(track.start_marker)
+                          if track.start_marker else None),
+            end_marker=(list(track.end_marker) if track.end_marker else None),
+            track_straightness=round(_track_straightness(track.polyline), 3),
+            online_geocoding=False,
+            lexicon=self.lexicon.stats(),
+        )
+        return PipelineResult(
+            geojson=_template_geojson(lonlat, main_crs, located),
+            geojson_gcj02=_template_geojson(coords_gcj, "GCJ-02", located),
+            confidence=conf,
+            crs=main_crs,
+            track_points=len(lonlat),
+            distance_m=round(polyline_length_m(coords_gcj), 1),
+            diagnostics=diag,
+            warnings=ref_warns,
+            elapsed_ms=int((time.time() - t0) * 1000),
+            debug={"track_mask": track.mask},
+            track_polyline_px=[[int(px), int(py)] for px, py in track.polyline],
+            image_size=(int(img.shape[1]), int(img.shape[0])),
+        )
+
     def _run_impl(
         self,
         img: np.ndarray,
@@ -386,6 +467,31 @@ class RidePipeline:
         if not anchors:
             warnings.append("OCR 未识别到可用地名锚点")
         straightness = _track_straightness(track.polyline)
+
+        # --- 阶段 2.5：宽泛概览图的轨迹模板兜底（P1）-----------------
+        # 判据只用 OCR 文本，必须放在 _resolve_anchors() 的在线地理编码
+        # **之前**：这类图上的行政区/地铁线/高架名会被编码成区中心或不
+        # 相关 POI，标注位置与真实点位差 0.8-16km，继续配准只会得到
+        # 尺度崩坏的假解（HANDOVER §21.4、§22.43）。
+        # 只有命中模板才「直跳」；没命中就继续原流程，零回归。
+        broad = assess_broad_overview(texts, road_names)
+        if self.templates is not None and broad["broad_overview"]:
+            located: dict[str, Any] | None = None
+            try:
+                located = self.templates.locate(
+                    track.polyline, city_hint=city.strip())
+            except Exception as exc:  # noqa: BLE001 — 兜底失败必须回落原流程
+                warnings.append(
+                    f"轨迹模板匹配异常，已回落原流程：{type(exc).__name__}")
+            if located is not None:
+                return self._template_result(
+                    located, img=img, track=track, texts=texts, broad=broad,
+                    output_crs=output_crs, t0=t0, warnings=warnings)
+            warnings.append(
+                "这张图是城市级概览（地名多为行政区/地铁线/高架，公里级精度），"
+                "但轨迹模板库里没有形状足够接近的同类路线；仍按原流程尝试，"
+                "结果可能偏差较大。"
+            )
 
         # --- 阶段 3：地理编码 ---
         pairs = self._resolve_anchors(anchors, city, allow_online, warnings)
@@ -2417,6 +2523,39 @@ def _anchor_dict(a: AnchorPair) -> dict[str, Any]:
         "lat": round(a.lat, 7) if a.lat is not None else None,
         "quality": round(a.match_quality, 2),
         "source": a.source,
+    }
+
+
+def _template_geojson(
+    lonlat: list[tuple[float, float]], crs: str, located: dict[str, Any]
+) -> dict[str, Any]:
+    """参考级结果的 GeoJSON；properties 里明确写出「未核验」与模板来源。"""
+    coords = [[round(lo, 7), round(la, 7)] for lo, la in lonlat]
+    match = located.get("match") or {}
+    tpl = located.get("template") or {}
+    props = {
+        "source": "route-template",
+        "crs": crs,
+        "coordinate_order": "lon,lat",
+        "direction": "first_point_is_start",
+        "quality": "reference_only_unverified",
+        "template_id": tpl.get("id"),
+        "shape_residual": match.get("residual"),
+        "shape_coverage": match.get("coverage"),
+        "shape_reversed": match.get("reversed"),
+    }
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": props,
+             "geometry": {"type": "LineString", "coordinates": coords}},
+            {"type": "Feature", "properties": {"kind": "start", "name": "起点"},
+             "geometry": {"type": "Point",
+                          "coordinates": coords[0] if coords else [0, 0]}},
+            {"type": "Feature", "properties": {"kind": "end", "name": "终点"},
+             "geometry": {"type": "Point",
+                          "coordinates": coords[-1] if coords else [0, 0]}},
+        ],
     }
 
 

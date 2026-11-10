@@ -30,9 +30,10 @@ app = FastAPI(
     version="0.1.0",
 )
 
-_pipeline = RidePipeline(CONFIG)
 # 轨迹模板库：与词典并列的第二种资产，启动时加载一次（含真实位置，不入库）
+# ⚠️ 必须先于 _pipeline 创建——P1 的概览图兜底要把它注入流水线。
 _templates = TemplateStore(CONFIG.template_path)
+_pipeline = RidePipeline(CONFIG, templates=_templates)
 UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -211,10 +212,13 @@ def _capture_template(result: Any, payload: dict[str, Any], *,
     形状去重。P0 只沉淀，不拿模板参与识别，因此这一步对结果是只读的。
     """
     try:
+        diag = result.diagnostics or {}
+        # P1：模板反推出的坐标不能再沉淀成新模板，否则错误会自我强化。
+        if diag.get("template_derived"):
+            return {"written": False, "reason": "template_derived_result"}
         gj = payload.get("geojson_gcj02") or payload.get("geojson") or {}
         feats = gj.get("features") or []
         coords = feats[0]["geometry"]["coordinates"] if feats else []
-        diag = result.diagnostics or {}
         iq = diag.get("input_quality") or {}
         input_ok = bool(iq.get("usable", True)) if isinstance(iq, dict) else True
         return _templates.remember(
