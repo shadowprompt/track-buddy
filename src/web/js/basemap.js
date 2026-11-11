@@ -142,6 +142,27 @@
       map.fitBounds(bounds, { padding: padding });
     },
     resize(map) { map.resize(); },
+    // 纠正选点的可见反馈：点击后立即在地图上落一个临时标记。
+    showPin(map, lat, lon) {
+      const T = G.TMap;
+      return new T.MultiMarker({
+        map,
+        styles: {
+          pin: new T.MarkerStyle({
+            width: 22, height: 22, anchor: { x: 11, y: 11 },
+            color: '#534ab7', borderWidth: 3, borderColor: '#ffffff',
+          }),
+        },
+        geometries: [{
+          id: 'pin', styleId: 'pin', position: new T.LatLng(lat, lon),
+        }],
+      });
+    },
+    removePin(map, pin) {
+      if (!pin) return;
+      // 与 removeTrack 同理：腾讯 SDK 的 removeLayer 要图层 id 字符串。
+      try { map.removeLayer(pin.id); } catch (e) { /* 图层可能已失效 */ }
+    },
     onClick(map, cb) {
       // 统一回调结构为 { lat, lng }——腾讯的 evt.latLng 是 LatLng 实例，
       // 高德是 { lnglat: { lat, lng } }，两者形状不同，
@@ -231,6 +252,21 @@
       }
     },
     resize(map) { map.resize(); },
+    showPin(map, lat, lon) {
+      const A = G.AMap;
+      const pin = new A.Marker({
+        position: [lon, lat],
+        anchor: 'center',
+        content: '<div style="width:22px;height:22px;border-radius:50%;'
+          + 'background:#534ab7;border:3px solid #fff;box-sizing:content-box"></div>',
+      });
+      map.add(pin);
+      return pin;
+    },
+    removePin(map, pin) {
+      if (!pin) return;
+      try { map.remove(pin); } catch (e) { /* 已移除 */ }
+    },
     onClick(map, cb) {
       map.on('click', (evt) => cb({ lat: evt.lnglat.lat, lng: evt.lnglat.lng }));
     },
@@ -258,6 +294,7 @@
       this.zoom = opts.zoom || 14;
       this.map = null;
       this.track = null;
+      this.pin = null;
       this.lastCoords = [];
       this.clickBound = false;
     }
@@ -314,6 +351,25 @@
       }
       this.track = null;
       this.lastCoords = [];
+    }
+
+    /** 在点击处画一个临时标记；返回 false 表示底图不可用（不影响提交）。 */
+    showPin(lat, lon) {
+      if (!this.map || !this.provider.showPin) return false;
+      try {
+        this.clearPin();
+        this.pin = this.provider.showPin(this.map, lat, lon);
+        return true;
+      } catch (e) {
+        console.warn('纠正标记绘制失败:', e);
+        return false;
+      }
+    }
+
+    clearPin() {
+      if (!this.pin) return;
+      try { this.provider.removePin(this.map, this.pin); } catch (e) { /* 已移除 */ }
+      this.pin = null;
     }
 
     fitBounds(padding) {

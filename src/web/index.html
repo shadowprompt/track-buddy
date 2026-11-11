@@ -80,6 +80,29 @@
   .tag.out { background:#f1efe8; color:#5f5e5a; }
   .tag.icon { background:#eeedfe; color:#534ab7; }
   #map { width:100%; height:480px; border-radius:var(--radius); overflow:hidden; }
+  /* 锚点纠正：提示必须**跟着地图**，不能只放在左栏。
+     点「纠正」会把页面滚到地图，左栏的 correctBox / status 会被滚出视野，
+     用户看到的就是「点了没反应、页面上没有任何提示」。 */
+  .map-shell { position:relative; }
+  .map-shell.correcting #map {
+    outline:2px solid var(--accent); outline-offset:2px; cursor:crosshair;
+  }
+  /* 底图 SDK 会给 canvas 设自己的 grab 光标（可能是内联样式），必须覆盖。 */
+  .map-shell.correcting #map canvas { cursor:crosshair !important; }
+  .map-hint {
+    position:absolute; left:12px; top:12px; z-index:1000;
+    max-width:min(560px, calc(100% - 24px));
+    display:none; padding:10px 12px; border-radius:8px;
+    background:rgba(255,255,255,.97); border:1px solid var(--accent);
+    box-shadow:0 2px 10px rgba(31,35,41,.14);
+    font-size:13px; color:var(--text); line-height:1.6;
+  }
+  .map-hint.show { display:block; }
+  .map-hint.ok { border-color:var(--ok); }
+  .map-hint.err { border-color:var(--err); }
+  .map-hint .mh-title { font-weight:500; }
+  .map-hint .mh-sub { color:var(--text-2); font-size:12px; margin-top:2px; }
+  .map-hint button { margin-left:10px; padding:3px 10px; font-size:12px; }
   /* 预览容器不能有固定高度：截图是 1260x2720 的竖长图，
      按宽度缩放后高度远超 480px，固定高度 + overflow:hidden 会把
      下半部分直接裁掉（用户反馈"原始图的下部分总是显示不全"）。
@@ -276,7 +299,10 @@
     <div class="card">
       <div class="vis-block">
         <div class="vis-title"><b>识别结果</b><span class="hint">腾讯底图 · GCJ-02</span></div>
-        <div id="map"></div>
+        <div class="map-shell" id="mapShell">
+          <div id="map"></div>
+          <div class="map-hint" id="mapHint" aria-live="polite"></div>
+        </div>
       </div>
       <div class="vis-block">
         <div class="vis-title"><b>原始截图</b><span class="hint">绿色为识别出的轨迹，黄色为锚点；橙色虚线为未采纳的路网精修位置</span></div>
@@ -474,6 +500,9 @@ __WB_AMAP_SDK__
 
   // ---------- 识别 ----------
   go.onclick = async () => {
+    // 新一轮识别时清掉上一轮的纠正标记与提示，避免浮层残留在结果页上。
+    basemap.clearPin();
+    hideMapHint();
     const detailsOnly = $('detailsOnly').checked;
     const paired = !detailsOnly && pickedDetails.length > 0;
     if (detailsOnly ? !pickedDetails.length : !picked) return;
@@ -1469,28 +1498,70 @@ __WB_AMAP_SDK__
     ));
   }
 
+  // 纠正提示之所以要做成地图内的浮层：点「纠正」会把页面滚动到右侧地图，
+  // 左栏的 correctBox / status 会被一并滚出视野，用户会以为「点了没反应」。
+  function setMapHint(html, kind) {
+    const h = $('mapHint');
+    h.className = 'map-hint show' + (kind ? ' ' + kind : '');
+    h.innerHTML = html;
+  }
+  function hideMapHint() {
+    $('mapHint').className = 'map-hint';
+  }
+  function fmtLL(lon, lat) {
+    const a = Number(lon), b = Number(lat);
+    return (isFinite(a) && isFinite(b))
+      ? a.toFixed(6) + ', ' + b.toFixed(6)
+      : String(lon) + ', ' + String(lat);
+  }
+  function setCorrectingUI(on, name) {
+    $('mapShell').className = on ? 'map-shell correcting' : 'map-shell';
+    $('map').style.cursor = on ? 'crosshair' : '';
+    $('correctBox').style.display = on ? 'block' : 'none';
+    if (on) {
+      $('correctName').textContent = name;
+      setMapHint(
+        '<div class="mh-title">纠正模式：请在地图上单击「' + esc(name) + '」的正确位置</div>' +
+        '<div class="mh-sub">单击即保存该坐标；点「取消」退出。本次轨迹不会重画，下次识别才生效。</div>');
+    }
+  }
+
   function startCorrect(name) {
+    basemap.clearPin();
     correcting = name;
-    $('correctName').textContent = name;
-    $('correctBox').style.display = 'block';
+    setCorrectingUI(true, name);
     // 确保地图就绪（顺带补上 fitBounds），并滚动到地图位置，
-    // 让用户直接看到要点击的地方。
+    // 让用户直接看到要点击的地方和上面的提示浮层。
     ensureMapReady();
-    $('map').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    $('mapShell').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (!basemap.getMap()) {
+      setMapHint('<div class="mh-title">底图未就绪，暂时无法选点</div>' +
+        '<div class="mh-sub">请刷新页面重试；纠正数据不会丢失。</div>', 'err');
+    }
     showStatus('请在地图上点击「' + name + '」的正确位置。', 'info');
   }
 
-  $('cancelCorrect').onclick = () => {
+  function cancelCorrect() {
     correcting = null;
-    $('correctBox').style.display = 'none';
+    setCorrectingUI(false);
+    basemap.clearPin();
+    hideMapHint();
     hideStatus();
-  };
+  }
+  $('cancelCorrect').onclick = cancelCorrect;
 
   async function submitCorrection(lon, lat) {
     if (!correcting) return;
     const name = correcting;
     correcting = null;
-    $('correctBox').style.display = 'none';
+    setCorrectingUI(false);
+    // 点击的第一时间就要有可见反馈：先在点击处落一个标记，再把浮层切成
+    // 「正在保存」。以前只有左栏一行状态文字（且已被滚出视野），
+    // 用户完全看不出这一下点击生效了没有。
+    basemap.showPin(lat, lon);
+    setMapHint('<div class="mh-title"><span class="spin"></span> 正在保存「' +
+      esc(name) + '」的纠正…</div>' +
+      '<div class="mh-sub">GCJ-02 ' + fmtLL(lon, lat) + '</div>');
     try {
       const r = await fetch('/api/feedback', {
         method: 'POST',
@@ -1502,9 +1573,25 @@ __WB_AMAP_SDK__
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail || '提交失败');
+      setMapHint('<div class="mh-title">已记录「' + esc(name) + '」的纠正</div>' +
+        '<div class="mh-sub">GCJ-02 ' + fmtLL(lon, lat) +
+        ' · 词典条目 ' + d.lexicon.entries +
+        ' 个 · 下次识别生效<button class="ghost" id="hintDone" type="button">完成</button></div>', 'ok');
+      $('hintDone').onclick = () => {
+        basemap.clearPin();
+        hideMapHint();
+        hideStatus();
+      };
       showStatus('已记录「' + name + '」的纠正，词典条目 ' +
         d.lexicon.entries + ' 个。重新识别同一区域可获得更准的结果。', 'info');
     } catch (e) {
+      // 失败时重新进入纠正模式，允许直接在地图上再点一次重试；
+      // 标记和错误提示都保留，不让用户误以为已经写入成功。
+      correcting = name;
+      setCorrectingUI(true, name);
+      setMapHint('<div class="mh-title">纠正提交失败：' +
+        esc(e.message || String(e)) + '</div>' +
+        '<div class="mh-sub">标记已留在点击处，可直接在地图上重新单击再试一次。</div>', 'err');
       showStatus('纠正提交失败：' + (e.message || e), 'err');
     }
   }

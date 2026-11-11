@@ -5316,3 +5316,63 @@ locate(domain=detail) 对同一条 overview 模板 → None（域隔离生效）
   较 P1 的 426 净增 18 项、无回归（2 个 warning 仍是既有前端测试写法提示）。
 - **未启动、未重启 8848 服务**（用户自行重启）；所有验证为进程内
   TestClient / 纯函数级，运行期目录与模板库一律指向 `tmp_path`。
+
+---
+
+## §22.46 锚点纠正的可见反馈：提示浮层 + 点击标记（2026-11-11）
+
+### 用户反馈与根因
+
+「点了纠正，页面上没有任何提示」「在识别结果地图上点了，也没有任何交互反应」。
+两处都是纯前端问题，服务端日志全是 200，看不出来：
+
+1. `correctBox` 与 `#status` 都在**左栏**（锚点明细卡片 / 首卡片），
+   而 `startCorrect()` 用 `$('map').scrollIntoView({block:'center'})` 把页面滚到
+   右侧地图，左栏两个提示被一起滚出视野。
+2. `submitCorrection()` 成功后只调 `showStatus()`（还是左栏），点击处没有任何
+   标记、地图无状态变化，用户无法确认这一下是否生效；失败也只有一行文字。
+
+### 改动
+
+* `src/web/index.html`
+  - `#map` 外包 `.map-shell`（`#mapShell`），同级新增 `#mapHint` 浮层，
+    `scrollIntoView` 目标改成 `#mapShell`，保证提示与地图同时进入视野。
+  - 纠正态：`.map-shell.correcting #map` 紫色 outline + 十字光标，
+    并用 `.map-shell.correcting #map canvas { cursor:crosshair !important }`
+    覆盖底图 SDK 的 grab 光标。
+  - 新增 `setMapHint / hideMapHint / fmtLL / setCorrectingUI / cancelCorrect`；
+    `startCorrect` 显示「请在地图上单击「X」的正确位置」，底图未就绪时改为
+    错误提示。
+  - `submitCorrection`：点击后**先** `basemap.showPin(lat, lon)` 落临时标记，
+    浮层显示「正在保存… + GCJ-02 坐标」；成功显示「已记录 + 坐标 + 词典条目数
+    + 下次识别生效」与「完成」按钮；失败显示错误并**重新进入纠正模式**，
+    允许直接在地图上再点一次重试。点「完成」/「取消」/下一次「开始识别」
+    都会清 pin 与浮层。
+  - 提交语义不变：仍是「先点按钮、再点一次地图」，`/api/feedback` 的 body
+    仍是 `{name, lon, lat, crs:'GCJ-02', city}`，`verified=true` 写入不变，
+    本次轨迹不重算。
+* `src/web/js/basemap.js`：两个 provider 各加 `showPin / removePin`
+  （腾讯 `MultiMarker` + `removeLayer(id)`；高德 `Marker` + `map.remove`），
+  `Adapter` 加 `showPin / clearPin` 与 `this.pin`；底图不可用时静默返回 false，
+  不影响提交。
+* 测试：`tests/test_frontend_correction_ui.py`（Node 驱动，执行 index.html 真实
+  函数 + DOM/fetch 桩 + 两个 provider 的 pin 生命周期），覆盖进入纠正态、
+  点击即时反馈、成功/失败/取消四态、pin 画与删、请求 body 与 GCJ-02 坐标。
+
+### 边界与未做
+
+* 🟡 仍**没有撤销已写入点位**的接口：点错只能重复点同一正确坐标累加权重，
+  或手工编辑 `data/lexicon.json` 并重启服务。本次只解决「看得见」，未改数据语义。
+* 🟡 成功提示需点「完成」关闭（或开始下一次识别），没有自动淡出——
+  避免 `setTimeout` 拖住 Node 测试进程。
+* 🟡 纠正不解锁轨迹模板：`position_ok` 只看街道名/手填路名，与用户点选坐标
+  无关，§22.45 记录的 `low_confidence` 模板写入死锁仍在（P2 后续项）。
+
+### 验证
+
+- `node --check src/web/js/basemap.js`；主脚本 `new Function(...)` 编译通过。
+- 前端组 `29 passed / 2 warnings`；新增测试单跑通过。
+- 全量 pytest（Python 3.11）：**445 passed / 2 warnings（301.07 s）**，
+  较 P2 基线 444 净增 1 项、无回归（2 个 warning 仍是既有前端测试写法提示）。
+- **未启动、未重启 8848 服务**（用户自行重启）；未写入任何运行期词典/模板数据，
+  `data/lexicon.json` 的用户运行期改动未纳入提交。
