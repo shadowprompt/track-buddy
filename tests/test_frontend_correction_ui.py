@@ -91,9 +91,13 @@ const fetchStub = (url, opts) => {
 const showStatus = (m, k) => statuses.push({ m: m, k: k });
 const hideStatus = () => statuses.push(null);
 const ensureMapReady = () => {};
+// 纠正提交成功后会刷新人工纠正清单；本沙箱只测提交链路，用桩记录调用。
+const refreshCalls = [];
+const refreshCorrections = () => { refreshCalls.push(1); };
 
 const factory = new Function(
-  '$', 'basemap', 'fetch', 'showStatus', 'hideStatus', 'ensureMapReady', `
+  '$', 'basemap', 'fetch', 'showStatus', 'hideStatus', 'ensureMapReady',
+  'refreshCorrections', `
   let correcting = null;
   ${extract('esc')}
   ${extract('fmtLL')}
@@ -145,7 +149,8 @@ out.tmap_removed = tmapRemoved.slice();
 out.amap_removed_count = amapRemoved.length;
 
 (async () => {
-  const api = factory($, bm, fetchStub, showStatus, hideStatus, ensureMapReady);
+  const api = factory($, bm, fetchStub, showStatus, hideStatus,
+                      ensureMapReady, refreshCorrections);
 
   // 场景 1：进入纠正模式，地图内提示与纠正态必须可见
   api.startCorrect('交通大学');
@@ -209,6 +214,7 @@ out.amap_removed_count = amapRemoved.length;
     clearCalls: bm.clearCalls,
   };
 
+  out.refresh_calls = refreshCalls.length;
   console.log(JSON.stringify(out));
 })().catch((e) => { console.error(e); process.exit(1); });
 """
@@ -265,6 +271,7 @@ def test_correction_ui_has_visible_feedback() -> None:
 
     done = out["s2_done"]
     assert "ok" in done["hintClass"] and "已记录" in done["hint"]
+    assert out["refresh_calls"] >= 1, "纠正成功后未刷新人工纠正清单"
     assert "121.434346" in done["hint"] and "31.2018" in done["hint"], \
         "成功提示未显示点击坐标"
     assert done["hasDoneButton"] and done["correcting"] is None

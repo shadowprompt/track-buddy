@@ -5361,8 +5361,8 @@ locate(domain=detail) 对同一条 overview 模板 → None（域隔离生效）
 
 ### 边界与未做
 
-* 🟡 仍**没有撤销已写入点位**的接口：点错只能重复点同一正确坐标累加权重，
-  或手工编辑 `data/lexicon.json` 并重启服务。本次只解决「看得见」，未改数据语义。
+* ✅ 当时仍没有撤销已写入点位的接口，已在 **§22.47** 补齐「一键清空全部
+  人工纠正」。本次只解决「看得见」，数据语义到下一节才动。
 * 🟡 成功提示需点「完成」关闭（或开始下一次识别），没有自动淡出——
   避免 `setTimeout` 拖住 Node 测试进程。
 * 🟡 纠正不解锁轨迹模板：`position_ok` 只看街道名/手填路名，与用户点选坐标
@@ -5376,3 +5376,92 @@ locate(domain=detail) 对同一条 overview 模板 → None（域隔离生效）
   较 P2 基线 444 净增 1 项、无回归（2 个 warning 仍是既有前端测试写法提示）。
 - **未启动、未重启 8848 服务**（用户自行重启）；未写入任何运行期词典/模板数据，
   `data/lexicon.json` 的用户运行期改动未纳入提交。
+
+---
+
+## §22.47 人工纠正清单、准确性判据与一键回滚（2026-11-11）
+
+### 起因
+
+用户连问两件事：①「既然纠正的不准危害很大，应该提供一个移除全部纠正的
+入口吧」；②「我怎么知道纠正的准不准」。上一轮（§22.46）只解决了「看得见」，
+当时明确记着「没有撤销已写入点位的接口」，本节把这条边界关掉。
+
+**当前实况**（动手前读 `data/lexicon.json`）：22 词条 / 23 点位，全部
+`tianditu` 自动源，`verified_points=0`，即**目前一条人工纠正都没有**，
+用户此前并未成功提交过纠正。入口是给以后用的，本次没有清掉任何数据。
+
+### 为什么「纠得多」不等于「越准」（代码依据）
+
+| 现象 | 依据 |
+|---|---|
+| 一次错纠正会长期锁死该地名 | `geocode.py` `Geocoder.geocode()` 第 1 步 `lookup_by_source(name, city, ("user",))` 命中即 `return user`，在线源 / 本地兜底 / 冷启动全部跳过，天地图的门牌级正确坐标再也进不了候选池 |
+| 写入几乎不设防 | `lexicon_guard.py:135-137` 对 `verified or source=="user"` 直接 `return WriteDecision(True, b, "user_verified", None)`，连自动写入要过的 200 m~10 km 异源冲突检查都不做；只保留名称合法性 / UI 文案 / 坐标范围（`:121-133`） |
+| 点错不会消失 | `_commit()` 不同坐标走 `entries.append(...)` 新增一条同为 `weight=2.0` 的 user 点（`:564-579`）；两条 user 点 `source` 相同，`dedupe_cross_source_candidates()` 的 `len(sources)<2` 分支不剔除，两条一起进 RANSAC |
+| 残片会扩散 | `name` 用 OCR 原文，`Lexicon.normalize()` 只去空格括号标点，`lookup()` 有包含匹配；短 key 会劫持别的查询（代码注释里「上海世」偏离 6.8 km 的实测事故） |
+| 收益很快饱和 | `boost=2.0`、`quality=min(1, weight/5)`，同坐标第 3 次就到 1.0；唯一泛化收益是同城 ≥3/≥8 个点派生天地图搜索视野 |
+
+### 怎么判断纠得准不准（写进页面说明）
+
+最可靠的是**重新识别同一张图**：该地名出现在「内点」且内点数 / RMSE 没变差，
+说明点被采纳且自洽；落入「离群」或整体指标变差就是点偏了。前端「人工纠正」
+表格的「本次识别」列直接把这条结论标出来（用本次 `anchors_used` /
+`anchors_rejected` 按归一化名称匹配）。辅助信号：
+
+- `疑似 OCR 残片`：key ≤3 字或命中 UI 文案正则；
+- `多个坐标（纠错过）`：同一 key 有 ≥2 条 user 点；
+- `weight / count`：`2.0 / 1` 表示只纠过一次，多条同名说明纠错过；
+- 手点坐标只有缩放级别精度（几十米），不要用去微调本来正确的自动点位。
+
+### 实现
+
+* `src/app/geocode.py`：`Lexicon.clear_user_points()`。只删
+  `verified=True` 或 `source=="user"` 的点位，保留自动点位；空 key 一并删除；
+  `RLock` 内改内存并 `save()`，无人工点时**不重写磁盘**（幂等）。返回
+  `removed_points / removed_keys / remaining_points / upgraded_auto_points_lost`。
+  ⚠️ 用户在**同一坐标**上纠正时 `_commit()` 会把原自动条目就地升级，
+  无法还原；用 `last_confidence` 字段识别（用户提交不带 confidence），
+  如实计入 `upgraded_auto_points_lost`。
+* `src/app/server.py`：`POST /api/feedback/reset`，body 必须
+  `{"confirm": true}`，否则 400；返回 `ok / 报告 / lexicon.stats()`。
+  清空后**内存与磁盘同步，不需要重启服务**；轨迹模板库不受影响。
+* `src/web/index.html`：左栏新增**独立卡片** `#correctionPanel`
+  （`#correctionCount` / `#correctionRows` / `#clearCorrections`）。刻意不嵌进
+  默认 `display:none` 的 `anchorCard`——否则页面刚打开、还没识别过时看不到
+  回滚入口，无法清理历史错纠正。
+  数据来自既有 `GET /api/lexicon`，在**页面初始化、每次 `render()`、
+  纠正提交成功后**各刷新一次。清空按钮二次确认，成功后状态栏写明删除数、
+  保留数与「无法还原」的损失；取消不发请求，失败有可见错误提示。
+  新增 `.tag.warn/.tag.err` 与 `button.ghost.danger` 样式。
+* 测试：`tests/test_feedback_reset.py`（纯函数 + TestClient，全部 tmp_path，
+  覆盖只删 user、落盘、幂等、confirm 校验、接口联动）；
+  `tests/test_frontend_feedback_reset.py`（Node 驱动真实前端函数，覆盖
+  清单渲染/风险标记/二次确认/请求体/刷新/取消/失败）。
+  `tests/test_frontend_correction_ui.py` 的 Node 沙箱补 `refreshCorrections`
+  桩并新增「提交成功后刷新清单」断言（新调用曾让旧测试误入 catch）。
+
+### 边界与未做
+
+* 🟡 **只做「全部清空」，没有单条删除**。同名多点、只是某一处点错时仍要
+  整体回滚；后续可加按 `name + 坐标` 的单条删除。
+* 🟡 被就地升级的自动点位无法还原（见上），会一起删掉；清空调返回计数并
+  在前端提示，不做「假装无损」的降级。
+* 🟡 纠正仍不解锁轨迹模板：`position_ok` 只看街道名 / 手填路名，
+  §22.45 的 `low_confidence` 模板写入死锁仍在（P2 后续项）。
+* 🟡 纠正只影响**下一次**识别，本次轨迹不重算；清空同理。
+
+### 验证
+
+- 前端语法检查 `new Function(...)` 编译通过；`app.server` 导入正常。
+- 新增后端测试 4 passed；新增前端测试 1 passed。
+- 前端组 + 新增后端测试：**35 passed / 2 warnings**（2 个 warning 仍是
+  既有 `test_frontend.py` 写法提示）。
+- 全量 pytest（Python 3.11，最终版本）：**450 passed / 2 warnings（417.27 s）**，
+  较 §22.46 的 445 净增 5 项（新增 4 个后端 + 1 个前端测试），无回归。
+  期间曾有一轮全量在修复旧 Node 沙箱之前启动，报 `1 failed / 449 passed`，
+  根因是新加的 `refreshCorrections()` 在旧测试的 `new Function` 沙箱里
+  没有桩、同步抛 `ReferenceError` 让 `submitCorrection` 误入 catch；
+  补桩后复跑全绿，该中间结果不作为交付依据。
+- **未启动、未重启 8848 服务**（用户自行重启）；所有验证为进程内
+  TestClient / 纯函数级 / Node 桩，运行期词典指向 `tmp_path`，
+  `data/lexicon.json` 未改动、未纳入提交。

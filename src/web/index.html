@@ -79,6 +79,11 @@
   .tag.in { background:#e1f5ee; color:#0f6e56; }
   .tag.out { background:#f1efe8; color:#5f5e5a; }
   .tag.icon { background:#eeedfe; color:#534ab7; }
+  .tag.warn { background:#faeeda; color:var(--warn); }
+  .tag.err { background:#fcebeb; color:var(--err); }
+  button.ghost.danger { color:var(--err); border-color:rgba(213,73,65,.35); }
+  #correctionPanel table { font-size:11px; }
+  #correctionPanel td { vertical-align:top; }
   #map { width:100%; height:480px; border-radius:var(--radius); overflow:hidden; }
   /* 锚点纠正：提示必须**跟着地图**，不能只放在左栏。
      点「纠正」会把页面滚到地图，左栏的 correctBox / status 会被滚出视野，
@@ -292,6 +297,26 @@
           </div>
           <button class="ghost" id="cancelCorrect">取消</button>
         </div>
+      </div>
+
+      <!-- 独立卡片：anchorCard 默认 display:none，若把回滚入口放在里面，
+           页面刚打开（还没识别过）就看不到，用户没法清理历史错纠正。 -->
+      <div class="card" id="correctionPanel" style="margin-top:16px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <h2 style="margin:0; flex:1;">人工纠正 <span id="correctionCount" class="tag out">0</span></h2>
+          <button class="ghost danger" id="clearCorrections" type="button"
+                  style="padding:4px 10px; font-size:12px;">清空全部纠正</button>
+        </div>
+        <div class="note" style="margin-top:6px;">
+          <b>怎么判断纠正准不准：</b>纠正后重新识别<strong>同一张图</strong>——该地名出现在「内点」、
+          且内点数 / RMSE 没变差，说明点被采纳且自洽；若落入「离群」或整体指标变差，就是点偏了。
+          下方「本次识别」列直接给出结果。手点坐标只有缩放级别精度（几十米），
+          不要用它去微调本来就正确的点。点错可一键清空回滚（自动点位保留）。
+        </div>
+        <table>
+          <thead><tr><th>名称</th><th>坐标 GCJ-02</th><th>权重/次数</th><th>本次识别</th><th>风险</th></tr></thead>
+          <tbody id="correctionRows"></tbody>
+        </table>
       </div>
     </div>
 
@@ -1118,6 +1143,9 @@ __WB_AMAP_SDK__
         : '';
       showStatus('未能得到坐标结果，请查看下方诊断信息。' + why, 'err');
     }
+    // 每次识别完成后刷新人工纠正清单：用本次 anchors_used / anchors_rejected
+    // 直接标出每条纠正有没有被采纳，这是判断「纠得准不准」最直观的信号。
+    refreshCorrections();
     return mapOk;
   }
 
@@ -1584,6 +1612,7 @@ __WB_AMAP_SDK__
       };
       showStatus('已记录「' + name + '」的纠正，词典条目 ' +
         d.lexicon.entries + ' 个。重新识别同一区域可获得更准的结果。', 'info');
+      refreshCorrections();
     } catch (e) {
       // 失败时重新进入纠正模式，允许直接在地图上再点一次重试；
       // 标记和错误提示都保留，不让用户误以为已经写入成功。
@@ -1595,6 +1624,96 @@ __WB_AMAP_SDK__
       showStatus('纠正提交失败：' + (e.message || e), 'err');
     }
   }
+
+  // ---------- 人工纠正清单 + 一键回滚 ----------
+  // 用户点位在 Geocoder.geocode() 里会短路掉在线源，一条点错的纠正会长期
+  // 生效，而过去没有删除入口，只能手工改 data/lexicon.json 再重启服务。
+  // 这里把「有哪些纠正 / 纠得准不准 / 怎么撤回」三件事摆到明面上。
+  const UI_TEXT_RE = /公里|千米|分钟|小时|免费|累计|已骑|里程|本次|套餐|优惠|起点|终点|导航|分享|km/i;
+
+  function normName(s) {
+    return String(s || '').replace(/[ \t　()（）·・,，.。\-—_]/g, '');
+  }
+
+  function renderCorrections(entries, result) {
+    const byKey = {};
+    Object.keys(entries || {}).forEach(k => {
+      const users = (entries[k] || []).filter(e => e && (e.verified || e.source === 'user'));
+      if (users.length) byKey[k] = users;
+    });
+    const used = new Set(((result && result.anchors_used) || []).map(a => normName(a.name)));
+    const rejected = new Set(((result && result.anchors_rejected) || []).map(a => normName(a.name)));
+    const rows = [];
+    let n = 0;
+    Object.keys(byKey).forEach(k => {
+      byKey[k].forEach(e => {
+        n++;
+        let state = '<span class="tag out">本次未出现</span>';
+        if (used.has(k)) state = '<span class="tag in">已用作内点</span>';
+        else if (rejected.has(k)) state = '<span class="tag warn">本次未采纳</span>';
+        const risks = [];
+        if (k.length <= 3 || UI_TEXT_RE.test(k)) risks.push('疑似 OCR 残片');
+        if (byKey[k].length > 1) risks.push('多个坐标（纠错过）');
+        const riskHtml = risks.length
+          ? '<span class="tag err">' + esc(risks.join('、')) + '</span>'
+          : '<span class="tag in">未见异常</span>';
+        rows.push('<tr><td>' + esc(k) + '</td><td class="num">' + fmtLL(e.lon, e.lat) +
+          '</td><td class="num">' + (e.weight == null ? '-' : e.weight) +
+          ' / ' + (e.count == null ? 1 : e.count) +
+          '</td><td>' + state + '</td><td>' + riskHtml + '</td></tr>');
+      });
+    });
+    $('correctionRows').innerHTML = rows.join('') ||
+      '<tr><td colspan="5">暂无人工纠正，词典里只有自动写入的点位。</td></tr>';
+    $('correctionCount').textContent = String(n);
+    $('correctionCount').className = 'tag ' + (n ? 'warn' : 'out');
+    $('clearCorrections').disabled = n === 0;
+    return n;
+  }
+
+  async function refreshCorrections() {
+    try {
+      const r = await fetch('/api/lexicon');
+      if (!r.ok) return;
+      const d = await r.json();
+      renderCorrections(d.entries || {}, lastResult);
+    } catch (e) {
+      // 页面刚加载、服务未就绪时静默失败，下一次识别会再刷新
+    }
+  }
+
+  $('clearCorrections').onclick = async () => {
+    const n = Number($('correctionCount').textContent || 0);
+    if (!n) return;
+    const msg = '将删除全部 ' + n + ' 条人工纠正点位（自动写入的点位保留）。\n\n' +
+      '此操作不可撤销，清空后该城市回到纯自动证据重新积累。确定继续吗？';
+    if (!window.confirm(msg)) return;
+    $('clearCorrections').disabled = true;
+    try {
+      const r = await fetch('/api/feedback/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || '清空失败');
+      showStatus('已清空 ' + d.removed_points + ' 条人工纠正（涉及 ' + d.removed_keys +
+        ' 个词条），保留 ' + d.remaining_points + ' 个自动点位。' +
+        (d.upgraded_auto_points_lost
+          ? ' 其中 ' + d.upgraded_auto_points_lost +
+            ' 条原本是自动点位、被纠正就地覆盖，无法还原。'
+          : ''), 'info');
+      await refreshCorrections();
+    } catch (e) {
+      showStatus('清空人工纠正失败：' + (e.message || e), 'err');
+    } finally {
+      $('clearCorrections').disabled =
+        Number($('correctionCount').textContent || 0) === 0;
+    }
+  };
+
+  // 页面打开就先列一次，不必等第一次识别完成
+  refreshCorrections();
 })();
 </script>
 </body>

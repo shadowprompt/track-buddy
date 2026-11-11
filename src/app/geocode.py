@@ -32,7 +32,7 @@ import requests
 
 from .config import AppConfig
 from .geo.coords import lonlat_to_mercator
-from .lexicon_guard import WriteDecision, evaluate_write
+from .lexicon_guard import USER_SOURCE, WriteDecision, evaluate_write
 from .maps.contracts import Capability
 from .maps.geocoding import build_geocoding_registry, convert_candidates
 
@@ -590,6 +590,50 @@ class Lexicon:
                 "cities": sorted({e.get("city", "") for e in points if e.get("city")}),
             }
 
+
+    def clear_user_points(self) -> dict[str, Any]:
+        """清空全部人工纠正点位，只保留自动写入的条目。
+
+        用户点位在 ``geocode()`` 里会短路掉在线地理编码，一条点错的纠正
+        会长期生效；而目前没有单条删除接口，所以需要一键整体回滚，
+        让该城市回到纯自动证据重新积累。
+
+        ⚠️ 无法完整还原：用户在**同一坐标**上纠正时，``_commit`` 会把原
+        自动条目就地升级为 ``verified=True / source=user``，原来的自动证据
+        不会另存一份，因此这类点位只能一并删除。带 ``last_confidence``
+        字段的可据此识别（用户纠正不带 confidence，不会写这个字段），
+        在返回值里单独计数，供调用方明确告知损失。
+        """
+        removed_points = 0
+        removed_keys = 0
+        upgraded_auto_points_lost = 0
+        with self._lock:
+            for key in list(self._data.keys()):
+                entries = self._data[key]
+                keep = []
+                for e in entries:
+                    is_user = (bool(e.get("verified"))
+                               or str(e.get("source") or "") == USER_SOURCE)
+                    if not is_user:
+                        keep.append(e)
+                        continue
+                    removed_points += 1
+                    if e.get("last_confidence") is not None:
+                        upgraded_auto_points_lost += 1
+                if keep:
+                    self._data[key] = keep
+                else:
+                    del self._data[key]
+                    removed_keys += 1
+            if removed_points:
+                self.save()
+            remaining_points = sum(len(v) for v in self._data.values())
+        return {
+            "removed_points": removed_points,
+            "removed_keys": removed_keys,
+            "upgraded_auto_points_lost": upgraded_auto_points_lost,
+            "remaining_points": remaining_points,
+        }
 
     def lookup_by_source(
         self, name: str, city_hint: str = "", sources: tuple[str, ...] = ("user",)

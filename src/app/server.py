@@ -848,6 +848,24 @@ async def feedback(payload: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "lexicon": _pipeline.lexicon.stats()}
 
 
+@app.post("/api/feedback/reset")
+def reset_feedback(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """清空**全部**人工纠正点位，保留自动写入的点位。
+
+    这是「纠错了怎么办」的回滚入口：用户点位会短路掉在线地理编码，
+    一条错纠正会长期生效，且当前没有单条删除接口。清空后该城市回到
+    纯自动证据重新积累，内存与磁盘同步更新，**不需要重启服务**。
+
+    要求显式 ``confirm=true``，避免误触把核验成果清掉；没有人工点位时
+    返回计数 0（幂等），不会重写磁盘文件。
+    """
+    if not payload or payload.get("confirm") is not True:
+        raise HTTPException(
+            status_code=400, detail="需要 confirm=true 才会清空人工纠正")
+    report = _pipeline.lexicon.clear_user_points()
+    return {"ok": True, **report, "lexicon": _pipeline.lexicon.stats()}
+
+
 @app.get("/api/lexicon")
 def lexicon() -> dict[str, Any]:
     """查看本地词典内容。"""
