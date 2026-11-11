@@ -47,6 +47,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from .cv_utils import disk_kernel, find_marker
 from .scale import Scale, canvas_pixel_budget
 
 
@@ -155,6 +156,48 @@ class StitchResult:
 
 
 # --- 内部工具 -------------------------------------------------------------
+
+
+def _badge_protection_items(
+    images: list[np.ndarray], indices: list[int]
+) -> list[tuple[int, str, np.ndarray]]:
+    """挑出需要在画布上保住的「起/终」徽章，每类只留面积最大的一枚。
+
+    ⚠️ 为什么需要这一步（2026-11-11 实测事故）
+    ------------------------------------------
+    贴图时同一像素只留**先贴**的那张图。若含「起」徽章的截图恰好排在
+    重叠区后面，徽章会被一张「同区域但没有徽章」的截图完整盖掉：
+    7 张细节图里 4270 个绿色像素 100% 丢失，`extract_track()` 随后
+    报「未检测到起点徽章」并直接放弃整个识别。徽章是轨迹提取的拓扑锚，
+    不能当作普通像素任由覆盖顺序决定。
+
+    每类只保留最大一枚，是为了与 `track.find_marker()` 的语义一致
+    （它在画布上也只取最大的连通域），避免写回多枚互相矛盾的「起」。
+    """
+    from .config import CONFIG  # 局部导入，避免与 server 的模块级循环
+
+    cfg = CONFIG.vision
+    best: dict[str, tuple[int, np.ndarray, int]] = {}
+    for idx in indices:
+        hsv = cv2.cvtColor(images[idx], cv2.COLOR_BGR2HSV)
+        for kind, ranges in (
+            ("start", [cfg.start_hsv_range]),
+            ("end", [cfg.end_hsv_range, cfg.end_hsv_range2]),
+        ):
+            found = find_marker(
+                hsv, ranges, cfg.badge_min_area, cfg.badge_max_area
+            )
+            if found is None:
+                continue
+            comp = found[1].astype(np.uint8)
+            # 徽章中央的白色「起/终」字在 HSV 掩膜上是个孔洞；填洞再外扩，
+            # 才能把整枚徽章（含白字与描边）原样写回，而不是留个空心圈。
+            comp = cv2.morphologyEx(comp, cv2.MORPH_CLOSE, disk_kernel(15))
+            comp = cv2.dilate(comp, disk_kernel(5))
+            area = int((comp > 0).sum())
+            if kind not in best or area > best[kind][2]:
+                best[kind] = (idx, comp, area)
+    return [(idx, kind, comp) for kind, (idx, comp, _area) in best.items()]
 
 
 def _gray(img: np.ndarray) -> np.ndarray:
@@ -656,8 +699,13 @@ def stitch(
         )
         return res
 
+    # 徽章保护：先找出各图上的「起/终」，贴图后按各自变换强制写回。
+    badge_items = _badge_protection_items(images, res.used)
+    badge_indices = {item[0] for item in badge_items}
+
     canvas = np.full((H, W, 3), 245, np.uint8)
     filled = np.zeros((H, W), bool)
+    transforms: dict[int, np.ndarray] = {}
 
     # --- 5. 按深度从小到大贴图，同一像素只留深度最小的 ---
     #
@@ -674,10 +722,15 @@ def stitch(
     # 实测传 t⁻¹ 时，A 左上角的标记出现在画布 x=983（正确应为 476），
     # 差 507 像素——肉眼几乎看不出来，但轨迹叠加会完全对不上，
     # 用户只会看到「图拼了但轨迹不贴」。
-    for idx in sorted(res.used, key=lambda k: (depth[k], k)):
+    # 同深度时让含徽章的图先贴（能少一次写回）；跨深度的覆盖仍由 6.5 兜底。
+    for idx in sorted(
+        res.used,
+        key=lambda k: (depth[k], 0 if k in badge_indices else 1, k),
+    ):
         t = T[idx].copy()
         t[0, 2] -= min_x
         t[1, 2] -= min_y
+        transforms[idx] = t.copy()
         h, w = images[idx].shape[:2]
         warped = cv2.warpPerspective(
             images[idx], t, (W, H), flags=cv2.INTER_LINEAR,
@@ -747,6 +800,38 @@ def stitch(
             res.notes.append(
                 f"图之间有 {gap * 100:.0f}% 的空洞"
                 f"（滑动步子太大或截图之间有遗漏）"
+            )
+
+    # --- 6.5 起终点徽章强制写回 ---
+    #
+    # 第 5 步只保证**同深度**时含徽章的图先贴；跨深度的图仍可能先占住
+    # 那片像素（真实事故里就是两张 depth=2 的图互相覆盖）。这里用每张图
+    # 自己的变换，把徽章连同白字、描边原样盖回裁剪后的画布。
+    if badge_items:
+        warped_cache: dict[int, np.ndarray] = {}
+        restored = 0
+        for idx, _kind, comp in badge_items:
+            tt = transforms[idx].copy()
+            tt[0, 2] -= crop_off[0]
+            tt[1, 2] -= crop_off[1]
+            wm = cv2.warpPerspective(
+                comp * 255, tt, (W, H),
+                flags=cv2.INTER_NEAREST, borderValue=0,
+            ) > 0
+            if not wm.any():
+                continue
+            if idx not in warped_cache:
+                warped_cache[idx] = cv2.warpPerspective(
+                    images[idx], tt, (W, H), flags=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=(255, 255, 255),
+                )
+            canvas[wm] = warped_cache[idx][wm]
+            restored += 1
+        if restored:
+            res.notes.append(
+                f"已保护 {restored} 枚起终点徽章（重叠区强制写回，"
+                "避免轨迹提取丢失拓扑锚）"
             )
 
     res.canvas = canvas
