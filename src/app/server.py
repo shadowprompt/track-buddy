@@ -152,6 +152,80 @@ def _save_upload(data: bytes, filename: str | None) -> tuple[str, Path]:
     return shot_id, shot_path
 
 
+_BADGE_LABELS = {"start": "起点", "end": "终点"}
+
+# 模板注册失败的常见原因 → 用户能看懂的解释。
+# 见 route_template.register_pair() / TemplateStore.remember()。
+_PAIRED_FAILURE_REASONS: dict[str, str] = {
+    "not_enough_points": "本次轨迹提取未成功（见上方告警），没有可供注册的地理真值",
+    "low_confidence": "本次识别置信度不足，未达到模板写入门槛",
+    "self_inconsistent": "本次识别结果自洽性校验未通过",
+    "low_information_input": "本次输入信息量不足",
+    "partial_route": "细节图只覆盖了路线的一部分，形状配对未通过",
+    "degenerate_shape": "轨迹形状退化，无法形成有效模板",
+    "projection_failed": "概览图形状投影到地理坐标失败",
+    "invalid_value": "输入的起终点数值不合法",
+    "invalid_coordinate": "地理坐标不合法",
+    "deduped": "轨迹形状与已有模板重复，本次跳过",
+    "template_derived_result": "本次是模板参考级定位，不能再拿去注册模板",
+}
+
+
+def _explain_badge_loss(
+    warnings: list[str], conservation: dict[str, Any] | None
+) -> list[str]:
+    """把「未检测到徽章」改回真正的失败层。
+
+    `track.py` 只看最终画布，它报「未检测到起点徽章」时，输入原图里
+    可能明明有——徽章是在多图贴图阶段被覆盖掉的。有了拼接层的守恒
+    诊断才能区分这两种情况，不再让用户去反复检查自己的截图。
+    """
+    if not conservation or conservation.get("ok"):
+        return warnings
+    missing = [k for k in (conservation.get("missing") or []) if k in _BADGE_LABELS]
+    if not missing:
+        return warnings
+    stale = tuple(f"未检测到{_BADGE_LABELS[k]}徽章" for k in missing)
+    kept = [w for w in warnings if not any(s in w for s in stale)]
+
+    parts = []
+    for kind in missing:
+        shots = (conservation.get("input") or {}).get(kind) or []
+        where = (
+            "输入第 " + "、".join(str(i + 1) for i in shots) + " 张图有"
+            if shots else "输入图里有"
+        )
+        parts.append(
+            f"{_BADGE_LABELS[kind]}徽章（{where}，拼接画布上未检出）"
+        )
+    lead = (
+        "拼接阶段丢失了" + "、".join(parts) +
+        "：这是多图贴图覆盖造成的信息丢失，不是截图没截到；"
+        "下方「轨迹形状不合理 / 未能提取到有效轨迹线」等告警都是它的连锁结果。"
+    )
+    return [lead] + kept
+
+
+def _paired_failure_note(reason: Any) -> str:
+    """模板注册失败按真实原因分流，别一律甩给「细节图没覆盖整条路线」。"""
+    r = str(reason or "unknown")
+    why = _PAIRED_FAILURE_REASONS.get(r)
+    if why is None:
+        if r.startswith("shape_"):
+            why = f"概览图与多图真值的形状配对未通过（{r}）"
+        elif r.startswith("error:"):
+            why = f"模板注册过程出错（{r}）"
+        else:
+            why = f"模板注册条件未满足（{r}）"
+    if r == "deduped":
+        tail = "下次同类图可只传单图，不必重复注册"
+    elif r == "template_derived_result":
+        tail = "参考级结果不会二次沉淀，下次同类图仍需补传"
+    else:
+        tail = "下次同类图仍需补传"
+    return f"概览图未能注册（{r}）：{why}；{tail}"
+
+
 def _build_payload_from(result: Any, shot_id: str, shot_url: str) -> dict[str, Any]:
     """把 PipelineResult 打包成接口返回结构。"""
     return {
@@ -398,7 +472,10 @@ async def recognize_multi(
     # 「只校验不平移」，留着会和后面的准确说明并存甚至矛盾，先去掉。
     if want_refine and not do_sync_refine:
         warns = [w for w in warns if "跳过路网精修" not in w]
-    payload["warnings"] = warns + list(stitch_info.get("notes") or [])
+    payload["warnings"] = _explain_badge_loss(
+        warns + list(stitch_info.get("notes") or []),
+        stitch_info.get("badge_conservation"),
+    )
 
     # 拼接后的画布存一份，供前端叠加显示。
     #
@@ -534,6 +611,7 @@ async def recognize(
     canvas_url: str | None = None
     n_details = 0
     pair_notes: list[str] = []
+    stitch_info: dict[str, Any] = {}
     if details:
         imgs: list[np.ndarray] = []
         for f in details:
@@ -561,6 +639,8 @@ async def recognize(
                 except Exception as exc:  # noqa: BLE001 — 拼接失败不该 500
                     st = None
                     pair_notes.append(f"拼接失败: {exc}")
+                if st is not None:
+                    stitch_info = st.to_dict()
                 if st is not None and st.ok and st.canvas is not None:
                     run_img = st.canvas
                 else:
@@ -574,8 +654,7 @@ async def recognize(
                 canvas_url = f"/api/shots/{canvas_name}"
             except Exception:  # noqa: BLE001 — 预览图存不下不影响识别
                 canvas_url = f"/api/shots/{shot_id}{ext}"
-            pair_notes.insert(
-                0, f"已用 {n_details} 张细节图拼接配准，本次结果为地理真值")
+            # 「本次结果为地理真值」要等识别结束才能说，见下方 paired_mode 分支。
 
     try:
         result = _pipeline.run(
@@ -594,6 +673,8 @@ async def recognize(
     if paired_mode:
         payload["overview_url"] = f"/api/shots/{shot_id}{ext}"
         payload["n_shots"] = n_details
+        if stitch_info:
+            payload["stitch"] = stitch_info
         cap = _capture_paired_template(
             overview_img=img, truth_payload=payload, truth_result=result,
             city=city.strip(), shot_id=shot_id)
@@ -603,10 +684,18 @@ async def recognize(
                 "这张概览图已注册进轨迹模板库；以后形状接近的概览图"
                 "只需单独上传，不必再带细节图")
         else:
-            pair_notes.append(
-                f"概览图未能注册（{cap.get('reason')}）：请确认细节图覆盖"
-                "整条路线且识别自洽；下次同类图仍需补传")
-        payload["warnings"] = list(result.warnings) + pair_notes
+            pair_notes.append(_paired_failure_note(cap.get("reason")))
+        # 识别失败时不能宣称「结果为地理真值」——那会让人以为底下的
+        # 轨迹/模板告警只是小问题。
+        pair_notes.insert(0, (
+            f"已用 {n_details} 张细节图拼接配准，本次结果为地理真值"
+            if payload["ok"] else
+            f"已用 {n_details} 张细节图拼接，但本次识别未成功（原因见下方告警）"
+        ))
+        payload["warnings"] = _explain_badge_loss(
+            list(result.warnings) + pair_notes,
+            stitch_info.get("badge_conservation"),
+        )
     else:
         payload["template_capture"] = _capture_template(
             result, payload, city=city.strip(), shot_id=shot_id)

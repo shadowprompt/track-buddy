@@ -135,6 +135,10 @@ class StitchResult:
     verify: list[dict[str, Any]] = field(default_factory=list)
     # 整体复核得分（各图相似度的中位数）
     verify_score: float = 0.0
+    # 产物级不变量：输入各图里出现过的「起/终」徽章，最终画布是否还在。
+    # _verify_canvas() 主动剔除重叠区（那里正常的覆盖关系会让分数偏低），
+    # 恰好看不见「徽章被盖掉」这种语义信息丢失，必须单独守一道。
+    badge_conservation: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -147,6 +151,7 @@ class StitchResult:
             "pose_graph": self.pose_graph,
             "verify": self.verify,
             "verify_score": round(self.verify_score, 4),
+            "badge_conservation": self.badge_conservation,
             "canvas_size": (
                 [int(self.canvas.shape[1]), int(self.canvas.shape[0])]
                 if self.canvas is not None
@@ -159,9 +164,17 @@ class StitchResult:
 
 
 def _badge_protection_items(
-    images: list[np.ndarray], indices: list[int]
-) -> list[tuple[int, str, np.ndarray]]:
+    images: list[np.ndarray], indices: list[int], *,
+    scan_indices: list[int] | None = None,
+) -> tuple[list[tuple[int, str, np.ndarray]], dict[str, list[int]]]:
     """挑出需要在画布上保住的「起/终」徽章，每类只留面积最大的一枚。
+
+    同时返回**输入清单**（每类在哪些原图上检出过），供产物级守恒校验用。
+    这两件事共用一次检测，避免两处 HSV 阈值将来各自漂移。
+
+    `indices` 是实际参与贴图的图（只有它们有变换矩阵，能写回徽章）；
+    `scan_indices` 默认与它相同，传入全部输入图时，被判「无重叠」而
+    整张排除的图上的徽章也计入清单——那种情况恰恰最该报信息丢失。
 
     ⚠️ 为什么需要这一步（2026-11-11 实测事故）
     ------------------------------------------
@@ -178,7 +191,9 @@ def _badge_protection_items(
 
     cfg = CONFIG.vision
     best: dict[str, tuple[int, np.ndarray, int]] = {}
-    for idx in indices:
+    inventory: dict[str, list[int]] = {"start": [], "end": []}
+    usable = set(indices)
+    for idx in (scan_indices if scan_indices is not None else indices):
         hsv = cv2.cvtColor(images[idx], cv2.COLOR_BGR2HSV)
         for kind, ranges in (
             ("start", [cfg.start_hsv_range]),
@@ -189,6 +204,9 @@ def _badge_protection_items(
             )
             if found is None:
                 continue
+            inventory[kind].append(idx)
+            if idx not in usable:
+                continue  # 没有变换矩阵，不能写回，但已计入输入清单
             comp = found[1].astype(np.uint8)
             # 徽章中央的白色「起/终」字在 HSV 掩膜上是个孔洞；填洞再外扩，
             # 才能把整枚徽章（含白字与描边）原样写回，而不是留个空心圈。
@@ -197,7 +215,43 @@ def _badge_protection_items(
             area = int((comp > 0).sum())
             if kind not in best or area > best[kind][2]:
                 best[kind] = (idx, comp, area)
-    return [(idx, kind, comp) for kind, (idx, comp, _area) in best.items()]
+    items = [(idx, kind, comp) for kind, (idx, comp, _area) in best.items()]
+    return items, inventory
+
+
+def _badge_conservation(
+    canvas: np.ndarray, inventory: dict[str, list[int]]
+) -> dict[str, Any]:
+    """产物级不变量：输入里出现过的徽章，最终画布上必须还在。
+
+    只在「输入本来就有」的类别上要求。中途截图没有徽章是正常现象，
+    若反过来要求画布必须有两枚，会制造大量误报。
+    """
+    from .config import CONFIG
+
+    cfg = CONFIG.vision
+    hsv = cv2.cvtColor(canvas, cv2.COLOR_BGR2HSV)
+    found = {
+        "start": find_marker(
+            hsv, [cfg.start_hsv_range], cfg.badge_min_area, cfg.badge_max_area
+        ) is not None,
+        "end": find_marker(
+            hsv, [cfg.end_hsv_range, cfg.end_hsv_range2],
+            cfg.badge_min_area, cfg.badge_max_area
+        ) is not None,
+    }
+    missing = [
+        k for k in ("start", "end") if inventory.get(k) and not found[k]
+    ]
+    return {
+        "input": {
+            "start": list(inventory.get("start") or []),
+            "end": list(inventory.get("end") or []),
+        },
+        "canvas": found,
+        "ok": not missing,
+        "missing": missing,
+    }
 
 
 def _gray(img: np.ndarray) -> np.ndarray:
@@ -700,7 +754,11 @@ def stitch(
         return res
 
     # 徽章保护：先找出各图上的「起/终」，贴图后按各自变换强制写回。
-    badge_items = _badge_protection_items(images, res.used)
+    # 守恒清单扫**全部输入图**：被判无重叠而整张排除的图，若上面有徽章，
+    # 同样属于「输入有、画布没有」，不能因为没参与贴图就悄悄略过。
+    badge_items, badge_inventory = _badge_protection_items(
+        images, res.used, scan_indices=list(range(len(images)))
+    )
     badge_indices = {item[0] for item in badge_items}
 
     canvas = np.full((H, W, 3), 245, np.uint8)
@@ -836,6 +894,24 @@ def stitch(
 
     res.canvas = canvas
     res.ok = True
+
+    # 产物级守恒校验：不管徽章是被去重、错配、裁剪还是覆盖弄丢的，
+    # 都在这里被同一条断言抓住，而不是等下游报「未检测到起点徽章」。
+    cons = _badge_conservation(canvas, badge_inventory)
+    res.badge_conservation = cons
+    if not cons["ok"]:
+        label = {"start": "起点", "end": "终点"}
+        parts = []
+        for kind in cons["missing"]:
+            shots = "、".join(str(i + 1) for i in cons["input"][kind])
+            parts.append(
+                f"{label[kind]}徽章（输入第 {shots} 张图有，画布上未检出）"
+            )
+        res.notes.append(
+            "拼接产物丢失了" + "、".join(parts) +
+            "；这是多图贴图阶段的信息丢失，不是截图里没有徽章"
+        )
+
     res.notes.append(
         f"已拼接 {len(res.used)} 张图 → {W}×{H} 画布，"
         f"基于 {len(res.links)} 对重叠关系"
