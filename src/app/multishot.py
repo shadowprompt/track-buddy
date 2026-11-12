@@ -163,6 +163,74 @@ class StitchResult:
 # --- 内部工具 -------------------------------------------------------------
 
 
+def _pose_tree_weight(link: PairLink) -> float:
+    """一条重叠边的置信度权重，口径与 `posegraph.PoseEdge` 保持一致。"""
+    return max(1.0, float(link.inliers)) * max(0.05, float(link.ncc))
+
+
+def _build_pose_tree(
+    link_map: dict[tuple[int, int], PairLink],
+    root: int,
+    members: list[int],
+) -> tuple[
+    dict[int, np.ndarray],
+    dict[int, int],
+    list[tuple[int, int, int, float]],
+]:
+    """按边置信度构造**最大生成树**，求每张图到画布的变换 `T_i`。
+
+    `T_i` 把第 i 张图的像素坐标映射到画布坐标。对 link(i→j)，矩阵 `m`
+    把 i 映射到 j，即 `T_i = T_j · m`，故 `T_j = T_i · m⁻¹`。
+
+    返回 `(T, depth, edges)`；`edges` 为 `(parent, child, inliers, weight)`，
+    按扩展顺序排列，供诊断与贴图优先级使用。
+
+    ⚠️ 为什么不能按插入顺序 BFS（2026-11-12 09:04 实测事故）
+    --------------------------------------------------------
+    旧实现遍历 `link_map.items()`，遇到第一条能连到未定位图的边就固定
+    变换——只保证「跳数最少」，完全不看配准质量。7 张细节图里，
+    `inliers=549/721/965/725/490` 的强链 0→1→2→3→4→5→6 因此被
+    `inliers=25/21/46` 的弱边（0↔5、1↔4、3↔5）抢先取代，图 3、4、5
+    被定位到错误区域，7 张图折叠堆进 3077×3818 的画布（正确应约
+    6423×3372），底部出现明显错位缝，轨迹只提取到局部 2.8 km。
+
+    这里改成 Prim 式：每轮只在「已定位集合 ↔ 未定位集合」的跨接边里
+    选置信度最高的一条。等价于取最大生成树，每个节点的位姿都来自
+    **最强瓶颈路径**；弱边只在没有强边可用时才被用到。权重相同按
+    索引排序，保证结果可复现。
+    """
+    target = set(members)
+    T: dict[int, np.ndarray] = {root: np.eye(3)}
+    depth: dict[int, int] = {root: 0}
+    edges: list[tuple[int, int, int, float]] = []
+
+    while len(T) < len(target):
+        best_key: tuple[float, int, int] | None = None
+        best: tuple[int, int, PairLink, float] | None = None
+        for (i, j), link in link_map.items():
+            if i not in target or j not in target:
+                continue  # 其它连通块的边不参与本组定位
+            if (i in T) == (j in T):
+                continue  # 两端都已定位 / 都未定位
+            weight = _pose_tree_weight(link)
+            key = (weight, -i, -j)  # 权重相同按索引，确定性
+            if best_key is None or key > best_key:
+                best_key, best = key, (i, j, link, weight)
+        if best is None:
+            break  # 剩下的图与主图不连通，交给并查集阶段处理
+
+        i, j, link, weight = best
+        if i in T:
+            parent, child = i, j
+            T[child] = T[parent] @ np.linalg.inv(link.matrix)
+        else:
+            parent, child = j, i
+            T[child] = T[parent] @ link.matrix
+        depth[child] = depth[parent] + 1
+        edges.append((parent, child, int(link.inliers), float(weight)))
+    return T, depth, edges
+
+
 def _badge_protection_items(
     images: list[np.ndarray], indices: list[int], *,
     scan_indices: list[int] | None = None,
@@ -658,27 +726,22 @@ def stitch(
         )
     res.used = sorted(members)
 
-    # --- 3. BFS 求每张图到画布的变换 ---
-    # T_i 把第 i 张图的像素坐标映射到画布坐标。
-    # 对一条 link(i→j)：m 把 i 映射到 j，则
-    #     T_i = T_j · m   ⇒   T_j = T_i · m⁻¹
-    order: list[int] = [root]
-    depth: dict[int, int] = {root: 0}
-    T: dict[int, np.ndarray] = {root: np.eye(3)}
-    queue = [root]
-    while queue:
-        cur = queue.pop(0)
-        for (i, j), link in link_map.items():
-            if i == cur and j not in depth:
-                depth[j] = depth[cur] + 1
-                T[j] = T[cur] @ np.linalg.inv(link.matrix)
-                order.append(j)
-                queue.append(j)
-            elif j == cur and i not in depth:
-                depth[i] = depth[cur] + 1
-                T[i] = T[cur] @ link.matrix
-                order.append(i)
-                queue.append(i)
+    # --- 3. 位姿树：按配准置信度选最大生成树，求每张图的变换 ---
+    # 旧版按 `link_map` 插入顺序 BFS「先到先得」，会让 inliers 只有 20 多的
+    # 弱边抢先决定图的位置，把整条滑动链折叠成一堆重叠图（详见
+    # `_build_pose_tree` 的实测事故说明）。
+    T, depth, tree_edges = _build_pose_tree(link_map, root, members)
+    if len(T) != len(members):
+        res.notes.append(
+            f"位姿树只定位了 {len(T)}/{len(members)} 张图，放弃拼接"
+        )
+        return res
+    if tree_edges:
+        res.notes.append(
+            f"位姿树按配准置信度选边：{len(tree_edges)} 条，"
+            f"最弱边内点 {min(n for _p, _c, n, _w in tree_edges)}、"
+            f"权重 {min(w for _p, _c, _n, w in tree_edges):.1f}"
+        )
 
     # --- 3.5 位姿图全局平差（可选） ---
     #
