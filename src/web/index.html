@@ -211,6 +211,16 @@
 
         <div class="row">
           <div>
+            <label for="stitchBackend">多图拼接方式（A/B 对比，仅多图生效）</label>
+            <select id="stitchBackend">
+              <option value="sift">SIFT 特征配准（项目现用）</option>
+            </select>
+            <div class="note" id="stitchBackendNote" style="margin-top:6px;"></div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div>
             <label for="online">在线地理编码</label>
             <select id="online">
               <option value="1">启用（需配置地图密钥）</option>
@@ -559,6 +569,11 @@ __WB_AMAP_SDK__
     if (syncFit) fd.append('refine', 'on');
     const rn = $('roadNames').value.trim();
     if (rn) fd.append('road_names', rn);
+    // 只有多图才涉及拼接；单图时后端选择不参与，避免误导。
+    if (paired || detailsOnly) {
+      fd.append('stitch_backend',
+                $('stitchBackend') ? $('stitchBackend').value : 'sift');
+    }
 
     let data;
     try {
@@ -726,7 +741,26 @@ __WB_AMAP_SDK__
     const used = (st.used || []).length;
     const unused = (st.unused || []).length;
     const size = st.canvas_size;
-    let h = '<div class="kv"><span>截图拼接</span><span>';
+    const be = st.backend || 'sift';
+    const beLabel = be === 'llm' ? '大模型语义配准（纯 VLM）'
+      : be === 'llm_guided' ? '大模型候选 + SIFT 精配准'
+      : 'SIFT 特征配准（项目现用）';
+    const bdg = st.backend_diagnostics || {};
+    let backendLine = '<div class="kv"><span>拼接方式</span><span>' + beLabel +
+      (st.backend_error ? ' <b style="color:#c2410c">（本次失败）</b>' : '') +
+      '</span></div>';
+    if (be === 'llm' || be === 'llm_guided') {
+      const bits = [];
+      if (bdg.model) bits.push('模型 ' + esc(String(bdg.model)));
+      if (typeof bdg.elapsed_ms === 'number') bits.push('耗时 ' + bdg.elapsed_ms + 'ms');
+      if (typeof bdg.pairs_accepted === 'number') bits.push('采纳 ' + bdg.pairs_accepted + ' 条关系');
+      if (bdg.pairs_rejected) bits.push('剔除 ' + bdg.pairs_rejected + ' 条');
+      if (bits.length) {
+        backendLine += '<div class="kv"><span>模型诊断</span><span>' +
+          bits.join(' · ') + '</span></div>';
+      }
+    }
+    let h = backendLine + '<div class="kv"><span>截图拼接</span><span>';
     if (st.ok) {
       h += '已拼接 ' + used + ' 张';
       if (size) h += ' → ' + size[0] + '×' + size[1] + ' 画布';
@@ -748,11 +782,17 @@ __WB_AMAP_SDK__
 
     const links = st.links || [];
     if (links.length) {
-      const weak = links.filter(l => l.inliers < 30 || l.ncc < 0.5);
+      // 纯大模型边没有几何内点/相似度，不能套 SIFT 的「偏弱」判据，
+      // 否则每条边都会被标红，把用户引到错误的排查方向。
+      const weak = links.filter(l => l.source !== 'llm' &&
+        (l.inliers < 30 || l.ncc < 0.5));
       h += '<div class="kv"><span>图间重叠</span><span>';
       h += links.map(l =>
         '第' + (l.i + 1) + '↔第' + (l.j + 1) + '张：' +
-        l.inliers + ' 内点 / 相似度 ' + l.ncc
+        (l.source === 'llm'
+          ? '模型置信度 ' + (l.weight == null ? '—' : Number(l.weight).toFixed(2)) +
+            '（无几何内点）'
+          : l.inliers + ' 内点 / 相似度 ' + l.ncc)
       ).join('；');
       h += '</span></div>';
       if (weak.length) {
@@ -1712,8 +1752,46 @@ __WB_AMAP_SDK__
     }
   };
 
+  // 拼接后端清单由服务端下发：新增后端不必改前端。没配大模型服务时
+  // 直接禁用对应选项，避免用户选了以后拿到「其实跑的是 SIFT」的结果。
+  async function refreshStitchBackends() {
+    const sel = $('stitchBackend');
+    if (!sel) return;
+    try {
+      const r = await fetch('/api/stitch-backends');
+      if (!r.ok) return;
+      const d = await r.json();
+      const specs = d.backends || [];
+      const prev = sel.value;
+      sel.innerHTML = '';
+      specs.forEach(b => {
+        const o = document.createElement('option');
+        o.value = b.id;
+        o.textContent = b.label + (b.available ? '' : '（未启用）');
+        o.disabled = !b.available;
+        o.title = b.available ? (b.description || '') : (b.reason || '');
+        sel.appendChild(o);
+      });
+      if (specs.some(b => b.id === prev && b.available)) sel.value = prev;
+      else sel.value = d.default || 'sift';
+      const note = $('stitchBackendNote');
+      const unavailable = specs.filter(b => !b.available);
+      if (note) {
+        note.innerHTML = unavailable.length
+          ? '<b>大模型后端未启用</b>：' + esc(unavailable[0].reason || '') +
+            '。未启用时这些选项被禁用，程序不会偷偷改用 SIFT 出结果。'
+          : '三种方式共用同一套复核指标（画布尺寸、逐像素相似度、徽章守恒），' +
+            '切换后跑同一批截图即可直接对比。纯大模型方式不做几何配准，' +
+            '其「内点数」恒为 0 属正常，请改看逐像素复核分。';
+      }
+    } catch (e) {
+      // 页面刚加载、服务未就绪时保留默认 sift，不阻塞其它功能
+    }
+  }
+
   // 页面打开就先列一次，不必等第一次识别完成
   refreshCorrections();
+  refreshStitchBackends();
 })();
 </script>
 </body>

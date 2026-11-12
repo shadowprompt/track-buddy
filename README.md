@@ -607,6 +607,43 @@ curl -X POST http://127.0.0.1:8848/api/recognize_multi \
 }
 ```
 
+### 拼接方式可切换（A/B 对比）
+
+页面上的「多图拼接方式」下拉提供三种后端，接口用 `stitch_backend` 指定：
+
+| 后端 id | 含义 | 依赖大模型 |
+|---|---|---|
+| `sift`（默认） | 逐对全组合 SIFT + RANSAC + 候选峰 NCC，按 `inliers×ncc` 选最大生成树 | 否 |
+| `llm` | 多模态模型直接判断图间相邻关系与相对位移，**跳过 SIFT**（纯语义粗配准） | 是 |
+| `llm_guided` | 模型只圈定候选图对，变换矩阵仍由 SIFT 精配准 | 是 |
+
+三种后端只在「边的来源」上分叉，之后的连通块、位姿树、贴图、
+逐像素复核、徽章守恒是同一套代码，所以 `verify_score`、
+`canvas_size`、`used`、`badge_conservation` 可以直接横向比较。
+
+大模型后端复用已有的可选配置（`.env`，保存后自行重启服务）：
+
+```dotenv
+LLM_BASE_URL=https://your-endpoint/v1
+LLM_API_KEY=sk-xxxx
+LLM_MODEL=gpt-4o-mini
+```
+
+`GET /api/stitch-backends` 返回各后端是否可用与不可用原因；未配置时
+前端禁用对应选项。选了不可用后端**不会**静默改用 SIFT——结果里会给
+`stitch.ok=false` + `backend_error=true` 并写明原因，避免污染对比数据。
+
+```bash
+curl -X POST http://127.0.0.1:8848/api/recognize_multi \
+  -F "files=@shot1.jpg" -F "files=@shot2.jpg" \
+  -F "city=上海" -F "stitch_backend=llm"
+```
+
+⚠️ 纯大模型模式没做几何配准，`links[].inliers` 恒为 0 是正常值，
+位姿树改用 `weight`（模型置信度）选边。判断拼得好不好请看
+`verify_score`，不要拿内点数与 SIFT 直接比较。按设计它大概率明显
+低于 SIFT——这个模式是用来**量化差距**的，不是承诺更高准确率。
+
 ---
 
 ## 效果

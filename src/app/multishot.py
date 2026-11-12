@@ -62,6 +62,10 @@ class PairLink:
     good: int
     ncc: float
     ui_px: int = 0              # 被判定为静止 UI 而剔除的像素数
+    # 非 SIFT 后端（如大模型语义配准）没有内点/相似度，改用自带的
+    # 置信度参与位姿树选边。None = 沿用 `inliers × ncc` 的几何口径。
+    weight: float | None = None
+    source: str = "sift"        # sift | llm，供前端正确解读诊断数字
 
     @property
     def scale(self) -> float:
@@ -83,6 +87,10 @@ class PairLink:
             "tx": round(float(self.matrix[0, 2]), 1),
             "ty": round(float(self.matrix[1, 2]), 1),
             "ui_px": self.ui_px,
+            "source": self.source,
+            "weight": (
+                round(self.weight, 4) if self.weight is not None else None
+            ),
         }
 
 
@@ -139,10 +147,16 @@ class StitchResult:
     # _verify_canvas() 主动剔除重叠区（那里正常的覆盖关系会让分数偏低），
     # 恰好看不见「徽章被盖掉」这种语义信息丢失，必须单独守一道。
     badge_conservation: dict[str, Any] = field(default_factory=dict)
+    # A/B 对比：本次用的是哪个拼接后端，以及该后端自己的诊断信息。
+    # 默认 sift，保证所有既有调用方看到的字段不变。
+    backend: str = "sift"
+    backend_diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ok": self.ok,
+            "backend": self.backend,
+            "backend_diagnostics": self.backend_diagnostics,
             "shots": [s.to_dict() for s in self.shots],
             "used": self.used,
             "unused": self.unused,
@@ -164,7 +178,14 @@ class StitchResult:
 
 
 def _pose_tree_weight(link: PairLink) -> float:
-    """一条重叠边的置信度权重，口径与 `posegraph.PoseEdge` 保持一致。"""
+    """一条重叠边的置信度权重，口径与 `posegraph.PoseEdge` 保持一致。
+
+    非 SIFT 后端没有几何内点，用后端自带的置信度（0~1）参与选边；
+    这样 `llm` 与 `llm_guided` 得到的画布仍由同一套最大生成树逻辑决定，
+    A/B 时唯一变量是「边的质量」而不是「选树规则」。
+    """
+    if link.weight is not None:
+        return max(1e-6, float(link.weight))
     return max(1.0, float(link.inliers)) * max(0.05, float(link.ncc))
 
 
@@ -591,6 +612,10 @@ def stitch(
     min_ncc: float = 0.15,
     max_pixels: int | None = None,
     pose_graph: bool | None = None,
+    *,
+    links_override: dict[tuple[int, int], PairLink] | None = None,
+    pair_candidates: list[tuple[int, int]] | None = None,
+    backend: str = "sift",
 ) -> StitchResult:
     """把一组截图拼成一张大图。
 
@@ -605,8 +630,17 @@ def stitch(
                   因为超过固定上限就被误判为「画布过大」。
     pose_graph     None = 读 POSE_GRAPH_ENABLED 配置；True/False 显式覆盖。
                    开启后用全部重叠边做全局平差，分摊链式累积漂移。
+
+    可插拔后端（A/B 对比用，默认全部为 None = 原生 SIFT 路径一字不变）
+    ----------------------------------------------------------------
+    links_override   直接注入图间变换，跳过逐对配准与可信度过滤
+    pair_candidates  只在这些图对上跑 SIFT，缩小搜索空间
+    backend          仅用于结果标注，不改变计算
+
+    ⚠️ 三个后端共用后面的连通块 / 位姿树 / 贴图 / 逐像素复核 /
+    徽章守恒，所以 `verify` 等指标可以直接横向比较。
     """
-    res = StitchResult()
+    res = StitchResult(backend=backend)
     n = len(images)
     if n == 0:
         res.notes.append("没有图片")
@@ -623,25 +657,46 @@ def stitch(
         return res
 
     # --- 1. 逐对配准 ---
-    feats = [_describe(im) for im in images]
+    # 三种后端只在这一步分叉：SIFT 全组合 / 后端直接给边 / 后端圈定候选对。
+    # 之后的代码完全一致，保证 A/B 有可比性。
     all_links: dict[tuple[int, int], PairLink] = {}
-    for i, j in itertools.combinations(range(n), 2):
-        link = _match_pair(images[i], images[j], feats[i], feats[j])
-        if link is None:
-            # SIFT 配不上不代表不是重复图——完全相同的两张图
-            # 特征描述子会一一对应，反而可能因 ratio test 全部落选。
-            # 退化情形（两张几乎一样）要用**像素比对**兜底。
-            if _is_near_duplicate(images[i], images[j]):
-                link = PairLink(
-                    i=i, j=j, matrix=np.eye(3), inliers=999,
-                    good=0, ncc=1.0, ui_px=0,
-                )
-                link.matrix[0, 2] = 0.0
-                link.matrix[1, 2] = 0.0
-            else:
-                continue
-        link.i, link.j = i, j
-        all_links[(i, j)] = link
+    if links_override is not None:
+        all_links = {
+            (int(i), int(j)): link
+            for (i, j), link in links_override.items()
+            if 0 <= i < n and 0 <= j < n and i != j
+        }
+        res.notes.append(
+            f"边来源：{backend} 后端直接给出 {len(all_links)} 条关系，"
+            "跳过 SIFT 逐对配准")
+    else:
+        feats = [_describe(im) for im in images]
+        pairs: list[tuple[int, int]] = (
+            list(itertools.combinations(range(n), 2))
+            if pair_candidates is None else
+            [(int(i), int(j)) for i, j in pair_candidates
+             if 0 <= i < n and 0 <= j < n and i != j]
+        )
+        if pair_candidates is not None:
+            res.notes.append(
+                f"只尝试 {len(pairs)} 对候选图对（由 {backend} 后端圈定）")
+        for i, j in pairs:
+            link = _match_pair(images[i], images[j], feats[i], feats[j])
+            if link is None:
+                # SIFT 配不上不代表不是重复图——完全相同的两张图
+                # 特征描述子会一一对应，反而可能因 ratio test 全部落选。
+                # 退化情形（两张几乎一样）要用**像素比对**兜底。
+                if _is_near_duplicate(images[i], images[j]):
+                    link = PairLink(
+                        i=i, j=j, matrix=np.eye(3), inliers=999,
+                        good=0, ncc=1.0, ui_px=0,
+                    )
+                    link.matrix[0, 2] = 0.0
+                    link.matrix[1, 2] = 0.0
+                else:
+                    continue
+            link.i, link.j = i, j
+            all_links[(i, j)] = link
 
     if not all_links:
         res.notes.append("找不到任何可用的重叠关系，无法拼接")
@@ -679,18 +734,29 @@ def stitch(
         }
         n = len(images)
         res.used = [remap[k] for k in res.used if k in remap]
+        # 判重删图会重排索引，注入的边也要同步，否则 links 的 i/j 与
+        # 画布上的图号对不上（诊断信息会指错图）。
+        for (i, j), link in all_links.items():
+            link.i, link.j = i, j
 
     # --- 1.6 可信度过滤 ---
     link_map: dict[tuple[int, int], PairLink] = {}
-    for (i, j), link in all_links.items():
-        if link.inliers < min_inliers or link.ncc < min_ncc:
-            res.notes.append(
-                f"图{i + 1}↔图{j + 1} 配准不可信"
-                f"（内点 {link.inliers}，相似度 {link.ncc:.2f}），已断开"
-            )
-            continue
-        link_map[(i, j)] = link
-        res.links.append(link)
+    if links_override is not None:
+        # 语义边恒为 inliers=0 / ncc=0，含义是「没有几何证据」，
+        # 不是「几何证据不合格」。套用 SIFT 阈值会把所有边误删，
+        # 因此裁决权交给后端，这里原样放行。
+        link_map = dict(all_links)
+        res.links = list(all_links.values())
+    else:
+        for (i, j), link in all_links.items():
+            if link.inliers < min_inliers or link.ncc < min_ncc:
+                res.notes.append(
+                    f"图{i + 1}↔图{j + 1} 配准不可信"
+                    f"（内点 {link.inliers}，相似度 {link.ncc:.2f}），已断开"
+                )
+                continue
+            link_map[(i, j)] = link
+            res.links.append(link)
 
     if not link_map:
         res.notes.append("找不到任何可用的重叠关系，无法拼接")
@@ -737,11 +803,17 @@ def stitch(
         )
         return res
     if tree_edges:
-        res.notes.append(
-            f"位姿树按配准置信度选边：{len(tree_edges)} 条，"
-            f"最弱边内点 {min(n for _p, _c, n, _w in tree_edges)}、"
-            f"权重 {min(w for _p, _c, _n, w in tree_edges):.1f}"
-        )
+        if links_override is not None:
+            res.notes.append(
+                f"位姿树按模型语义置信度选边：{len(tree_edges)} 条，"
+                f"最低置信度 {min(w for _p, _c, _n, w in tree_edges):.2f}"
+                "（本模式无几何内点）")
+        else:
+            res.notes.append(
+                f"位姿树按配准置信度选边：{len(tree_edges)} 条，"
+                f"最弱边内点 {min(n for _p, _c, n, _w in tree_edges)}、"
+                f"权重 {min(w for _p, _c, _n, w in tree_edges):.1f}"
+            )
 
     # --- 3.5 位姿图全局平差（可选） ---
     #
@@ -769,8 +841,7 @@ def stitch(
             edges.append(PoseEdge(
                 i=local[i], j=local[j],
                 dx=float(d[0]), dy=float(d[1]),
-                weight=max(1.0, float(link.inliers))
-                * max(0.05, float(link.ncc)),
+                weight=_pose_tree_weight(link),
             ))
         init_p = np.asarray([T[k][:2, 2] for k in ids], dtype=float)
         pg = optimize_translations(len(ids), edges, init_p,

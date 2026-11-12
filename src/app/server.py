@@ -17,7 +17,15 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import CONFIG, DATA_DIR, ROOT, SRC_ROOT, load_dotenv
 from .cv_utils import imread_unicode
+# 保留这个模块级别名：既有回归测试通过 monkeypatch `server.stitch_images`
+# 注入假拼接结果，默认 SIFT 路径必须继续走它。
 from .multishot import stitch as stitch_images
+from .stitch_backends import (
+    DEFAULT_BACKEND,
+    StitchBackendError,
+    list_backends,
+    run_stitch,
+)
 from .pipeline import RidePipeline, _result_is_self_consistent
 from .route_template import TemplateStore
 from .tmap_proxy import create_proxy_router, make_secret, render_page
@@ -128,6 +136,71 @@ def health() -> dict[str, Any]:
     }
 
 
+@app.get("/api/stitch-backends")
+def stitch_backends() -> dict[str, Any]:
+    """可选的拼接后端清单，供前端渲染下拉与禁用不可用项。
+
+    只查配置、不发网络请求：大模型是否可用以 LLM_BASE_URL / LLM_API_KEY
+    是否配置为依据，真正能不能调通要等实际请求时才知道。
+    """
+    return {"default": DEFAULT_BACKEND, "backends": list_backends()}
+
+
+def _stitch_with_backend(
+    imgs: list[np.ndarray], backend: str,
+) -> tuple[dict[str, Any], np.ndarray | None]:
+    """两个识别入口共用的拼接调用。
+
+    ⚠️ 后端失败时**绝不改用 SIFT 出一张看起来正常的画布**：那会让
+    A/B 对比里「大模型这一栏」偷偷变成 SIFT 的结果，比直接报错更糟。
+    失败时返回 ``ok=False`` 且 ``backend_error=True``，由调用方决定
+    是否继续用第 1 张原图做单图识别，并把原因如实写进结果。
+    """
+    name = (backend or DEFAULT_BACKEND).strip().lower()
+    try:
+        if name == DEFAULT_BACKEND:
+            # 默认路径保持原有调用形态（只传 imgs）：既有回归测试靠
+            # monkeypatch `server.stitch_images` 控制拼接结果。
+            # 计算上与 run_stitch(backend="sift") 等价——后者也是调同一个
+            # multishot.stitch() 且不带任何后端参数。
+            st = stitch_images(imgs)
+            if st is None:
+                return {
+                    "ok": False, "backend": name,
+                    "notes": ["拼接未成功（拼接函数未返回结果）"],
+                }, None
+            info = st.to_dict()
+            info["backend"] = name
+            info["backend_diagnostics"] = {
+                "strategy": "全组合逐对 SIFT + RANSAC + 候选峰 NCC",
+                "pairs_attempted": len(imgs) * (len(imgs) - 1) // 2,
+            }
+            canvas = st.canvas if (st.ok and st.canvas is not None) else None
+            return info, canvas
+        st = run_stitch(imgs, backend=name)
+    except StitchBackendError as exc:
+        return {
+            "ok": False,
+            "backend": name,
+            "backend_error": True,
+            "backend_diagnostics": {},
+            "notes": [
+                f"拼接后端失败：{exc}",
+                "未回退到其它拼接后端；识别将改用第 1 张原图继续，"
+                "本次结果不代表该后端的拼接效果",
+            ],
+        }, None
+    except Exception as exc:  # noqa: BLE001 — 拼接失败不该让整个请求 500
+        return {
+            "ok": False,
+            "backend": name,
+            "notes": [f"拼接失败: {exc}"],
+        }, None
+    info = st.to_dict()
+    canvas = st.canvas if (st.ok and st.canvas is not None) else None
+    return info, canvas
+
+
 def _parse_road_names(raw: str) -> list[str]:
     """把用户输入的路名拆成去重后的列表。
 
@@ -168,6 +241,7 @@ _PAIRED_FAILURE_REASONS: dict[str, str] = {
     "invalid_coordinate": "地理坐标不合法",
     "deduped": "轨迹形状与已有模板重复，本次跳过",
     "template_derived_result": "本次是模板参考级定位，不能再拿去注册模板",
+    "stitch_failed": "细节图拼接未成功，本次没有可用的多图地理真值",
 }
 
 
@@ -357,6 +431,7 @@ async def recognize_multi(
     allow_online: bool = Form(True),
     refine: str = Form("auto"),
     road_names: str = Form(""),
+    stitch_backend: str = Form(DEFAULT_BACKEND),
     overview: UploadFile | None = File(None),
 ) -> JSONResponse:
     """上传**多张**街道级截图，拼成一张大图后识别。
@@ -379,6 +454,10 @@ async def recognize_multi(
     地名看不清）。它**不参与拼接**：与街道级细节图尺度差一个量级，
     混进 ``files`` 会让 SIFT 拼不上甚至触发「退回第 1 张」。P0 只单独
     保存并标记，P2 会用它给拼接画布做全局形状约束。
+
+    ``stitch_backend`` 选择拼接方式（A/B 对比）：``sift`` / ``llm`` /
+    ``llm_guided``，可用清单见 ``GET /api/stitch-backends``。后端不可用时
+    **不会**静默改用 SIFT，结果里以 ``stitch.backend_error`` 明确报失败。
     """
     if not files:
         raise HTTPException(status_code=400, detail="没有收到图片")
@@ -420,23 +499,23 @@ async def recognize_multi(
     stitch_info: dict[str, Any] = {}
     canvas = imgs[0]
     if len(imgs) > 1:
-        try:
-            st = stitch_images(imgs)
-        except Exception as exc:  # noqa: BLE001 — 拼接失败不该让整个请求 500
-            st = None
-            stitch_info = {"ok": False, "notes": [f"拼接失败: {exc}"]}
-        if st is not None:
-            stitch_info = st.to_dict()
-            if st.ok and st.canvas is not None:
-                canvas = st.canvas
-            elif not st.ok:
-                # 拼接不上就退回第一张，但必须告诉用户
-                stitch_info.setdefault("notes", []).append(
-                    "拼接未成功，已退回用第 1 张图识别——"
-                    "请确认各张截图有足够重叠（相邻两张至少约 1/3 重叠）"
-                )
+        stitch_info, stitched = _stitch_with_backend(imgs, stitch_backend)
+        if stitched is not None:
+            canvas = stitched
+        elif not stitch_info.get("backend_error"):
+            # 拼接不上就退回第一张，但必须告诉用户。
+            # 后端自身失败时 notes 已说明原因，这里别再塞 SIFT 的排查建议。
+            stitch_info.setdefault("notes", []).append(
+                "拼接未成功，已退回用第 1 张图识别——"
+                "请确认各张截图有足够重叠（相邻两张至少约 1/3 重叠）"
+            )
     else:
-        stitch_info = {"ok": True, "notes": ["只有一张图，无需拼接"], "used": [0]}
+        stitch_info = {
+            "ok": True,
+            "backend": (stitch_backend or DEFAULT_BACKEND).strip().lower(),
+            "notes": ["只有一张图，无需拼接"],
+            "used": [0],
+        }
 
     # 拼接阶段会整体覆盖 stitch_info，概览图标记必须在那之后补上。
     if overview_path is not None:
@@ -551,6 +630,7 @@ async def recognize(
     allow_online: bool = Form(True),
     refine: str = Form("auto"),
     road_names: str = Form(""),
+    stitch_backend: str = Form(DEFAULT_BACKEND),
     details: list[UploadFile] | None = File(None),
 ) -> JSONResponse:
     """上传**一张概览单图**识别；缩放过高时可补传多张街道级细节图。
@@ -612,6 +692,7 @@ async def recognize(
     n_details = 0
     pair_notes: list[str] = []
     stitch_info: dict[str, Any] = {}
+    stitch_failed = False
     if details:
         imgs: list[np.ndarray] = []
         for f in details:
@@ -634,19 +715,16 @@ async def recognize(
             n_details = len(imgs)
             run_img = imgs[0]
             if len(imgs) > 1:
-                try:
-                    st = stitch_images(imgs)
-                except Exception as exc:  # noqa: BLE001 — 拼接失败不该 500
-                    st = None
-                    pair_notes.append(f"拼接失败: {exc}")
-                if st is not None:
-                    stitch_info = st.to_dict()
-                if st is not None and st.ok and st.canvas is not None:
-                    run_img = st.canvas
+                stitch_info, stitched = _stitch_with_backend(imgs, stitch_backend)
+                if stitched is not None:
+                    run_img = stitched
                 else:
-                    pair_notes.append(
-                        "细节图拼接未成功，已退回用第 1 张识别——"
-                        "请确认相邻两张至少约 1/3 重叠")
+                    stitch_failed = True
+                    pair_notes.extend(stitch_info.get("notes") or [])
+                    if not stitch_info.get("backend_error"):
+                        pair_notes.append(
+                            "细节图拼接未成功，已退回用第 1 张识别——"
+                            "请确认相邻两张至少约 1/3 重叠")
             # 画布必须存 PNG：JPEG 有损会在接缝产生块状噪声。
             canvas_name = f"{shot_id}_stitched.png"
             try:
@@ -675,9 +753,15 @@ async def recognize(
         payload["n_shots"] = n_details
         if stitch_info:
             payload["stitch"] = stitch_info
-        cap = _capture_paired_template(
-            overview_img=img, truth_payload=payload, truth_result=result,
-            city=city.strip(), shot_id=shot_id)
+        if stitch_failed:
+            # 拼接失败时底下只是第 1 张细节图的单图结果。拿它当「多图
+            # 地理真值」注册模板，等于把一张不可信的图固化成以后所有
+            # 同形状图的参考答案——错误会自我强化，必须在这里挡住。
+            cap = {"written": False, "reason": "stitch_failed"}
+        else:
+            cap = _capture_paired_template(
+                overview_img=img, truth_payload=payload, truth_result=result,
+                city=city.strip(), shot_id=shot_id)
         payload["paired_registration"] = cap
         if cap.get("written"):
             pair_notes.append(
@@ -687,11 +771,18 @@ async def recognize(
             pair_notes.append(_paired_failure_note(cap.get("reason")))
         # 识别失败时不能宣称「结果为地理真值」——那会让人以为底下的
         # 轨迹/模板告警只是小问题。
-        pair_notes.insert(0, (
-            f"已用 {n_details} 张细节图拼接配准，本次结果为地理真值"
-            if payload["ok"] else
-            f"已用 {n_details} 张细节图拼接，但本次识别未成功（原因见下方告警）"
-        ))
+        if stitch_failed:
+            # 拼接没成功却说「地理真值」是最容易误导人的一句：
+            # 底下其实只是第 1 张细节图的单图识别结果。
+            pair_notes.insert(0, (
+                f"已收到 {n_details} 张细节图，但本次拼接未成功，"
+                "结果基于第 1 张图识别，不能作为地理真值"))
+        else:
+            pair_notes.insert(0, (
+                f"已用 {n_details} 张细节图拼接配准，本次结果为地理真值"
+                if payload["ok"] else
+                f"已用 {n_details} 张细节图拼接，但本次识别未成功（原因见下方告警）"
+            ))
         payload["warnings"] = _explain_badge_loss(
             list(result.warnings) + pair_notes,
             stitch_info.get("badge_conservation"),

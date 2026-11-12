@@ -5731,3 +5731,156 @@ cur=1 又吃下 (1,2)、(1,4, 内点 21)，cur=5 吃下 (3,5, 内点 46)、
   过滤进入 `res.links`（只是不再被选树采用）；角度异常剔除留待后续。
 * 🟡 §22.45 的 `low_confidence` 模板写入死锁、§22.47 的单条删除
   接口、离群行标签与纠正入口、徽章圆度判据仍待做。
+
+## §22.51 多图拼接后端可插拔：SIFT / 大模型 A/B 对比（2026-11-13）
+
+### 起因
+
+11-12 晚用户问「把多图拼接交给大模型做，效果会更好吗」。当时的回答是
+**不会更好**：拼接要的是 3×3 变换矩阵，VLM 只能给离散语义判断，给不出
+稳定的像素级坐标（§21.5、§22.17.2 已有实测；公开基准 CrossPoint-Bench
+里 Gemini-2.5-Pro 从离散「对应判断」60.26% 掉到连续「坐标指认」16.41%，
+人类 93.63% 而通用 VLM 只有 12.78%）。而且近期 4 次拼接事故全是
+确定性算法缺陷，不是语义理解不足。
+
+用户随后要求把这个结论做成**可实测的开关**：把拼接能力模块化，让用户
+自己选「项目现用方式」或「大模型方式」，跑同一批截图对比效果。
+
+### 设计：唯一变量是「边从哪来」
+
+`multishot.stitch()` 拿到 `link_map` 之后的连通块、位姿树、贴图、
+逐像素复核、徽章守恒与后端完全无关。所以只把第一步抽成可插拔后端，
+三种方式的**下游计算逐字相同**，`verify` / `verify_score` /
+`canvas_size` / `badge_conservation` 才具备可比性。
+
+| 后端 | 边的来源 | 跳过 SIFT |
+|---|---|---|
+| `sift`（默认） | 21 对全组合 SIFT + RANSAC + 候选峰 NCC | 否 |
+| `llm` | 多模态模型判断相邻关系与相对位移比例，直接注入 `PairLink` | 是 |
+| `llm_guided` | 模型只圈定候选图对，变换仍由 SIFT 精配准 | 否 |
+
+新增 `src/app/stitch_backends/`：`base.py`（`StitchPlan` / `BackendSpec` /
+异常）、`registry.py`（注册 + `run_stitch()` + `list_backends()`）、
+`sift.py`、`llm.py`、`__init__.py`。服务端统一由 `_stitch_with_backend()`
+分派：默认 `sift` 保留 `server.stitch_images` 的调用形态（既有回归测试靠
+monkeypatch 这个符号注入假拼接结果），其余后端走 `run_stitch()`；两条路
+最终都调同一个 `multishot.stitch()`。新增后端只要实现 `plan()` 并
+`register()`，前端由能力清单自动列出。
+
+#### 纯大模型后端怎么给变换
+
+不要求 VLM 输出像素坐标，只让它输出**离散方位 + 相对比例**：
+
+```json
+{"pairs": [{"i": 1, "j": 2, "dx_ratio": 0.75,
+            "dy_ratio": 0.05, "confidence": 0.8}]}
+```
+
+缩略图统一缩到最长边 768px 并打 `#1..#N` 角标，降低 token 成本、
+让模型能对应编号。代码校验编号范围、排除 0 位移假解与超范围值后，
+转成 `matrix.tx = -dx_ratio × 图宽`。
+
+⚠️ **方向用真实落盘结果校准过**：11-12 的结果里 `link(0→1).tx=+866`，
+而画布上 `shots[1].x0` 比 `shots[0].x0` 小 867px——「j 在 i 右侧」
+对应的矩阵平移是**负**号。写反了会得到镜像画布且 `verify` 全低。
+
+#### 数值诚实性
+
+语义边没有做过几何配准，所以 `inliers=0 / ncc=0`；这不是「匹配失败」，
+而是「没有几何证据」。`PairLink` 新增 `weight`（模型置信度）与
+`source`（`sift` / `llm`），`_pose_tree_weight()` 在 `weight` 非 None 时
+改用它选树，位姿图平差权重同步改用该函数。前端对 `source=llm` 的边
+显示「模型置信度」而不是「0 内点」，也不套 SIFT 的「重叠偏弱」判据。
+
+### 🔴 一条硬规矩：绝不静默回退
+
+用户选了大模型后端却因为「没配 key / 调用失败 / 返回空」偷偷用 SIFT
+出一张正常画布，A/B 表里「大模型」这一栏就变成 SIFT 的成绩，而且看不出来
+——比直接报错更糟。因此：
+
+* 配置检查、模型失败、空输出一律走 `StitchPlan.error` →
+  `StitchBackendError` → 服务端 `stitch.ok=false` + `backend_error=true`；
+* 失败文案明写「未回退到其它拼接后端」，识别改用第 1 张原图继续；
+* 前端从 `/api/stitch-backends` 拉清单，不可用项直接 `disabled`；
+* 测试专门锁住这条（`test_stitch_backends.py` / `test_server_stitch_backend.py`）。
+
+### 顺带修掉的误导
+
+`recognize()` 的配对模式原来无论拼接是否成功都会写
+「已用 N 张细节图拼接配准，本次结果为地理真值」。拼接失败时底下其实只是
+第 1 张细节图的单图识别结果。现在 `stitch_failed=True` 时改写成
+「拼接未成功，结果基于第 1 张图识别，不能作为地理真值」。
+
+更严重的是同一分支还会调 `_capture_paired_template()`，把这份**单图结果**
+当「多图地理真值」注册成模板——模板一旦写错会带偏以后所有形状接近的
+概览图，属于错误自我强化。现在拼接失败直接返回
+`{"written": False, "reason": "stitch_failed"}` 并跳过注册，
+`_PAIRED_FAILURE_REASONS` 增加对应文案。这条与本次新增的「后端失败」
+路径直接相关：以前拼接失败较少见，加了可切换后端后会更常出现。
+
+### 接入点
+
+* `multishot.py`：`stitch()` 新增 `links_override` / `pair_candidates` /
+  `backend` 三个**仅关键字**参数；三者取默认值时原生 SIFT 路径一字不变。
+  `StitchResult` 增加 `backend` / `backend_diagnostics` 并进 `to_dict()`。
+* `server.py`：两个识别入口各加 `stitch_backend: Form(DEFAULT_BACKEND)`；
+  新增 `GET /api/stitch-backends` 与共用的 `_stitch_with_backend()`。
+* `web/index.html`：新增「多图拼接方式」下拉（仅多图生效）、结果卡片展示
+  本次后端与模型诊断（模型名 / 耗时 / 采纳与剔除的关系数）。
+* 配置**复用**已有的 `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`，
+  没有新增任何环境变量（遵守「一个功能只用一个环境变量」）。
+
+### 一次真实回归：模块级符号也是接口
+
+第一次全量 pytest 出现 **1 failed + 14 errors**，全是同一条：
+
+```
+AttributeError: module 'app.server' has no attribute 'stitch_images'
+```
+
+根因：接入后端注册表时把 `from .multishot import stitch as stitch_images`
+删掉换成了 `run_stitch`，而 `test_multi_refine.py` /
+`test_paired_registration.py` / `test_route_template.py` /
+`test_badge_conservation.py` 共 15 处 fixture 靠 monkeypatch
+`server.stitch_images` 注入假拼接结果来控制服务端行为。
+
+修复：保留别名，默认 `sift` 路径直接调 `stitch_images(imgs)`，并在结果里
+补上 `backend` / `backend_diagnostics`（计算与 `run_stitch(backend="sift")`
+等价）；新增 `test_default_sift_path_keeps_legacy_patch_point` 锁住契约。
+另外把 `test_paired_registration.py` 中「拼接返回 None 却期望模板注册
+成功」的不真实桩改成成功画布，以配合新的拼接失败护栏。
+
+**教训**：换调用入口之前先搜测试里的 monkeypatch 目标；模块级符号同样是
+对外契约，不能当内部实现随手删。
+
+### 验证
+
+* 合成底图（图 2 是图 1 右移 200px 的裁剪）：注入语义边后画布 600×240、
+  `shots.x0=[0,200]`、`verify` 全 1.0，方向与真实几何一致；
+  monkeypatch `_match_pair` 抛异常仍成功 → 证明确实跳过 SIFT。
+* 新增 23 项测试（后端 13 / 服务端 8 / 前端 2），覆盖注册表、输出解析、
+  变换方向、失败不回退、接口 Form 参数、OpenAPI、前端禁用项与渲染文案、
+  「拼接失败不得注册配对模板」以及「默认路径仍可被 monkeypatch」的契约。
+* 全量 pytest（Python 3.11）：**491 passed / 5 warnings（279.27 s）**，
+  较 §22.50 的 468 净增 23 项（即本轮新增测试），无回归。5 个 warning
+  为既有 2 个 `test_frontend.py` 写法提示 + 3 个 tmap_proxy 的 OpenAPI
+  重复 operation id（由新增的 OpenAPI 契约测试触发，非本次引入的问题）。
+* **未启动、未重启 8848 服务**（用户自行重启）；未调真实大模型接口
+  （当前 `.env` 只有 `AMAP_KEY` / `TIANDITU_API_KEY` / `MAP_GEOCODING_ORDER`，
+  没有 LLM_*），所有 LLM 调用均用 StubClient。
+
+### 边界与未做
+
+* 🔴 **真实大模型效果尚未实测**：需要用户自行在 `.env` 配好
+  `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` 并重启服务，再用同一批
+  截图分别跑 `sift` / `llm` / `llm_guided`。按设计 `llm` 的
+  `verify_score` 大概率明显低于 SIFT，这个后端是量化差距用的，
+  不是承诺更高准确率。
+* 🟡 `llm` 一次最多 16 张图（VLM 上下文与 token 成本）；缩略图最长边
+  固定 768px，`LLM_TIMEOUT` 沿用现有 25s，多图时可能超时。
+* 🟡 语义边只建模**平移**，不处理缩放、旋转与透视；App 截图缩放级别
+  不一致时误差会直接进入画布。
+* 🟡 模型原始响应截断到 2000 字符放进 `backend_diagnostics.raw_response`，
+  便于复盘但不落盘；如需长期留档要另做归档。
+* 🟡 §22.45 的 `low_confidence` 模板写入死锁、§22.47 单条删除接口、
+  离群行标签与纠正入口、徽章圆度判据仍待做。

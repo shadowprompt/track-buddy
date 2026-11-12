@@ -281,7 +281,16 @@ def server_stub(monkeypatch, tmp_path):
             polyline=np.asarray(px[::-1], float), start_marker=(0, 0),
             end_marker=(1, 1), mask=np.zeros((10, 10), np.uint8),
             bbox=(0, 0, 10, 10), confidence=0.95, notes=[]))
-    monkeypatch.setattr(S, "stitch_images", lambda imgs: None)
+    # 这个 fixture 验证的是「配对路径会注册概览图模板」，需要拼接成功。
+    # 以前打成 None（拼接失败）是不真实的设定：现在拼接失败会被
+    # 「不能拿单图结果当多图真值注册模板」的护栏挡下，故补一个成功画布。
+    monkeypatch.setattr(
+        S, "stitch_images",
+        lambda imgs: SimpleNamespace(
+            ok=True, canvas=np.zeros((10, 10, 3), np.uint8),
+            to_dict=lambda: {"ok": True, "notes": [], "used": [0, 1]},
+        ),
+    )
     return store, fake
 
 
