@@ -47,8 +47,21 @@ out.sift = stitchBlock(Object.assign({}, base, {backend: 'sift'}));
 out.llm = stitchBlock(Object.assign({}, base, {
   backend: 'llm',
   backend_diagnostics: {model: 'stub-vlm', elapsed_ms: 12,
-                        pairs_accepted: 1, pairs_rejected: 0},
+                        pairs_accepted: 1, pairs_rejected: 0,
+                        order: [2, 1], chain_complete: true,
+                        connected_components: 1, direction_conflict_count: 0,
+                        evidence: [{i: 2, j: 1,
+                                    text: '右侧出边沿江向东，左侧入边同一条江'}]},
   links: [{i: 0, j: 1, inliers: 0, ncc: 0, source: 'llm', weight: 0.8}],
+}));
+out.conflict = stitchBlock(Object.assign({}, base, {
+  backend: 'llm',
+  backend_diagnostics: {model: 'stub-vlm', pairs_accepted: 6,
+                        order: [1, 2, 3, 4, 5, 6, 7], chain_complete: false,
+                        connected_components: 3, direction_conflict_count: 2,
+                        missing_images: [5, 7],
+                        evidence: [{i: 1, j: 2, text: '未给出轨迹接续依据'}]},
+  links: [],
 }));
 out.failed = stitchBlock(Object.assign({}, base, {
   backend: 'llm', ok: false, backend_error: true,
@@ -117,6 +130,9 @@ def test_static_contract() -> None:
     assert "l.source === 'llm'" in h
     assert "st.backend_error" in h
     assert "bdg.error" in h          # 失败原因要留在结果卡片里
+    assert "bdg.order" in h          # 识别出的全局链条要可见
+    assert "方向冲突" in h
+    assert "轨迹接续" in h
 
 
 def test_rendered_output_and_picker() -> None:
@@ -143,6 +159,10 @@ def test_rendered_output_and_picker() -> None:
     llm = out["llm"]
     assert "大模型语义配准" in llm
     assert "模型诊断" in llm and "stub-vlm" in llm
+    assert "识别顺序 #2→#1" in llm
+    assert "链条完整" in llm
+    assert "轨迹接续 #2→#1" in llm
+    assert "右侧出边沿江向东" in llm
     assert "模型置信度 0.80" in llm
     assert "无几何内点" in llm
     # 内点 0 是「没做几何配准」，不是「重叠质量差」
@@ -151,6 +171,11 @@ def test_rendered_output_and_picker() -> None:
     assert "本次失败" in out["failed"]
     assert "模型诊断" in out["failed"]
     assert "max_tokens must be at most 65536" in out["failed"]
+
+    c = out["conflict"]
+    assert "识别顺序 #1→#2→#3→#4→#5→#6→#7" in c
+    assert "链条不完整（3 块）" in c
+    assert "方向冲突 2 条" in c
 
     p = out["picker"]
     assert p["url"] == "/api/stitch-backends"

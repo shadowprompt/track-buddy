@@ -621,6 +621,20 @@ curl -X POST http://127.0.0.1:8848/api/recognize_multi \
 逐像素复核、徽章守恒是同一套代码，所以 `verify_score`、
 `canvas_size`、`used`、`badge_conservation` 可以直接横向比较。
 
+🔴 **提示词 v2 要求模型先「识别一条链」**：`llm` / `llm_guided` 共用
+`trajectory-chain-v2`，要求模型把轨迹线的出边↔入边接续当作**唯一主证据**、
+禁止只凭同名道路 / POI 判相邻；先输出 `order`（1..n 的排列，即沿轨迹的
+真实先后），再只输出相邻两图的边，位移主导轴必须同号，每条边必填
+`evidence`。结果卡片会显示「识别顺序」「链条完整 / 不完整（N 块）」
+「方向冲突 N 条」以及前两条轨迹接续依据；`backend_diagnostics` 里对应
+`order` / `chain_complete` / `connected_components` / `missing_images` /
+`direction_conflicts` / `prompt_version`。`llm_guided` 还会把 `order` 的
+相邻图对补齐交给 SIFT 验证，避免模型只给几条边导致图永远连不全。
+
+只想测「识别」这一步，建议按 `llm_guided` → `llm` 的顺序：前者把顺序
+识别交给模型、像素级变换仍由 SIFT 给；后者连位移也由模型估，两次结果
+相减就能分离「顺序识别误差」与「坐标估计误差」。
+
 大模型后端复用已有的可选配置（`.env`，保存后自行重启服务）：
 
 ```dotenv

@@ -755,10 +755,32 @@ __WB_AMAP_SDK__
       if (typeof bdg.elapsed_ms === 'number') bits.push('耗时 ' + bdg.elapsed_ms + 'ms');
       if (typeof bdg.pairs_accepted === 'number') bits.push('采纳 ' + bdg.pairs_accepted + ' 条关系');
       if (bdg.pairs_rejected) bits.push('剔除 ' + bdg.pairs_rejected + ' 条');
+      // 「识别」这一步的结论要直接看得见：全局顺序、链条是否完整、
+      // 位移方向有没有自相矛盾。折叠画布本身看不出是哪一步错了。
+      if (Array.isArray(bdg.order) && bdg.order.length) {
+        bits.push('识别顺序 ' + bdg.order.map(k => '#' + Number(k)).join('→'));
+      } else if (bdg.order_error) {
+        bits.push('顺序无效 ' + esc(String(bdg.order_error).slice(0, 100)));
+      }
+      if (typeof bdg.connected_components === 'number') {
+        bits.push(bdg.chain_complete ? '链条完整' :
+          '<b style="color:#c2410c">链条不完整（' + bdg.connected_components + ' 块）</b>');
+      }
+      if (bdg.direction_conflict_count) {
+        bits.push('<b style="color:#c2410c">方向冲突 ' +
+          bdg.direction_conflict_count + ' 条</b>');
+      }
       if (bdg.error) bits.push('错误 ' + esc(String(bdg.error).slice(0, 160)));
       if (bits.length) {
         backendLine += '<div class="kv"><span>模型诊断</span><span>' +
           bits.join(' · ') + '</span></div>';
+      }
+      const evs = Array.isArray(bdg.evidence) ? bdg.evidence.slice(0, 2) : [];
+      if (evs.length) {
+        backendLine += evs.map(e =>
+          '<div class="kv"><span>轨迹接续 #' + Number(e.i) + '→#' + Number(e.j) +
+          '</span><span>' + esc(String(e.text || '').slice(0, 140)) + '</span></div>'
+        ).join('');
       }
     }
     let h = backendLine + '<div class="kv"><span>截图拼接</span><span>';
