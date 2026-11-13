@@ -15,7 +15,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from app.llm import DEFAULT_MAX_TOKENS, LLMClient  # noqa: E402
+from app.llm import (  # noqa: E402
+    DEFAULT_MAX_TOKENS,
+    MAX_TOKENS_CEILING,
+    LLMClient,
+)
 from app.stitch_backends.llm import plan_llm  # noqa: E402
 
 
@@ -76,7 +80,8 @@ def test_stream_payload_and_sse_joining(monkeypatch) -> None:
     assert res.data["notes"] == "中文说明"          # UTF-8 不能解成乱码
     assert "这段是思考" not in res.text              # reasoning_content 不得混入
     assert captured["json"]["stream"] is True
-    assert captured["json"]["max_tokens"] == DEFAULT_MAX_TOKENS == 16384
+    assert captured["json"]["max_tokens"] == min(
+        DEFAULT_MAX_TOKENS, MAX_TOKENS_CEILING)
     assert captured["json"]["temperature"] == 0
     assert captured["stream"] is True
     assert captured["timeout"] == 600.0
@@ -105,6 +110,52 @@ def test_plain_json_endpoint_still_works(monkeypatch) -> None:
 def test_timeout_default_is_ten_minutes(monkeypatch) -> None:
     monkeypatch.delenv("LLM_TIMEOUT", raising=False)
     assert LLMClient().timeout == 600.0
+
+
+def test_max_tokens_stays_within_endpoint_limit() -> None:
+    """端点实测硬上限 65536；默认 16384 必须落在里面。"""
+    assert MAX_TOKENS_CEILING == 65536
+    assert 0 < DEFAULT_MAX_TOKENS <= MAX_TOKENS_CEILING
+
+
+def test_max_tokens_is_clamped_even_if_constant_is_raised(monkeypatch) -> None:
+    """本地把常量调成 512000 也不能真发出去（实测会 HTTP 400）。
+
+    2026-11-13 09:28 的真实事故：有人把 ``DEFAULT_MAX_TOKENS`` 手动改成
+    512000，重启后纯 VLM 后端每次都立刻返回
+    ``invalid_parameter: Field 'max_tokens' must be at most 65536``。
+    运行时钳制保证这类手调不再让整个后端必然失败。
+    """
+    c = _client(monkeypatch)
+    monkeypatch.setattr("app.llm.DEFAULT_MAX_TOKENS", 512000)
+    captured: dict = {}
+
+    def fake_post(url, **kwargs):
+        captured.update(kwargs)
+        return _FakeResponse(
+            lines=_sse([{"choices": [{"delta": {"content": '{"ok":true}'}}]}]),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    c._session.post = fake_post
+    res = c.chat_json("system", "user")
+    assert res.ok, res.error
+    assert captured["json"]["max_tokens"] == MAX_TOKENS_CEILING == 65536
+
+
+def test_http_400_keeps_the_reason_instead_of_truncating_it(monkeypatch) -> None:
+    """错误文本不能再只留前 200 字：参数原因常在 JSON 后半段。"""
+    c = _client(monkeypatch)
+    body = "x" * 260 + "Field 'max_tokens' must be at most 65536"
+    c._session.post = lambda url, **kw: _FakeResponse(
+        status_code=400,
+        headers={"content-type": "application/json"},
+        text=body,
+    )
+    res = c.chat_json("system", "user")
+    assert not res.ok
+    assert "HTTP 400" in res.error
+    assert "must be at most 65536" in res.error
 
 
 def test_stream_response_feeds_semantic_pairs(monkeypatch) -> None:

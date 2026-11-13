@@ -755,6 +755,7 @@ __WB_AMAP_SDK__
       if (typeof bdg.elapsed_ms === 'number') bits.push('耗时 ' + bdg.elapsed_ms + 'ms');
       if (typeof bdg.pairs_accepted === 'number') bits.push('采纳 ' + bdg.pairs_accepted + ' 条关系');
       if (bdg.pairs_rejected) bits.push('剔除 ' + bdg.pairs_rejected + ' 条');
+      if (bdg.error) bits.push('错误 ' + esc(String(bdg.error).slice(0, 160)));
       if (bits.length) {
         backendLine += '<div class="kv"><span>模型诊断</span><span>' +
           bits.join(' · ') + '</span></div>';

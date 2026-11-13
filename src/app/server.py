@@ -146,6 +146,16 @@ def stitch_backends() -> dict[str, Any]:
     return {"default": DEFAULT_BACKEND, "backends": list_backends()}
 
 
+def _canvas_preview_id(shot_id: str, really_stitched: bool) -> str:
+    """拼接画布预览的文件名（不含扩展名）。
+
+    只有真的拼出画布才叫 ``_stitched``；退回第 1 张原图时叫
+    ``_fallback``。2026-11-13 多次出现「文件名 stitched、像素却与原图
+    完全一致」的误导，两个识别入口统一走这里，避免各写一套判据。
+    """
+    return f"{shot_id}_stitched" if really_stitched else f"{shot_id}_fallback"
+
+
 def _stitch_with_backend(
     imgs: list[np.ndarray], backend: str,
 ) -> tuple[dict[str, Any], np.ndarray | None]:
@@ -179,11 +189,15 @@ def _stitch_with_backend(
             return info, canvas
         st = run_stitch(imgs, backend=name)
     except StitchBackendError as exc:
+        # 失败也要把模型诊断带出去：否则页面上「模型诊断」整块是空的，
+        # 用户只能翻 last_result.json 的 warnings 才知道是超时还是参数被拒。
+        diag = dict(getattr(exc, "diagnostics", None) or {})
+        diag["error"] = str(exc)
         return {
             "ok": False,
             "backend": name,
             "backend_error": True,
-            "backend_diagnostics": {},
+            "backend_diagnostics": diag,
             "notes": [
                 f"拼接后端失败：{exc}",
                 "未回退到其它拼接后端；识别将改用第 1 张原图继续，"
@@ -498,6 +512,7 @@ async def recognize_multi(
     # --- 拼接 ---
     stitch_info: dict[str, Any] = {}
     canvas = imgs[0]
+    stitched: np.ndarray | None = None
     if len(imgs) > 1:
         stitch_info, stitched = _stitch_with_backend(imgs, stitch_backend)
         if stitched is not None:
@@ -563,7 +578,15 @@ async def recognize_multi(
     # 接缝处产生可见的块状噪声，还会让底图的街道注记糊掉，
     # 反而更难判断。PNG 无损，画布又只是白底+拼接内容，体积可接受。
     try:
-        canvas_shot_id = f"{shot_id}_stitched"
+        # 只有真正拼出画布才叫 _stitched。拼接失败/只有一张图时，这张
+        # 「画布」其实就是第 1 张原图；叫 stitched 会让人误以为拼接成功
+        # （2026-11-13 多次出现：文件名 stitched，像素却与原图完全一致）。
+        really_stitched = (
+            len(imgs) > 1
+            and stitch_info.get("ok") is True
+            and stitched is not None
+        )
+        canvas_shot_id = _canvas_preview_id(shot_id, really_stitched)
         cv2.imwrite(str(UPLOAD_DIR / f"{canvas_shot_id}.png"), canvas)
         payload["stitched_url"] = f"/api/shots/{canvas_shot_id}.png"
     except Exception:
@@ -726,7 +749,10 @@ async def recognize(
                             "细节图拼接未成功，已退回用第 1 张识别——"
                             "请确认相邻两张至少约 1/3 重叠")
             # 画布必须存 PNG：JPEG 有损会在接缝产生块状噪声。
-            canvas_name = f"{shot_id}_stitched.png"
+            # 拼接未成功时 run_img 只是第 1 张原图，别再叫 _stitched。
+            canvas_name = _canvas_preview_id(
+                shot_id, n_details > 1 and not stitch_failed,
+            ) + ".png"
             try:
                 cv2.imwrite(str(UPLOAD_DIR / canvas_name), run_img)
                 canvas_url = f"/api/shots/{canvas_name}"

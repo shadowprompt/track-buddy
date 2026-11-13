@@ -98,7 +98,9 @@ def run_stitch(
 
     plan = spec.plan(images, cfg=c, client=llm)
     if plan.error:
-        raise StitchBackendError(f"[{spec.label}] {plan.error}")
+        raise StitchBackendError(
+            f"[{spec.label}] {plan.error}", plan.diagnostics,
+        )
 
     res = _stitch(
         images,

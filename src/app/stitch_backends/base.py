@@ -61,7 +61,18 @@ class BackendSpec:
 
 
 class StitchBackendError(Exception):
-    """后端不可用或执行失败。绝不回退到其它后端。"""
+    """后端不可用或执行失败。绝不回退到其它后端。
+
+    ``diagnostics`` 带上失败那一刻的模型诊断（模型名、耗时、原始错误、
+    已解析到哪一步）。调用方要把它放进结果里，否则 A/B 失败时页面上
+    「模型诊断」整块是空的，只能去翻 ``last_result.json`` 的 warnings。
+    """
+
+    def __init__(
+        self, message: str, diagnostics: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.diagnostics: dict[str, Any] = dict(diagnostics or {})
 
 
 class UnknownStitchBackend(StitchBackendError):

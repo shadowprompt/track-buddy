@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import inspect
 import json
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from app.server import (
+    _canvas_preview_id,
     _stitch_with_backend,
     app,
     recognize,
@@ -109,6 +112,56 @@ def test_stitch_failure_note_explains_why_no_template() -> None:
     assert "拼接未成功" in note
     assert "地理真值" in note
     assert "下次同类图仍需补传" in note
+
+
+def test_run_stitch_carries_plan_diagnostics_on_error(monkeypatch) -> None:
+    """后端报错时诊断不能丢，否则页面「模型诊断」整块是空的。"""
+    from app.stitch_backends import base, registry
+
+    diag = {"model": "gpt-6.1-sol", "elapsed_ms": 440, "pairs_accepted": 0}
+    plan = base.StitchPlan(error="HTTP 400 invalid_parameter", diagnostics=diag)
+    spec = SimpleNamespace(
+        id="llm", label="大模型语义配准", requires_llm=False,
+        plan=lambda *a, **k: plan,
+    )
+    monkeypatch.setattr(registry, "get_backend", lambda name: spec)
+    with pytest.raises(base.StitchBackendError) as ei:
+        registry.run_stitch(_imgs(), backend="llm")
+    assert ei.value.diagnostics == diag
+
+
+def test_backend_failure_exposes_diagnostics_in_result(monkeypatch) -> None:
+    from app.stitch_backends.base import StitchBackendError
+
+    diag = {
+        "model": "gpt-6.1-sol", "elapsed_ms": 440,
+        "pairs_accepted": 0, "error": "旧值会被覆盖",
+    }
+
+    def boom(images, backend):
+        raise StitchBackendError(
+            "[大模型语义配准（纯 VLM）] HTTP 400: "
+            "Field 'max_tokens' must be at most 65536",
+            diag,
+        )
+
+    monkeypatch.setattr("app.server.run_stitch", boom)
+    info, canvas = _stitch_with_backend(_imgs(), "llm")
+    assert info["ok"] is False and canvas is None
+    assert info["backend_error"] is True
+    bd = info["backend_diagnostics"]
+    assert bd["model"] == "gpt-6.1-sol"
+    assert bd["elapsed_ms"] == 440
+    assert "must be at most 65536" in bd["error"]
+    assert any("未回退到其它拼接后端" in n for n in info["notes"])
+
+
+def test_canvas_preview_id_distinguishes_real_stitch_from_fallback() -> None:
+    """拼接失败时预览图不能还叫 _stitched（会让人误以为拼上了）。"""
+    assert _canvas_preview_id("abc", True) == "abc_stitched"
+    assert _canvas_preview_id("abc", False) == "abc_fallback"
+    for fn in (recognize_multi, recognize):
+        assert "_canvas_preview_id(" in inspect.getsource(fn)
 
 
 def test_stitch_failure_never_registers_a_paired_template() -> None:

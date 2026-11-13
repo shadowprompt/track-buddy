@@ -631,13 +631,20 @@ LLM_TIMEOUT=600
 ```
 
 🔴 **请求必须用流式**：`app/llm.py` 固定发 `stream=True` 并解析 SSE，
-`max_tokens=16384`，`LLM_TIMEOUT` 默认 600 秒（10 分钟）。这是 2026-11-13
-实测出来的：推理型模型跑 7 张图约需 **59 秒**（`reasoning_tokens=2668`），
+`LLM_TIMEOUT` 默认 600 秒（10 分钟）。这是 2026-11-13
+实测出来的：推理型模型跑 7 张图约需 **59~95 秒**（`reasoning_tokens=2668`），
 非流式请求会被中转网关在约 30 秒掐断（`HTTP 102` 空响应），
 `max_tokens=1200` 则会在思考阶段就被截断、拿不到 JSON。
 响应里的 `reasoning_content` 会被丢弃，只拼 `content` 分片。
 模型名请填写**实测能出结果**的那个：带 `chat_template_kwargs.thinking=true`
 的高配模型在同样的 7 图任务上跑满 600 秒仍只有 reasoning、没有答案。
+
+🔴 **`max_tokens` 有端点硬上限 65536**：实测填 512000 会立刻返回
+`HTTP 400 invalid_parameter`（`Field 'max_tokens' must be at most 65536`），
+纯 VLM 后端每次都失败。请求体用
+`min(DEFAULT_MAX_TOKENS, MAX_TOKENS_CEILING)` 做运行时钳制——即使本地把
+常量手动调大也不会再触发这个错误。默认值 65536；实测 16384 对 7 图任务
+已经够用，调大不会更准，只会让模型有空间输出更长。
 
 `GET /api/stitch-backends` 返回各后端是否可用与不可用原因；未配置时
 前端禁用对应选项。选了不可用后端**不会**静默改用 SIFT——结果里会给

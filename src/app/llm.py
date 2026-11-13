@@ -45,7 +45,12 @@ import requests
 # 推理型多模态模型会把绝大部分 token 花在 reasoning 上（实测 7 张图任务
 # reasoning_tokens=2668 / completion_tokens=2794）。上限给小了，模型在
 # 「想完」之前就被截断，content 为空，JSON 永远解析不出来。
-DEFAULT_MAX_TOKENS = 16384
+DEFAULT_MAX_TOKENS = 65536
+# 中转端点的硬上限。实测 max_tokens=512000 会立刻返回
+# HTTP 400 invalid_parameter（"Field 'max_tokens' must be at most 65536"），
+# 65536 / 16384 都是 200 SSE。运行时再钳一次：即使本地把这个常量
+# 调大（想「给足预算」），也不会让整个大模型后端必然失败。
+MAX_TOKENS_CEILING = 65536
 # 默认请求超时（秒）。这个值在流式请求下既是「单次 read 超时」，也是
 # 整次调用的总时长上限；25 秒对推理型模型的 7 图任务必然不够。
 DEFAULT_TIMEOUT = 600.0
@@ -140,7 +145,7 @@ class LLMClient:
             "model": self.model,
             "messages": messages,
             "temperature": 0,
-            "max_tokens": DEFAULT_MAX_TOKENS,
+            "max_tokens": min(DEFAULT_MAX_TOKENS, MAX_TOKENS_CEILING),
             # 非流式请求实测在 ~30s 被网关掐断（HTTP 102 空响应/一直挂住），
             # 而 7 张图的推理要 ~59s；流式分片能持续保持连接，是跑完的前提。
             "stream": True,
@@ -155,7 +160,7 @@ class LLMClient:
                 stream=True,
             )
             if r.status_code != 200:
-                res.error = f"HTTP {r.status_code}: {r.text[:200]}"
+                res.error = f"HTTP {r.status_code}: {r.text[:500]}"
                 self.last_error = res.error
                 return res
             res.text = self._read_chat_content(r, deadline)

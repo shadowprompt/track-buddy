@@ -5951,3 +5951,86 @@ AttributeError: module 'app.server' has no attribute 'stitch_images'
 * **推理型模型的 token 预算要留给 reasoning**：只看答案长度设
   `max_tokens` 会静默拿到空 `content`。
 * 本轮仍**未重启 8848 服务**，验证只用离线脚本 + pytest；重启交给用户。
+
+---
+
+### 22.53 `max_tokens` 超端点上限：一次「参数越大越好」的手调事故
+
+#### 现象
+
+09:27:38 用户重启服务后跑 7 图 `llm` 后端，09:28:24 落盘结果：
+
+```
+stitch.backend        = "llm"
+stitch.ok             = false
+stitch.backend_error  = true
+notes[0] = "拼接后端失败：[大模型语义配准（纯 VLM）] 大模型调用失败：
+            HTTP 400: {"error":{"code":"invalid_parameter",
+            "message":"Field 'max_tokens' must be at most 65536", ...
+```
+
+和前两次不同：这次**不是超时**，`elapsed_ms` 只有 24569（整个识别），
+模型请求是 0.44 秒就被拒了。接口 `ok=true` 仍是第 1 张原图的单图识别，
+`paired_registration = {"written": false, "reason": "stitch_failed"}`
+（§22.51 的保护继续生效）；`shot_url` 又指向像素与原图完全一致的
+`_stitched.png`。
+
+#### 根因
+
+`src/app/llm.py` 存在一处**未提交的本地修改**，把上一节刚定下的
+`DEFAULT_MAX_TOKENS = 16384` 改成了 `512000`（文件 mtime 09:27，与服务
+启动时间吻合）。对端点做最小请求分级实测：
+
+| max_tokens | 结果 |
+|---|---|
+| 512000 | **HTTP 400**，0.44s，`Field 'max_tokens' must be at most 65536` |
+| 65536 | 200 SSE，1.85s |
+| 16384 | 200 SSE，1.59s |
+
+所以这是「想给模型更足预算」反而越过端点硬上限，与模型名、超时、
+图片数量、流式与否都无关。用户随后在 09:33:49 自己把值改成了 65536
+（合法上限）——排查期间出现了并发编辑，把本轮刚写入的钳制逻辑冲掉过
+一次，已重新应用并保留用户选的数值。
+
+#### 修复
+
+* `app/llm.py`：保留 `DEFAULT_MAX_TOKENS = 65536`，新增
+  `MAX_TOKENS_CEILING = 65536`，请求体改为
+  `"max_tokens": min(DEFAULT_MAX_TOKENS, MAX_TOKENS_CEILING)`。即使以后
+  再有人把常量手调成 512000，也只会发 65536，不会让整个后端必然失败。
+* `app/llm.py`：非 200 的错误文本从 `r.text[:200]` 放宽到 `[:500]`。
+  参数类错误的 `details` 常在 JSON 后半段，截到 200 字只剩半句话。
+* `stitch_backends/base.py`：`StitchBackendError` 增加 `diagnostics` 属性；
+  `registry.run_stitch()` 抛错时带上 `plan.diagnostics`；
+  `server._stitch_with_backend()` 失败分支不再硬设 `{}`，并补 `error` 原文。
+  前端 `stitchBlock()` 失败时显示「错误 …」。这样 §22.52 里「只能翻
+  `last_result.json` 反推」的缺口关闭。
+* `server.py`：新增 `_canvas_preview_id(shot_id, really_stitched)`，两个
+  识别入口统一调用。真正拼出画布才叫 `_stitched.png`，回退到第 1 张
+  原图时叫 `_fallback.png`。`stitched_url` 字段名不变，前端无需改。
+* 新增测试：`test_llm_client_stream.py` +3（上限契约、常量被调大仍钳制、
+  400 错误文本完整）、`test_server_stitch_backend.py` +3（registry 诊断透传、
+  结果含诊断、预览命名）、`test_frontend_stitch_backend.py` 渲染失败原因。
+
+#### 验证
+
+* 受影响组 `60 passed / 3 warnings`；**全量 pytest `502 passed /
+  5 warnings`（333.29s）**，基线 496 + 新增 6，无回归。5 个 warning
+  全部是既有 `tmap_proxy` OpenAPI 重复 operation id，与本次无关。
+* 改后生产代码端到端真实模型调用：`plan_llm(7 张真实细节图)` →
+  **94.54s 成功**、`error=""`、`pairs_reported/accepted=3/3`、
+  3 条 `source=llm` 边（权重 0.78/0.86/0.84）。**请求链路确认恢复**。
+* 但 3 条边仍只形成 2~3 个连通块，7 张图无法全定位，`stitch()` 依旧
+  「定位不全即放弃」。**`llm` 模式仍会 `ok=false`，原因不是故障，而是
+  纯 VLM 给不全相邻关系**——这正是 A/B 要量化的差距。
+
+#### 教训
+
+* **「给足预算」不等于「把上限调到最大」**：外部端点的参数约束要先探测，
+  再决定取值；超限时报错是即时 400，不是慢，很容易被误读成「模型又挂了」。
+* **关键常量要运行时再校验一次**：只靠「提交里写对了」挡不住本地手调，
+  尤其是未提交的工作区改动会随服务重启直接生效。
+* **多人/多工具同时改同一文件时，先 `git diff` 再写**：本轮有一次写入被
+  并发保存覆盖，靠测试收集报错才发现；改完要立刻复核 `git diff --stat`。
+* **失败也要把诊断带出去**：`backend_diagnostics={}` 让每次事故都只能靠翻
+  落盘 JSON 复盘，成本远高于在异常类上带一个 `dict`。

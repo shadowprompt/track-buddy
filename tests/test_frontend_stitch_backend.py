@@ -51,7 +51,11 @@ out.llm = stitchBlock(Object.assign({}, base, {
   links: [{i: 0, j: 1, inliers: 0, ncc: 0, source: 'llm', weight: 0.8}],
 }));
 out.failed = stitchBlock(Object.assign({}, base, {
-  backend: 'llm', ok: false, backend_error: true, backend_diagnostics: {},
+  backend: 'llm', ok: false, backend_error: true,
+  backend_diagnostics: {
+    model: 'gpt-6.1-sol',
+    error: 'HTTP 400: Field max_tokens must be at most 65536',
+  },
 }));
 
 const specs = [
@@ -112,6 +116,7 @@ def test_static_contract() -> None:
     assert "st.backend_diagnostics" in h
     assert "l.source === 'llm'" in h
     assert "st.backend_error" in h
+    assert "bdg.error" in h          # 失败原因要留在结果卡片里
 
 
 def test_rendered_output_and_picker() -> None:
@@ -144,6 +149,8 @@ def test_rendered_output_and_picker() -> None:
     assert "0 内点 / 相似度 0" not in llm
     assert "重叠偏弱" not in llm
     assert "本次失败" in out["failed"]
+    assert "模型诊断" in out["failed"]
+    assert "max_tokens must be at most 65536" in out["failed"]
 
     p = out["picker"]
     assert p["url"] == "/api/stitch-backends"
