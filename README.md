@@ -627,7 +627,17 @@ curl -X POST http://127.0.0.1:8848/api/recognize_multi \
 LLM_BASE_URL=https://your-endpoint/v1
 LLM_API_KEY=sk-xxxx
 LLM_MODEL=gpt-4o-mini
+LLM_TIMEOUT=600
 ```
+
+🔴 **请求必须用流式**：`app/llm.py` 固定发 `stream=True` 并解析 SSE，
+`max_tokens=16384`，`LLM_TIMEOUT` 默认 600 秒（10 分钟）。这是 2026-11-13
+实测出来的：推理型模型跑 7 张图约需 **59 秒**（`reasoning_tokens=2668`），
+非流式请求会被中转网关在约 30 秒掐断（`HTTP 102` 空响应），
+`max_tokens=1200` 则会在思考阶段就被截断、拿不到 JSON。
+响应里的 `reasoning_content` 会被丢弃，只拼 `content` 分片。
+模型名请填写**实测能出结果**的那个：带 `chat_template_kwargs.thinking=true`
+的高配模型在同样的 7 图任务上跑满 600 秒仍只有 reasoning、没有答案。
 
 `GET /api/stitch-backends` 返回各后端是否可用与不可用原因；未配置时
 前端禁用对应选项。选了不可用后端**不会**静默改用 SIFT——结果里会给

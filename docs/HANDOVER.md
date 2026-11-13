@@ -5877,10 +5877,77 @@ AttributeError: module 'app.server' has no attribute 'stitch_images'
   `verify_score` 大概率明显低于 SIFT，这个后端是量化差距用的，
   不是承诺更高准确率。
 * 🟡 `llm` 一次最多 16 张图（VLM 上下文与 token 成本）；缩略图最长边
-  固定 768px，`LLM_TIMEOUT` 沿用现有 25s，多图时可能超时。
+  固定 768px。超时与流式参数已在 §22.52 修正为 `LLM_TIMEOUT=600` +
+  `stream=True` + `max_tokens=16384`，本节原先「沿用 25s」的说法作废。
 * 🟡 语义边只建模**平移**，不处理缩放、旋转与透视；App 截图缩放级别
   不一致时误差会直接进入画布。
 * 🟡 模型原始响应截断到 2000 字符放进 `backend_diagnostics.raw_response`，
   便于复盘但不落盘；如需长期留档要另做归档。
 * 🟡 §22.45 的 `low_confidence` 模板写入死锁、§22.47 单条删除接口、
   离群行标签与纠正入口、徽章圆度判据仍待做。
+
+---
+
+### 22.52 大模型拼接超时事故：不是超时不够，是请求形式不对
+
+#### 现象
+
+用户配好 `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` 后连跑两次 7 图
+`llm` 后端，结果一字不差：`ReadTimeout ... read timeout=25.0`、
+`stitch.ok=false`、`backend_error=true`，接口 `ok=true` 只是第 1 张原图
+的单图回退。用户用 Postman 打同一个端点却是 `200 OK / 1.22s`，
+因此怀疑模型没生效。
+
+#### 犯的错
+
+1. **只凭一条 `read timeout=25.0` 就建议加大 `LLM_TIMEOUT`**。后来把
+   超时放宽到 90s 实测，7 图请求在 30.88s 拿到 `HTTP 102` 空响应——
+   加大本地超时根本救不了。分级探测：纯文本 1.82s/200、单图 2.88s/200、
+   2 图 30.22s/`HTTP 102`、4 图 17.19s/200、7 图 45s 超时、
+   7 图缩到 384px 仍 `HTTP 102`。**根因是中转网关对「非流式长请求」
+   约 30 秒的截断**，不是 payload 大小，也不是本地超时。
+2. **`max_tokens=1200` 对推理型模型远远不够**。流式实测 7 图任务
+   `reasoning_tokens=2668 / completion_tokens=2794`，思考阶段就把预算
+   耗光，`content` 为空，即使等到响应也解析不出 JSON。
+3. **失败路径把诊断丢了**：`server._stitch_with_backend()` 的
+   `StitchBackendError` 分支把 `backend_diagnostics` 硬设 `{}`，
+   模型名 / 耗时 / HTTP 状态全看不到，只能靠翻 `last_result.json` 猜。
+
+#### 实测对照（2026-11-13，同一批 7 张细节图，真实请求）
+
+| 请求形式 | 结果 |
+|---|---|
+| 项目原参数：非流式 / `max_tokens=1200` / 25s | 25s `ReadTimeout`；90s 时 30.88s 返回 `HTTP 102` 空体 |
+| `stream=True` + `max_tokens=16384` + `gpt-6.1-sol` / 600s | **58.97s 成功**，首 chunk 7.36s，132 分片，合法 JSON 3 对相邻关系 |
+| 完全照搬 Postman：`gpt-6-sol(max)` + `thinking:true` + `temperature=1` | **600s 跑满仍 `content_len=0`**，118 分片全是 reasoning |
+
+🔴 结论：**用户 `.env` 里的 `gpt-6.1-sol` 是对的**，Postman 那个
+`gpt-6-sol(max)` 只是在纯文本短请求上验证过，配 `thinking:true` 跑多图
+会一直思考不输出答案。只借它的 `stream:true` 与 `max_tokens`，不要抄
+模型名和 `chat_template_kwargs`。
+
+#### 改动
+
+* `src/app/llm.py`：`chat_json()` 固定 `stream=True`、`max_tokens` 提到
+  `DEFAULT_MAX_TOKENS=16384`、默认 `DEFAULT_TIMEOUT=600.0`；新增
+  `_read_chat_content()` 统一解析 SSE 与普通 JSON，只收 `content` 分片，
+  逐行按 UTF-8 解码（避免 `decode_unicode=True` 把中文解成乱码），
+  忽略 `reasoning_content`；流式总时长同样受 `LLM_TIMEOUT` 约束。
+  **`chat_json()` 签名不变**，`llm_geo.py` 与既有测试桩不受影响。
+* `.env` 增加 `LLM_TIMEOUT=600`；`config.py` 的 `llm_timeout` 默认
+  同步改 600.0（原先 25.0 会误导）。
+* 新增 `tests/test_llm_client_stream.py`：SSE 分片拼接、中文编码、
+  reasoning 不污染答案、`stream/max_tokens/timeout` 参数契约、
+  非 200 报错、普通 JSON 端点兼容、流式响应贯通 `_semantic_pairs`。
+
+#### 教训
+
+* **超时错误先分层再调参**：本地 read timeout、上游网关截断、模型输出
+  被 max_tokens 截断是三种不同故障。一次「加大超时」的建议如果没有
+  分级实测支撑，会让用户按错误方向反复重试。
+* **拿 Postman 验证端点时，要验证同一负载**：短文本 1.22s 成功不能证明
+  7 图多模态请求能跑完；反过来，能出结果的模型名也可能不是 Postman
+  里那个。
+* **推理型模型的 token 预算要留给 reasoning**：只看答案长度设
+  `max_tokens` 会静默拿到空 `content`。
+* 本轮仍**未重启 8848 服务**，验证只用离线脚本 + pytest；重启交给用户。

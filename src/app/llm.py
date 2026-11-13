@@ -23,6 +23,11 @@
     LLM_BASE_URL=https://api.example.com/v1
     LLM_API_KEY=sk-xxxx
     LLM_MODEL=gpt-4o-mini
+    LLM_TIMEOUT=600          # 秒；推理型多模态模型跑 7 张图实测约 59 秒
+
+请求一律走 ``stream=True``：实测非流式请求在约 30 秒被中转网关掐断
+（``HTTP 102`` 空响应），而模型实际要 ~59 秒才输出完；流式分片会持续
+保持连接。响应里的 ``reasoning_content`` 不是答案，只收集 ``content``。
 """
 
 from __future__ import annotations
@@ -36,6 +41,14 @@ from pathlib import Path
 from typing import Any
 
 import requests
+
+# 推理型多模态模型会把绝大部分 token 花在 reasoning 上（实测 7 张图任务
+# reasoning_tokens=2668 / completion_tokens=2794）。上限给小了，模型在
+# 「想完」之前就被截断，content 为空，JSON 永远解析不出来。
+DEFAULT_MAX_TOKENS = 16384
+# 默认请求超时（秒）。这个值在流式请求下既是「单次 read 超时」，也是
+# 整次调用的总时长上限；25 秒对推理型模型的 7 图任务必然不够。
+DEFAULT_TIMEOUT = 600.0
 
 
 @dataclass
@@ -57,7 +70,8 @@ class LLMClient:
         self.base_url = _pick(cfg, "LLM_BASE_URL", os.environ.get("LLM_BASE_URL", ""))
         self.api_key = _pick(cfg, "LLM_API_KEY", os.environ.get("LLM_API_KEY", ""))
         self.model = _pick(cfg, "LLM_MODEL", os.environ.get("LLM_MODEL", "gpt-4o-mini"))
-        self.timeout = float(_pick(cfg, "LLM_TIMEOUT", os.environ.get("LLM_TIMEOUT", "25")))
+        self.timeout = float(_pick(
+            cfg, "LLM_TIMEOUT", os.environ.get("LLM_TIMEOUT", str(DEFAULT_TIMEOUT))))
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": "meituan-ride/0.1 (+local)"})
         self.last_error = ""
@@ -65,6 +79,40 @@ class LLMClient:
     @property
     def available(self) -> bool:
         return bool(self.base_url and self.api_key)
+
+    @staticmethod
+    def _read_chat_content(r: requests.Response, deadline: float) -> str:
+        """把一次响应统一读成模型输出的文本。
+
+        流式端点返回 SSE（``data: {...}`` 分片 + ``[DONE]``）；非流式端点
+        返回普通 JSON。只收集 ``content`` 分片——推理型模型的
+        ``reasoning_content`` 不是答案，拼进去会破坏 JSON 解析。
+        逐行按 UTF-8 解码，避免 ``decode_unicode=True`` 把中文解成乱码。
+        """
+        ctype = (r.headers.get("content-type") or "").lower()
+        if "event-stream" not in ctype:
+            body = r.json()
+            choice = (body.get("choices") or [{}])[0]
+            return str((choice.get("message") or {}).get("content", "") or "")
+        parts: list[str] = []
+        for raw in r.iter_lines():
+            if time.time() > deadline:
+                raise TimeoutError("流式响应超过总时长上限")
+            if not raw:
+                continue
+            line = raw.decode("utf-8", "replace").strip() if isinstance(raw, bytes) else str(raw).strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                obj = json.loads(data)
+            except (ValueError, TypeError):
+                continue
+            delta = (obj.get("choices") or [{}])[0].get("delta") or {}
+            parts.append(str(delta.get("content") or ""))
+        return "".join(parts)
 
     def chat_json(
         self,
@@ -92,22 +140,25 @@ class LLMClient:
             "model": self.model,
             "messages": messages,
             "temperature": 0,
-            "max_tokens": 1200,
+            "max_tokens": DEFAULT_MAX_TOKENS,
+            # 非流式请求实测在 ~30s 被网关掐断（HTTP 102 空响应/一直挂住），
+            # 而 7 张图的推理要 ~59s；流式分片能持续保持连接，是跑完的前提。
+            "stream": True,
         }
         try:
+            deadline = t0 + self.timeout
             r = self._session.post(
                 self.base_url.rstrip("/") + "/chat/completions",
                 json=payload,
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 timeout=self.timeout,
+                stream=True,
             )
             if r.status_code != 200:
                 res.error = f"HTTP {r.status_code}: {r.text[:200]}"
                 self.last_error = res.error
                 return res
-            body = r.json()
-            txt = (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
-            res.text = txt or ""
+            res.text = self._read_chat_content(r, deadline)
             res.data = _extract_json(res.text)
             res.ok = res.data is not None
             if not res.ok:

@@ -147,7 +147,8 @@ class AppConfig:
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
-    llm_timeout: float = 25.0
+    # 推理型多模态模型的 7 图拼接实测约 59 秒；与 llm.py 的默认值保持一致。
+    llm_timeout: float = 600.0
     llm_enabled: bool = True
     # 单次请求超时（秒）
     http_timeout: float = 12.0

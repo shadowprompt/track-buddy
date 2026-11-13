@@ -103,7 +103,15 @@ def _parse_pairs(data: dict[str, Any], n: int) -> tuple[list[dict], int, list[st
     out: list[dict] = []
     seen: set[tuple[int, int]] = set()
     rejected = 0
-    notes = [str(x) for x in (data.get("notes") or []) if x][:4]
+    # 模型实测会给字符串（提示词里 notes 就是字符串）；直接迭代字符串
+    # 会把「依据北翟路…」拆成 ['依','据','北','翟']，污染诊断卡片。
+    raw_notes = data.get("notes")
+    if isinstance(raw_notes, str):
+        notes = [raw_notes] if raw_notes.strip() else []
+    elif isinstance(raw_notes, list):
+        notes = [str(x) for x in raw_notes if x][:4]
+    else:
+        notes = []
     for item in raw:
         if not isinstance(item, dict):
             rejected += 1
