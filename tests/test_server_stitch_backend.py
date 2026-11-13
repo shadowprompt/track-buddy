@@ -176,3 +176,11 @@ def test_stitch_failure_never_registers_a_paired_template() -> None:
     guard = src.index('if stitch_failed:')
     call = src.index('_capture_paired_template(')
     assert guard < call, "保护分支必须在模板注册调用之前"
+
+
+def test_pure_vlm_failure_explains_seam_misalignment() -> None:
+    """拼上了却没轨迹：告警必须归因到位移精度，而不是让用户查颜色。"""
+    src = inspect.getsource(recognize)
+    assert 'stitch_info.get("backend") == "llm"' in src
+    assert "位移精度问题" in src
+    assert "llm_guided" in src

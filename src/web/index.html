@@ -770,6 +770,10 @@ __WB_AMAP_SDK__
         bits.push('<b style="color:#c2410c">方向冲突 ' +
           bdg.direction_conflict_count + ' 条</b>');
       }
+      // 纯 VLM 把斜向滑动当纯水平平移时，画布会铺开但轨迹线在接缝断开
+      if (be === 'llm' && bdg.dy_all_zero) {
+        bits.push('<b style="color:#c2410c">垂直位移全为 0（接缝可能错位）</b>');
+      }
       if (bdg.error) bits.push('错误 ' + esc(String(bdg.error).slice(0, 160)));
       if (bits.length) {
         backendLine += '<div class="kv"><span>模型诊断</span><span>' +

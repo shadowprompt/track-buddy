@@ -59,8 +59,13 @@ out.conflict = stitchBlock(Object.assign({}, base, {
   backend_diagnostics: {model: 'stub-vlm', pairs_accepted: 6,
                         order: [1, 2, 3, 4, 5, 6, 7], chain_complete: false,
                         connected_components: 3, direction_conflict_count: 2,
-                        missing_images: [5, 7],
+                        missing_images: [5, 7], dy_all_zero: true,
                         evidence: [{i: 1, j: 2, text: '未给出轨迹接续依据'}]},
+  links: [],
+}));
+out.guided = stitchBlock(Object.assign({}, base, {
+  backend: 'llm_guided',
+  backend_diagnostics: {model: 'stub-vlm', dy_all_zero: true},
   links: [],
 }));
 out.failed = stitchBlock(Object.assign({}, base, {
@@ -133,6 +138,8 @@ def test_static_contract() -> None:
     assert "bdg.order" in h          # 识别出的全局链条要可见
     assert "方向冲突" in h
     assert "轨迹接续" in h
+    assert "bdg.dy_all_zero" in h    # dy 全 0 要显式告警
+    assert "垂直位移全为 0" in h
 
 
 def test_rendered_output_and_picker() -> None:
@@ -176,6 +183,9 @@ def test_rendered_output_and_picker() -> None:
     assert "识别顺序 #1→#2→#3→#4→#5→#6→#7" in c
     assert "链条不完整（3 块）" in c
     assert "方向冲突 2 条" in c
+    assert "垂直位移全为 0" in c
+    # guided 的变换由 SIFT 求，不该拿模型 dy 去吓用户
+    assert "垂直位移全为 0" not in out["guided"]
 
     p = out["picker"]
     assert p["url"] == "/api/stitch-backends"

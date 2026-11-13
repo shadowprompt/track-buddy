@@ -114,7 +114,10 @@ def test_prompt_makes_trajectory_chain_a_hard_constraint() -> None:
     assert "evidence" in user and "每条边必填" in user
     assert "输出前逐条自检" in user
     assert "order、pairs、notes" in _SCHEMA_HINT
-    assert PROMPT_VERSION == "trajectory-chain-v2"
+    assert "垂直位移通常不是 0" in system
+    assert "dy_ratio 不要一律填 0" in user
+    assert "dy_ratio 不是全部为 0" in user
+    assert PROMPT_VERSION == "trajectory-chain-v3"
 
 
 def test_system_prompt_is_actually_sent_to_model() -> None:
@@ -275,3 +278,54 @@ def test_model_failure_keeps_prompt_version_in_diagnostics() -> None:
     assert "HTTP 401" in plan.error
     assert plan.diagnostics["prompt_version"] == PROMPT_VERSION
     assert plan.links is None
+
+
+# ------------------------------------------------------------ 垂直位移（v3）
+
+
+def _flat_payload(n: int = 7) -> dict:
+    """11:05 事故形态：order 完整、dx 一致、dy 全 0（纯水平平移）。"""
+    return {
+        "order": list(range(1, n + 1)),
+        "pairs": [
+            {"i": k + 1, "j": k + 2, "dx_ratio": 0.78, "dy_ratio": 0.0,
+             "confidence": 0.82,
+             "evidence": f"#{k + 1} 右出 → #{k + 2} 左入"}
+            for k in range(n - 1)
+        ],
+        "notes": "按水平平移估计",
+    }
+
+
+def test_chain_diagnostics_flags_all_zero_dy() -> None:
+    pairs, rejected, _ = _parse_pairs(_flat_payload(), 7)
+    assert rejected == 0 and len(pairs) == 6
+    info = _chain_diagnostics(pairs, list(range(1, 8)), 7)
+    assert info["dy_all_zero"] is True
+    assert info["dy_zero_count"] == 6
+    assert info["dy_values"] == [0.0] * 6
+    # 水平方向本身是自洽的，别把 dy 问题误报成方向冲突
+    assert info["direction_conflict_count"] == 0
+    assert info["chain_complete"] is True
+
+
+def test_chain_diagnostics_accepts_nonzero_dy() -> None:
+    payload = _flat_payload(3)
+    for p in payload["pairs"]:
+        p["dy_ratio"] = 0.06
+    pairs, _, _ = _parse_pairs(payload, 3)
+    info = _chain_diagnostics(pairs, [1, 2, 3], 3)
+    assert info["dy_all_zero"] is False
+    assert info["dy_zero_count"] == 0
+    assert info["dy_values"] == [0.06, 0.06]
+
+
+def test_plan_llm_warns_on_all_zero_dy_but_guided_does_not() -> None:
+    flat = _flat_payload()
+    pure = plan_llm(_shots(7), cfg=CFG, client=StubClient(flat))
+    assert pure.error == ""
+    assert pure.diagnostics["prompt_version"] == "trajectory-chain-v3"
+    assert any("垂直位移都是 0" in n for n in pure.notes)
+    guided = plan_llm_guided(_shots(7), cfg=CFG, client=StubClient(flat))
+    # guided 的变换由 SIFT 求，模型 dy 全 0 不该被当成问题
+    assert not any("垂直位移都是 0" in n for n in guided.notes)

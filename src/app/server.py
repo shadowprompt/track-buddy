@@ -809,6 +809,17 @@ async def recognize(
                 if payload["ok"] else
                 f"已用 {n_details} 张细节图拼接，但本次识别未成功（原因见下方告警）"
             ))
+        # 纯语义配准的位移只是粗比例：接缝没对齐时轨迹线会断成几段，
+        # 用户只看到「未找到轨迹连通域 / 掩膜为空」会误以为是颜色或截图
+        # 问题。2026-11-13 11:05 实测即 dy 全 0（详见 HANDOVER §22.55）。
+        if (not payload["ok"] and stitch_info.get("ok")
+                and stitch_info.get("backend") == "llm"):
+            pair_notes.append(
+                "本次用「纯 VLM」拼接：图间位移由大模型粗估计，接缝处"
+                "轨迹线可能断开，导致「未找到轨迹连通域 / 掩膜为空」；"
+                "这是位移精度问题，不是轨迹颜色问题。建议改选"
+                "「大模型候选 + SIFT 精配准」(llm_guided) 或 SIFT，"
+                "用同一批截图复测对比")
         payload["warnings"] = _explain_badge_loss(
             list(result.warnings) + pair_notes,
             stitch_info.get("badge_conservation"),
