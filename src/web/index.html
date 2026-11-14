@@ -218,6 +218,18 @@
 
         <div class="row">
           <div>
+            <label for="sourceSel">输入源（截图来自哪个 App）</label>
+            <select id="sourceSel">
+              <option value="">默认（服务端配置）</option>
+            </select>
+            <div class="note" style="margin-top:6px;">
+              决定轨迹线提取参数与概要词表；截图来自哪个 App 就选哪个。
+            </div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div>
             <label for="stitchBackend">多图拼接方式（A/B 对比，仅多图生效）</label>
             <select id="stitchBackend">
               <option value="sift">SIFT 特征配准（项目现用）</option>
@@ -601,6 +613,10 @@ __WB_AMAP_SDK__
     if (paired || detailsOnly) {
       fd.append('stitch_backend',
                 $('stitchBackend') ? $('stitchBackend').value : 'sift');
+    }
+    // 输入源画像：请求级切换（美团/高德…），两个接口共用同一参数名。
+    if ($('sourceSel') && $('sourceSel').value) {
+      fd.append('source', $('sourceSel').value);
     }
 
     let data;
@@ -1906,9 +1922,38 @@ __WB_AMAP_SDK__
     }
   }
 
+  // 输入源画像清单由服务端下发（/api/health 的 source_profiles.available）：
+  // 新注册的画像（高德/小米…）前端零改动出现。默认项「服务端配置」表示
+  // 不传 source，走 SOURCE_PROFILE 环境变量。
+  async function refreshSourceProfiles() {
+    const sel = $('sourceSel');
+    if (!sel) return;
+    try {
+      const r = await fetch('/api/health');
+      if (!r.ok) return;
+      const d = await r.json();
+      const sp = d.source_profile || {};
+      const list = sp.available || [];
+      if (!list.length) return;
+      const prev = sel.value;
+      sel.innerHTML = '';
+      list.forEach(p => {
+        const o = document.createElement('option');
+        o.value = p.id;
+        o.textContent = p.title + (p.id === sp.id ? '（默认）' : '');
+        sel.appendChild(o);
+      });
+      if (list.some(p => p.id === prev)) sel.value = prev;
+      else sel.value = sp.id || list[0].id;
+    } catch (e) {
+      // 服务未就绪时保留默认项，不阻塞其它功能
+    }
+  }
+
   // 页面打开就先列一次，不必等第一次识别完成
   refreshCorrections();
   refreshStitchBackends();
+  refreshSourceProfiles();
 })();
 </script>
 </body>

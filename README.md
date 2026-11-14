@@ -702,18 +702,24 @@ curl -X POST http://127.0.0.1:8848/api/recognize_multi \
 HSV、形态学核、RANSAC 内点容差、里程 OCR 词表，每个 App 一套参数，
 互斥不能混用。
 
-- 当前只注册 `meituan`（美团骑行）一个画像，参数值与模块化之前完全
+- 当前注册 `meituan`（美团骑行）一个画像，参数值与模块化之前完全
   一致（`VisionConfig` 默认值就是美团标定结果），行为零变化。
-- 来源选择用**一个**环境变量 `SOURCE_PROFILE`（默认 `meituan`）；
-  切换是全局的（单进程单来源），未知 id 直接报错并列出可用值，
-  绝不静默回退。逐请求自动检测截图来源属于拿到多样本后的后续演化。
+- **来源选择两条路径**（2026-11-14 起请求级入参优先）：
+  1. **接口入参**：`POST /api/recognize` / `recognize_multi` 的
+     `source` 表单字段（可用值见 `/api/health` 的
+     `source_profiles.available`）。单进程可同时服务多来源请求，
+     模板库按画像隔离召回/沉淀，防止美团模板命中其它 App 截图。
+     网页版与小程序的选择器即走这条路径。
+  2. **环境变量 `SOURCE_PROFILE`**（默认 `meituan`）：不传入参时的
+     默认画像，CLI / 直跑 pipeline 走这条。未知 id 直接报错并列出
+     可用值，绝不静默回退。
 - 画像定义与注册表在 `src/app/source_profile.py`，`GET /api/health`
   的 `source_profile` 字段与识别结果 `diagnostics.source` 随时可见
-  当前生效的画像。
+  当前生效的画像（请求级 > 环境级）。
 - **扩展路径**（以高德为例）：① 收集 5-10 张真实截图（概览单图 +
   沿路线滑动的细节图、不同缩放）；② 按模块 docstring 的标定指南测
-  HSV 分布、填新 profile；③ `SOURCE_PROFILE=amap` 切换验收。预估
-  2-3 个工作日，瓶颈在标定样本不在代码。
+  HSV 分布、注册新 profile——识别链路零改动，接入即用入参切换。
+  预估 2-3 个工作日，瓶颈在标定样本不在代码。
 - 注册表里**只允许已标定的画像**——不放未标定占位条目，防止切换
   到盲参数全链路瞎跑。
 

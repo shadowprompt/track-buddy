@@ -38,7 +38,13 @@
     <text class="field-label">途经路名</text>
     <input class="field-input" placeholder="如：深南大道,科苑南路（可留空）" value="{{roadNames}}" bindinput="onRoadNames" />
   </view>
-  <view class="note">路名是强约束：提供后轨迹会尽量贴合指定道路，精度显著提升</view>
+  <view class="field">
+    <text class="field-label">输入源</text>
+    <picker range="{{sources}}" range-key="title" value="{{sourceIndex}}" bindchange="onSourceChange">
+      <view class="field-input picker-value">{{sources[sourceIndex].title}}</view>
+    </picker>
+  </view>
+  <view class="note">截图来自哪个 App 就选哪个；路名是强约束，提供后精度显著提升</view>
 </view>
 
 <view class="footer">

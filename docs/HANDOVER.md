@@ -6566,3 +6566,55 @@ payload 双格式/源标题注入/前端链接契约）；全量 579 passed。
 `nw_runtime_incompatible`），Nightly `2.02.2611132`（2026-11-13）
 安装包已下载到用户 Downloads，待覆盖安装后用
 `check_wechatide_status` 完成门禁再编译预览。
+
+### §22.64 输入源画像升级为接口入参（2026-11-14 18:10）
+
+用户决策：来源选择从「服务级环境变量」升级为「接口入参」，为单进程
+多来源（美团/高德并存）铺路。
+
+**机制**（`source_profile.py` + `config.py`）：
+
+* `active_source_profile()` ContextVar 上下文管理器：请求处理期间把
+  显式画像挂到 `CONFIG.source` / `CONFIG.vision` /
+  `CONFIG.source_profile_id` 的既有读取点上，退出自动还原。选
+  ContextVar 而不是全链路显式传参的理由：`CONFIG.source` /
+  `CONFIG.vision` 的调用时刻读取点散在 pipeline / visuals / multishot /
+  input_quality / ride_summary / server 十几处，显式传参是一次大范围
+  签名重构且极易漏改；ContextVar 对既有代码完全透明。
+* FastAPI yield 依赖 `_active_source`：解析 `source` 表单字段
+  （空 → 环境默认；未知 id → 400 带可用值清单，绝不静默回退），
+  `with active_source_profile(profile): yield`——async 依赖与端点
+  主体同 task，端点结束自动还原，不跨请求泄漏。
+* `AppConfig.vision` 从 dataclass 字段改为 property（跟随当前画像）；
+  测试均以 `AppConfig()` 无参构造，无字段注入用法，零回归。
+
+**模板库按画像隔离**（`route_template.py`）：
+
+* 模板新增 `profile` 字段；`remember`/`register_pair` 写入，
+  `locate`/`find_similar` 按画像过滤召回，`_find_duplicate` 只在同
+  画像内去重。历史模板无该字段 → 视为 `meituan`。
+* pipeline 阶段 2.5 的 locate 调用传 `profile=self.cfg.source_profile_id`
+  （请求期 ContextVar 生效）。
+
+**后台精修线程**：`threading.Thread` 不继承 ContextVar——
+`_start_refine` 把 `profile_id` 记进 ctx，`_run_refine` 入口用
+`activate_profile_globally()` 重建（daemon 线程只跑单一任务，无需
+reset）。
+
+**前端**：
+
+* 网页版：表单新增「输入源」下拉，选项从 `/api/health`
+  （`source_profiles.available`）动态下发——新注册画像前端零改动；
+  两个识别接口统一 `fd.append('source', ...)`。
+* 小程序：首页 picker 同样从 health 拉清单；`utils/api.js`
+  recognize 增加 `opts.source`。
+* health：`source_profile` 增加 `available` 清单。
+
+**边界**：词典（lexicon）**不**按画像隔离——它是「地名→坐标」的
+地理事实，与截图来源无关，共享反而有利于多来源互相印证；隔离的只有
+像素形状驱动的模板库。
+
+**验证**：`tests/test_source_param.py` 13 例（上下文切换/还原、vision
+身份、模板隔离与历史数据兼容、同画像去重、端点 400/200/环境默认、
+multi 端点、health 清单）；`test_paired_registration.py` 的 4 个
+locate 桩件签名同步补 `profile` 形参。全量 592 passed。未重启服务。

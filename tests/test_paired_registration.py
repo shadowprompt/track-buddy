@@ -302,7 +302,7 @@ def test_pipeline_requests_overview_domain(monkeypatch, tmp_path):
     calls: list[str | None] = []
 
     class SpyStore:
-        def locate(self, query_px, *, city_hint="", shape_domain=None):
+        def locate(self, query_px, *, city_hint="", shape_domain=None, profile=""):
             calls.append(shape_domain)
             return None
 
@@ -358,7 +358,7 @@ def test_non_broad_overview_hits_near_duplicate_template(monkeypatch, tmp_path):
         def stats(self):
             return {"templates": 1, "overview": 1}
 
-        def locate(self, query_px, *, city_hint="", shape_domain=None):
+        def locate(self, query_px, *, city_hint="", shape_domain=None, profile=""):
             calls.append(shape_domain)
             return _located_stub(residual=0.010, coverage=1.0)
 
@@ -380,7 +380,7 @@ def test_non_broad_overview_far_match_falls_through(monkeypatch, tmp_path):
         def stats(self):
             return {"templates": 1, "overview": 1}
 
-        def locate(self, query_px, *, city_hint="", shape_domain=None):
+        def locate(self, query_px, *, city_hint="", shape_domain=None, profile=""):
             calls.append(shape_domain)
             return _located_stub(residual=0.20, coverage=1.0)
 
@@ -401,7 +401,7 @@ def test_no_templates_no_probe(monkeypatch, tmp_path):
         def stats(self):
             return {"templates": 0, "overview": 0}
 
-        def locate(self, query_px, *, city_hint="", shape_domain=None):
+        def locate(self, query_px, *, city_hint="", shape_domain=None, profile=""):
             calls.append(shape_domain)
             return None
 

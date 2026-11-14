@@ -535,9 +535,12 @@ class RidePipeline:
                 # 这里进来的必然是概览图，只比对「概览图形状」注册的模板。
                 # 旧的 detail 域模板（细节图/拼接画布）形状域不同，放进来
                 # 会把局部小路线误判成整条概览（§22.45 实测假阳性）。
+                # 画像隔离：只召回本次请求来源（入参/环境变量）的模板，
+                # 防止美团像素形状命中其它 App 的截图。
                 located = self.templates.locate(
                     track.polyline, city_hint=city.strip(),
-                    shape_domain=SHAPE_DOMAIN_OVERVIEW)
+                    shape_domain=SHAPE_DOMAIN_OVERVIEW,
+                    profile=self.cfg.source_profile_id)
             except Exception as exc:  # noqa: BLE001 — 兜底失败必须回落原流程
                 warnings.append(
                     f"轨迹模板匹配异常，已回落原流程：{type(exc).__name__}")

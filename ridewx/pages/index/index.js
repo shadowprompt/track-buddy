@@ -8,7 +8,34 @@ Page({
     city: '',
     roadNames: '',
     busy: false,
-    error: ''
+    error: '',
+    // 输入源画像选择器：加载时从 /api/health 拉取可用清单。
+    // sourceIndex=0 固定为「默认（服务端配置）」，即不传 source。
+    sources: [{ id: '', title: '默认（服务端配置）' }],
+    sourceIndex: 0
+  },
+
+  onLoad: function () {
+    var that = this;
+    api.health().then(function (d) {
+      var sp = (d && d.source_profile) || {};
+      var list = (sp.available || []).map(function (p) {
+        return { id: p.id, title: p.title };
+      });
+      if (!list.length) return;
+      var sources = [{ id: '', title: '默认（服务端配置）' }].concat(list);
+      var idx = 0;
+      sources.forEach(function (s, i) {
+        if (s.id && s.id === sp.id) idx = i;
+      });
+      that.setData({ sources: sources, sourceIndex: idx });
+    }).catch(function () {
+      // 服务未就绪：保留「默认」项，不阻塞其它功能
+    });
+  },
+
+  onSourceChange: function (e) {
+    this.setData({ sourceIndex: Number(e.detail.value) });
   },
 
   pickOverview: function () {
@@ -77,13 +104,15 @@ Page({
       return;
     }
     this.setData({ busy: true, error: '' });
+    var src = (this.data.sources[this.data.sourceIndex] || {}).id || '';
     api
       .recognize({
         overview: this.data.overview,
         details: this.data.details,
         summary: this.data.summary,
         city: this.data.city,
-        roadNames: this.data.roadNames
+        roadNames: this.data.roadNames,
+        source: src
       })
       .then(function (payload) {
         getApp().globalData.lastResult = payload;

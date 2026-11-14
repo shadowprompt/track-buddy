@@ -11,11 +11,21 @@
   **每个 App 一套**。美团轨迹是浅荧光绿（``V>200 / S<90`` 可提），
   高德运动轨迹是亮蓝色系，参数互斥，不能混用。
 
-当前只注册 ``meituan`` 一个画像（参数值与重构前完全一致，行为零变化）。
-未来支持高德/小米/Keep 时：在这里新增 profile + 用真实截图标定参数，
-再用 ``SOURCE_PROFILE`` 环境变量切换。切换是**全局**的（单进程单来源），
-不做逐请求自动检测——来源自动识别属于拿到多样本之后的后续演化，
-不提前设计。
+当前注册 ``meituan`` 一个画像（参数值与重构前完全一致，行为零变化）。
+未来支持高德/小米/Keep 时：在这里新增 profile + 用真实截图标定参数。
+
+**选择生效画像的两条路径**（优先级从高到低）：
+
+1. **请求级入参**（2026-11-14 起）：``POST /api/recognize`` /
+   ``recognize_multi`` 的 ``source`` 表单字段。server 把解析出的画像
+   挂到本模块的 ContextVar 上，``CONFIG.source`` / ``CONFIG.vision``
+   在请求处理期间自动跟随——识别链路里的读取点一行都不用改。
+   单进程可以同时服务多来源请求，但**模板库按画像隔离**
+   （见 ``route_template.py``），防止美团模板命中高德截图。
+2. **环境级默认**：``SOURCE_PROFILE`` 环境变量（不传入参时生效），
+   CLI / 直跑 pipeline 的场景走这条路径。
+
+不提前设计「来源自动识别」——拿到多样本之后再说。
 
 参数标定指南（给未来的自己）：
 
@@ -31,6 +41,8 @@
 """
 from __future__ import annotations
 
+import contextvars
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from .config import VisionConfig
@@ -91,3 +103,47 @@ def resolve_source_profile(profile_id: str | None) -> SourceProfile:
         raise ValueError(
             f"未知的输入源画像 {pid!r}；可用值：{', '.join(sorted(PROFILES))}"
         ) from None
+
+
+# ---------- 请求级画像上下文（入参控制的机制层） --------------------------
+
+# 为什么用 ContextVar 而不是给整条链路加 profile 形参：``CONFIG.source`` /
+# ``CONFIG.vision`` 的读取点分散在 pipeline / visuals / multishot /
+# input_quality / ride_summary / server 的十几处**调用时刻**读取里，
+# 全部改成显式传参是一次大范围签名重构且极易漏改；ContextVar 让
+# 「请求处理期间画像生效、请求结束自动还原」对既有代码完全透明。
+#
+# FastAPI 的 async 端点与 yield 依赖运行在同一个 asyncio task 里——
+# 依赖里 set 的值在端点体内可见，请求结束 reset，不会跨请求泄漏。
+_ACTIVE_PROFILE: contextvars.ContextVar[SourceProfile | None] = (
+    contextvars.ContextVar("active_source_profile", default=None))
+
+
+def current_active_profile() -> SourceProfile | None:
+    """当前请求显式指定的画像；没有（走环境默认）时返回 ``None``。"""
+    return _ACTIVE_PROFILE.get()
+
+
+@contextmanager
+def active_source_profile(profile: SourceProfile | None):
+    """在 ``with`` 块内把 ``profile`` 设为当前画像；退出自动还原。
+
+    传 ``None`` 表示清除覆盖（回落 ``SOURCE_PROFILE`` 环境变量默认）。
+    后台线程（路网精修）不会自动继承调用方的 ContextVar，须在
+    线程入口处显式用它重建上下文（见 ``server._run_refine``）。
+    """
+    token = _ACTIVE_PROFILE.set(profile)
+    try:
+        yield profile
+    finally:
+        _ACTIVE_PROFILE.reset(token)
+
+
+def activate_profile_globally(profile: SourceProfile) -> None:
+    """在**非请求**上下文（后台线程）里设置画像，随线程生命周期生效。
+
+    ``threading.Thread`` 不继承调用方的 ContextVar：后台线程从一个
+    空上下文启动，画像必须在线程入口显式设置。线程只跑单一任务、
+    结束即销毁，无需 reset。
+    """
+    _ACTIVE_PROFILE.set(profile)

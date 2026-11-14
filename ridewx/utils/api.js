@@ -87,6 +87,8 @@ function recognize(opts) {
     ];
     if (opts.city) fields.push({ name: 'city', value: opts.city });
     if (opts.roadNames) fields.push({ name: 'road_names', value: opts.roadNames });
+    // 输入源画像（可选）：截图来自哪个 App。空 = 走服务端 SOURCE_PROFILE 默认。
+    if (opts.source) fields.push({ name: 'source', value: opts.source });
 
     var body = multipart.build(fields, files);
     return new Promise(function (resolve, reject) {
@@ -155,9 +157,29 @@ function feedback(name, lon, lat, city) {
   });
 }
 
+/** 拉取 /api/health（输入源画像清单等），供首页渲染来源选择器。 */
+function health() {
+  return new Promise(function (resolve, reject) {
+    wx.request({
+      url: BASE_URL + '/api/health',
+      method: 'GET',
+      timeout: 10000,
+      dataType: 'json',
+      success: function (res) {
+        if (res.statusCode === 200) resolve(res.data);
+        else reject(new Error(errText(res)));
+      },
+      fail: function (err) {
+        reject(new Error(err.errMsg || '网络请求失败'));
+      }
+    });
+  });
+}
+
 module.exports = {
   BASE_URL: BASE_URL,
   recognize: recognize,
   refinePoll: refinePoll,
-  feedback: feedback
+  feedback: feedback,
+  health: health
 };

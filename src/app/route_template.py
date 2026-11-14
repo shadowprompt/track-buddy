@@ -404,6 +404,18 @@ def match_shape(query_px: Any, template: dict[str, Any]) -> ShapeMatch:
     return ShapeMatch(True, r, cov, rev, span, "ok", sig, mode)
 
 
+def _norm_profile(profile: str) -> str:
+    """规范化输入源画像 id；空值回落默认画像（历史数据视为美团）。"""
+    from .source_profile import DEFAULT_PROFILE_ID
+
+    return (str(profile or "").strip().lower() or DEFAULT_PROFILE_ID)
+
+
+def _tpl_profile(tpl: dict[str, Any]) -> str:
+    """读模板的画像 id；历史模板没有该字段，视为默认画像（meituan）。"""
+    return _norm_profile(str(tpl.get("profile") or ""))
+
+
 class TemplateStore:
     """轨迹模板库（``data/route_templates.json``，含真实位置，不入库）。"""
 
@@ -465,12 +477,17 @@ class TemplateStore:
         self_consistent: bool = True,
         input_ok: bool = True,
         shape_domain: str = SHAPE_DOMAIN_DETAIL,
+        profile: str = "",
     ) -> dict[str, Any]:
         """裁决并沉淀一条模板；失败也返回原因，绝不抛给调用方。
 
         ``shape_domain`` 区分模板形状来自哪一种图：``detail`` 是细节图/
         拼接画布（P0 默认），``overview`` 是概览单图（P2 配对注册）。
         ``locate()`` 查询概览图时只比对后者，避免跨缩放形状假阳性。
+        ``profile`` 是**输入源画像 id**（meituan/amap/...，2026-11-14
+        起来源识别改为接口入参）：视觉参数每个画像一套，美团像素形状
+        对高德截图毫无意义，召回必须按画像隔离。历史数据没有该字段，
+        视为 ``meituan``（与当时唯一画像一致）。
         """
         px = _as_points(px_polyline)
         geo = _as_points(geo_polyline)
@@ -513,7 +530,11 @@ class TemplateStore:
 
         with self._lock:
             items: list[dict[str, Any]] = self._data.setdefault("templates", [])
-            hit = self._find_duplicate(items, px, shape)
+            pid = _norm_profile(profile)
+            # 去重只在同画像内进行：不同画像的像素形状相似纯属巧合，
+            # 地理真值互不相关，合并等于串源。
+            same_profile = [t for t in items if _tpl_profile(t) == pid]
+            hit = self._find_duplicate(same_profile, px, shape)
             if hit is not None:
                 hit["hit_count"] = int(hit.get("hit_count", 0) or 0) + 1
                 if conf > float(hit.get("confidence", 0) or 0) or verified:
@@ -528,16 +549,19 @@ class TemplateStore:
                         # 配对注册可以把一条旧的 detail 模板升级成 overview，
                         # 否则它会永远无法参与概览图定位。
                         "shape_domain": str(shape_domain or SHAPE_DOMAIN_DETAIL),
+                        # 去重命中说明是同一来源再上传：画像以本次为准
+                        #（历史上不会变，字段只是兜底补齐）。
+                        "profile": _norm_profile(profile),
                     })
                 self.save()
                 return {"written": False, "reason": "deduped",
                         "id": hit.get("id"), "templates": len(items)}
-
             tpl = {
                 "id": f"tpl_{int(time.time())}_{uuid.uuid4().hex[:8]}",
                 "created_at": int(time.time()),
                 "city": str(city or ""),
                 "source": str(source or "auto"),
+                "profile": _norm_profile(profile),
                 "shape_domain": str(shape_domain or SHAPE_DOMAIN_DETAIL),
                 "verified": bool(verified or source == "user"),
                 "confidence": round(conf, 4),
@@ -588,10 +612,17 @@ class TemplateStore:
         city_hint: str = "",
         require_verified: bool = False,
         limit: int = 3,
+        profile: str = "",
     ) -> list[dict[str, Any]]:
-        """找出形状足够接近的模板；没有就返回空列表（绝不硬凑一个）。"""
+        """找出形状足够接近的模板；没有就返回空列表（绝不硬凑一个）。
+
+        ``profile`` 指定时只召回该输入源画像的模板（来源隔离，见
+        ``remember``）；不传则不隔离（兼容旧调用方）。
+        """
         out: list[dict[str, Any]] = []
         for tpl in self.templates:
+            if profile and _tpl_profile(tpl) != _norm_profile(profile):
+                continue
             if require_verified and not tpl.get("verified"):
                 continue
             if city_hint and tpl.get("city") and city_hint not in str(tpl["city"]):
@@ -624,6 +655,7 @@ class TemplateStore:
         *,
         city_hint: str = "",
         shape_domain: str | None = None,
+        profile: str = "",
     ) -> dict[str, Any] | None:
         """形状命中后直接给出 GCJ-02 折线；任何一道门槛不过就返回 ``None``。
 
@@ -634,12 +666,16 @@ class TemplateStore:
         * 模板地理里程必须落在合理区间；
         * ``template_in_query`` 需要 coverage≥0.85，避免大段无地理对应；
         * 投影坐标必须合法；
-        * 指定 ``shape_domain`` 时只比对同域模板（概览图不碰细节图模板）。
+        * 指定 ``shape_domain`` 时只比对同域模板（概览图不碰细节图模板）；
+        * 指定 ``profile`` 时只召回该输入源画像的模板（来源隔离）。
         """
         if not shape_has_enough_info(query_px):
             return None
+        want_profile = _norm_profile(profile) if profile else ""
         best: dict[str, Any] | None = None
         for tpl in self.templates:
+            if want_profile and _tpl_profile(tpl) != want_profile:
+                continue
             if shape_domain is not None and (
                     tpl.get("shape_domain") or SHAPE_DOMAIN_DETAIL) != shape_domain:
                 continue
@@ -707,6 +743,7 @@ class TemplateStore:
         shot_id: str = "",
         self_consistent: bool = True,
         input_ok: bool = True,
+        profile: str = "",
     ) -> dict[str, Any]:
         """「概览单图 + 多图真值」配对注册，产出 ``overview`` 域模板。
 
@@ -714,6 +751,7 @@ class TemplateStore:
         一一对应。这里复用 :func:`project_to_geo` 把真值投影到概览图的
         弧长参数化上，再以「概览形状 ↔ 地理折线」沉淀，于是模板的 key
         与将来 ``locate()`` 的 query 都是概览图，形状域统一。
+        ``profile`` 透传给 ``remember``（模板按输入源画像隔离召回）。
 
         失败一律返回 ``{"written": False, "reason": ...}``，不抛异常——
         配对注册是附加能力，绝不能让识别请求失败。
@@ -787,6 +825,7 @@ class TemplateStore:
             self_consistent=self_consistent,
             input_ok=input_ok,
             shape_domain=SHAPE_DOMAIN_OVERVIEW,
+            profile=profile,
         )
         out["pair_match"] = info
         out["shape_domain"] = SHAPE_DOMAIN_OVERVIEW

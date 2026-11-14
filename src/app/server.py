@@ -11,7 +11,15 @@ from typing import Any
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -29,6 +37,13 @@ from .stitch_backends import (
 from .exporters import build_exports
 from .pipeline import RidePipeline, _result_is_self_consistent
 from .route_template import TemplateStore
+from .source_profile import (
+    PROFILES,
+    SourceProfile,
+    activate_profile_globally,
+    active_source_profile,
+    resolve_source_profile,
+)
 from .tmap_proxy import create_proxy_router, make_secret, render_page
 from .track import extract_track
 
@@ -131,8 +146,14 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "version": app.version,
         "source_profile": {
+            # 环境级默认画像（请求可用 source 入参临时切换）
             "id": CONFIG.source_profile_id,
             "title": CONFIG.source.title,
+            # 全部已注册画像：前端据此渲染「输入源」选择器
+            "available": [
+                {"id": p.id, "title": p.title}
+                for pid, p in sorted(PROFILES.items())
+            ],
         },
         "geocoding": geo,
         "maps": maps_status,
@@ -418,11 +439,9 @@ def _attach_exports(payload: dict[str, Any]) -> None:
             f"duration_s={rs.get('duration_s')!r}）——"
             "逐点时刻只能由订单详情截图的「开始时间+总时长」插值得出，"
             "轨迹截图本身没有时间信息")
-    from .source_profile import PROFILES  # 延迟导入避免循环
-
-    title = "骑行"
-    if CONFIG.source_profile_id in PROFILES:
-        title = PROFILES[CONFIG.source_profile_id].title
+    # CONFIG.source_profile_id 读的是请求级画像上下文（source 入参 >
+    # SOURCE_PROFILE 环境变量），单请求内导出层与识别链路自动同源。
+    title = CONFIG.source.title
     try:
         exports = build_exports(
             coords,
@@ -462,12 +481,14 @@ def _persist_last_result(payload: dict[str, Any]) -> None:
 
 
 def _capture_template(result: Any, payload: dict[str, Any], *,
-                      city: str, shot_id: str) -> dict[str, Any]:
+                      city: str, shot_id: str,
+                      profile_id: str = "") -> dict[str, Any]:
     """把一次成功识别沉淀成轨迹模板（失败绝不影响接口返回）。
 
     判据与词典写入保持同源：复用 ``_result_is_self_consistent`` 的四项
     一票否决，再由 ``TemplateStore`` 裁决置信度、坐标合法性、信息量与
     形状去重。P0 只沉淀，不拿模板参与识别，因此这一步对结果是只读的。
+    ``profile_id`` 是本次请求的输入源画像（模板按画像隔离召回）。
     """
     try:
         diag = result.diagnostics or {}
@@ -487,6 +508,7 @@ def _capture_template(result: Any, payload: dict[str, Any], *,
             shot_id=shot_id,
             self_consistent=_result_is_self_consistent(diag),
             input_ok=input_ok,
+            profile=profile_id,
         )
     except Exception as exc:  # noqa: BLE001 — 沉淀失败不能拖垮识别请求
         return {"written": False, "reason": f"error:{type(exc).__name__}"}
@@ -500,6 +522,7 @@ def _capture_paired_template(
     city: str,
     shot_id: str,
     stitch_info: dict[str, Any] | None = None,
+    profile_id: str = "",
 ) -> dict[str, Any]:
     """把「概览单图形状 ↔ 多图配准真值」注册成 ``overview`` 域模板。
 
@@ -552,6 +575,27 @@ def _capture_paired_template(
         return {"written": False, "reason": f"error:{type(exc).__name__}"}
 
 
+async def _active_source(
+    source: str = Form(""),
+) -> SourceProfile:
+    """请求级输入源画像依赖（yield 形式，自动还原）。
+
+    ``source`` 表单入参：空 → 走 ``SOURCE_PROFILE`` 环境变量默认；
+    未注册 id → 400（带可用值清单），绝不静默回退。yield 依赖与端点
+    主体运行在同一个 asyncio task 里，``active_source_profile`` 设置的
+    ContextVar 在整个请求处理期间生效——``CONFIG.source`` /
+    ``CONFIG.vision`` / ``CONFIG.source_profile_id`` 的既有读取点
+    （pipeline、visuals、multishot、input_quality、ride_summary、导出层）
+    无需任何改动就自动跟随本次请求的画像。
+    """
+    try:
+        profile = resolve_source_profile(source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    with active_source_profile(profile):
+        yield profile
+
+
 @app.post("/api/recognize_multi")
 async def recognize_multi(
     files: list[UploadFile] = File(...),
@@ -563,8 +607,14 @@ async def recognize_multi(
     stitch_backend: str = Form(DEFAULT_BACKEND),
     overview: UploadFile | None = File(None),
     summary: UploadFile | None = File(None),
+    profile: SourceProfile = Depends(_active_source),
 ) -> JSONResponse:
     """上传**多张**街道级截图，拼成一张大图后识别。
+
+    ``source`` 表单入参（可选）：截图来自哪个 App 的画像 id
+    （可用值见 ``GET /api/health`` 的 ``source_profiles``）。不传走
+    ``SOURCE_PROFILE`` 环境变量默认；未知 id 返回 400。模板召回/沉淀
+    按该画像隔离。
 
     ## 为什么需要这个接口
 
@@ -676,7 +726,8 @@ async def recognize_multi(
     if overview_path is not None:
         payload["overview_url"] = f"/api/shots/{overview_id}{overview_path.suffix}"
     payload["template_capture"] = _capture_template(
-        result, payload, city=city.strip(), shot_id=shot_id)
+        result, payload, city=city.strip(), shot_id=shot_id,
+        profile_id=profile.id)
     warns = list(result.warnings)
     # 多图 auto 现在会启动后台精修。pipeline 里那句通用提示没说清
     # 「只校验不平移」，留着会和后面的准确说明并存甚至矛盾，先去掉。
@@ -774,8 +825,14 @@ async def recognize(
     stitch_backend: str = Form(DEFAULT_BACKEND),
     details: list[UploadFile] | None = File(None),
     summary: UploadFile | None = File(None),
+    profile: SourceProfile = Depends(_active_source),
 ) -> JSONResponse:
     """上传**一张概览单图**识别；缩放过高时可补传多张街道级细节图。
+
+    ``source`` 表单入参（可选）：截图来自哪个 App 的画像 id
+    （可用值见 ``GET /api/health`` 的 ``source_profiles``）。不传走
+    ``SOURCE_PROFILE`` 环境变量默认；未知 id 返回 400。模板召回/沉淀
+    按该画像隔离。
 
     两个上传入口的语义
     ------------------
@@ -906,7 +963,8 @@ async def recognize(
         else:
             cap = _capture_paired_template(
                 overview_img=img, truth_payload=payload, truth_result=result,
-                city=city.strip(), shot_id=shot_id, stitch_info=stitch_info)
+                city=city.strip(), shot_id=shot_id, stitch_info=stitch_info,
+                profile_id=profile.id)
         payload["paired_registration"] = cap
         if cap.get("written"):
             pair_notes.append(
@@ -945,7 +1003,8 @@ async def recognize(
         )
     else:
         payload["template_capture"] = _capture_template(
-            result, payload, city=city.strip(), shot_id=shot_id)
+            result, payload, city=city.strip(), shot_id=shot_id,
+            profile_id=profile.id)
     await _attach_ride_summary(payload, summary)
     _attach_exports(payload)
     _persist_last_result(payload)
@@ -1054,6 +1113,16 @@ def _run_refine(shot_id: str, shot_path: Path) -> None:
     的判定对不上。现在只调 ``Pipeline.refine_existing``，图上那几个最贵
     的阶段一次都不重跑。
     """
+    # 后台线程不继承请求的 ContextVar：入口处按 ctx 里记录的画像 id
+    # 重建上下文，精修收尾（导出层源标题等）才与主请求同源。
+    with _refine_lock:
+        _ctx0 = _refine_ctx.get(shot_id)
+    _pid = (_ctx0 or {}).get("profile_id")
+    if _pid:
+        try:
+            activate_profile_globally(resolve_source_profile(_pid))
+        except ValueError:
+            pass  # 画像等待期间被移除：回落默认，精修不该因此失败
     try:
         with _refine_lock:
             ctx = _refine_ctx.get(shot_id)
@@ -1141,6 +1210,10 @@ def _start_refine(
         _refine_ctx[shot_id] = {
             "base": base_result, "mode": mode,
             "extra": dict(extra or {}), "multi": bool(extra),
+            # 后台线程不继承请求的 ContextVar——把画像 id 带过去，
+            # _run_refine 入口重建上下文，导出层（GPX/TCX 源标题）等
+            # 画像敏感的收尾步骤才不会串源。
+            "profile_id": CONFIG.source_profile_id,
         }
     th = threading.Thread(
         target=_run_refine,

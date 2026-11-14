@@ -138,7 +138,9 @@ class VisionConfig:
 
 @dataclass
 class AppConfig:
-    vision: VisionConfig = field(default_factory=VisionConfig)
+    # ⚠️ ``vision`` 不再是字段：视觉参数跟随输入源画像（请求级入参或
+    # ``SOURCE_PROFILE`` 环境变量），见下方 ``vision`` property。把画像
+    # 参数写成字段会导致「切换画像后视觉参数不跟着变」的两套真相。
     # 词典库：本地地名词典，随使用积累
     lexicon_path: Path = DATA_DIR / "lexicon.json"
     # 轨迹模板库：成功识别的「像素折线 ↔ 地理折线」，含真实位置，不入库
@@ -262,21 +264,43 @@ class AppConfig:
 
     @property
     def source_profile_id(self) -> str:
-        """当前输入源画像 id：``SOURCE_PROFILE`` 环境变量，默认 ``meituan``。
+        """当前输入源画像 id。
 
-        切换画像会同时更换视觉提取参数与 OCR 文案词表（见
-        ``app/source_profile.py``）。遵守「同一功能只用一个环境变量」
-        的约定：来源选择只有 ``SOURCE_PROFILE`` 这一个开关。
+        优先级：**请求级显式指定**（``/api/recognize`` 等端点的
+        ``source`` 表单入参，经 ``app.source_profile`` 的 ContextVar
+        生效）> ``SOURCE_PROFILE`` 环境变量 > 默认 ``meituan``。
+        遵守「同一功能只用一个环境变量」的约定：环境级来源选择只有
+        ``SOURCE_PROFILE`` 这一个开关；请求级由入参控制。
         """
+        from .source_profile import current_active_profile
+
+        act = current_active_profile()
+        if act is not None:
+            return act.id
         raw = (self._env_value("SOURCE_PROFILE") or "").strip().lower()
         return raw or "meituan"
 
     @property
     def source(self) -> "SourceProfile":
-        """当前输入源画像（含视觉参数与里程词表）；未知 id 直接报错。"""
-        from .source_profile import resolve_source_profile
+        """当前输入源画像（含视觉参数与里程词表）；未知 id 直接报错。
 
+        请求级入参 > 环境变量，优先级见 ``source_profile_id``。
+        """
+        from .source_profile import current_active_profile, resolve_source_profile
+
+        act = current_active_profile()
+        if act is not None:
+            return act
         return resolve_source_profile(self.source_profile_id)
+
+    @property
+    def vision(self) -> VisionConfig:
+        """当前生效的视觉提取参数（跟随输入源画像，调用时刻读取）。
+
+        美团画像的参数值与 2026-11-14 模块化之前的字段默认值完全一致；
+        切换画像（请求入参 / 环境变量）后这里自动换成对应画像的参数。
+        """
+        return self.source.vision
 
     @property
     def map_match_enabled(self) -> bool:
