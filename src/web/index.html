@@ -940,6 +940,30 @@ __WB_AMAP_SDK__
 
     const dg = d.diagnostics || {};
 
+    // 运动概要（订单详情页截图识别）：放进顶部 stat 卡片与置信度/里程
+    // 并列展示，不埋进诊断信息——这是用户传概要截图最想看到的东西。
+    // 缺哪个字段就不显示哪张卡，绝不用猜测值填充。
+    const rsm = d.ride_summary || {};
+    const fmtDur = (s) => s >= 3600
+      ? Math.floor(s / 3600) + '小时' + Math.floor((s % 3600) / 60) + '分'
+      : Math.floor(s / 60) + '分' + (s % 60) + '秒';
+    const summaryStats = [];
+    if (rsm.started_at != null) {
+      summaryStats.push(['开始时间', String(rsm.started_at).replace('T', ' ')]);
+    }
+    if (rsm.duration_s != null) {
+      summaryStats.push(['骑行耗时', fmtDur(rsm.duration_s)]);
+    }
+    if (rsm.distance_km != null) {
+      summaryStats.push(['订单里程', rsm.distance_km + ' km']);
+    }
+    if (rsm.calories_kcal != null) {
+      summaryStats.push(['卡路里', Math.round(rsm.calories_kcal) + ' kcal']);
+    }
+    if (rsm.carbon_g != null) {
+      summaryStats.push(['减碳', rsm.carbon_g + ' g']);
+    }
+
     $('stats').innerHTML = [
       ['置信度', (typeof d.confidence === 'number' ? d.confidence * 100 : 0).toFixed(0) + '%'],
       ['轨迹点', int(d.track_points, 0)],
@@ -947,7 +971,7 @@ __WB_AMAP_SDK__
       ['坐标系', text(d.crs, '—')],
       ['配准残差', num(dg.rmse_m, 0, '—') + (dg.rmse_m !== undefined ? ' m' : '')],
       ['内点/离群', int(dg.inliers, 0) + '/' + int(dg.outliers, 0)],
-    ].map(([k, v]) =>
+    ].concat(summaryStats).map(([k, v]) =>
       '<div class="stat"><div class="k">' + k + '</div><div class="v">' + v + '</div></div>'
     ).join('');
 
@@ -960,22 +984,13 @@ __WB_AMAP_SDK__
       '<div class="kv"><span>锚点反投影偏移</span><span>' + (typeof chk === 'number' && isFinite(chk) && chk >= 0 ? chk.toFixed(0) + ' px' : '—') + '</span></div>' +
       '<div class="kv"><span>OCR 文本框</span><span>' + int(dg.ocr_texts, 0) + '</span></div>' +
       '<div class="kv"><span>耗时</span><span>' + int(d.elapsed_ms, 0) + ' ms</span></div>' +
-      // 运动概要：订单详情页截图解析出的运动元数据（可选上传）。
-      (d.ride_summary && d.ride_summary.available
-        ? '<div class="kv"><span>运动概要</span><span>' +
-          [
-            d.ride_summary.distance_km != null ? d.ride_summary.distance_km + ' km' : '',
-            d.ride_summary.duration_s != null
-              ? Math.floor(d.ride_summary.duration_s / 60) + '分' +
-                (d.ride_summary.duration_s % 60) + '秒' : '',
-            d.ride_summary.calories_kcal != null ? d.ride_summary.calories_kcal + ' kcal' : '',
-            d.ride_summary.carbon_g != null ? '减碳 ' + d.ride_summary.carbon_g + 'g' : '',
-            d.ride_summary.started_at
-              ? String(d.ride_summary.started_at).replace('T', ' ') : '',
-            d.ride_summary.cross_check && d.ride_summary.cross_check.available
-              ? (d.ride_summary.cross_check.consistent ? '✓ 与轨迹里程一致' : '⚠ 里程量级不符')
-              : '',
-          ].filter(Boolean).join(' · ') + '</span></div>'
+      // 概要字段本身已在顶部 stat 卡片展示；这里只留里程交叉校验结论。
+      (rsm.cross_check && rsm.cross_check.available
+        ? '<div class="kv"><span>里程校验</span><span>' +
+          (rsm.cross_check.consistent
+            ? '✓ 订单里程与轨迹里程一致（比值 ' + rsm.cross_check.ratio + '）'
+            : '⚠ ' + esc(String(rsm.cross_check.note || '里程量级不符'))) +
+          '</span></div>'
         : '') +
       // 模板命中：概览单图免传细节图的复用通道（参考级定位）。
       (dg.template_match && dg.template_match.template

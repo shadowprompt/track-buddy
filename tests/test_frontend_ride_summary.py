@@ -37,9 +37,12 @@ def test_set_summary_is_defined_and_bound() -> None:
 
 
 def test_result_card_renders_ride_summary() -> None:
-    assert "d.ride_summary && d.ride_summary.available" in HTML
-    # 显示字段：里程 / 时长 / 卡路里 / 减碳 / 开始时间 / 交叉校验
-    for needle in ("d.ride_summary.distance_km", "d.ride_summary.duration_s",
-                   "d.ride_summary.calories_kcal", "d.ride_summary.carbon_g",
-                   "d.ride_summary.started_at", "与轨迹里程一致"):
+    # 概要字段以独立 stat 卡片展示（与置信度/里程并列），不埋在诊断信息里
+    for needle in ("rsm.started_at", "rsm.duration_s", "rsm.distance_km",
+                   "rsm.calories_kcal", "rsm.carbon_g",
+                   "['开始时间'", "['骑行耗时'", "['订单里程'", "['卡路里'"):
         assert needle in HTML
+    # 交叉校验结论留在诊断区，一致性/不一致各有明确文案
+    assert "rsm.cross_check" in HTML
+    assert "✓ 订单里程与轨迹里程一致" in HTML
+    assert "里程量级不符" in HTML
