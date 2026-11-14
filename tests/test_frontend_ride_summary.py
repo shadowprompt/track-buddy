@@ -25,6 +25,17 @@ def test_summary_follows_the_form_data_pipeline() -> None:
     assert "setSummary(null);" in HTML
 
 
+def test_set_summary_is_defined_and_bound() -> None:
+    # 回归锁定：setSummary 被引用就必须有定义，否则 bindDrop(dropSummary, ...)
+    # 在页面加载时抛 ReferenceError，整个初始化脚本中断，上传框全部失效。
+    assert "function setSummary(" in HTML
+    # 三个上传框都以同样的方式绑定点击 / 拖拽。
+    for binding in ("bindDrop(drop, fileInput, setOverview, false);",
+                    "bindDrop(dropDetails, detailsInput, setDetails, true);",
+                    "bindDrop(dropSummary, summaryInput, setSummary, false);"):
+        assert binding in HTML
+
+
 def test_result_card_renders_ride_summary() -> None:
     assert "d.ride_summary && d.ride_summary.available" in HTML
     # 显示字段：里程 / 时长 / 卡路里 / 减碳 / 开始时间 / 交叉校验

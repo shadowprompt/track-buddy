@@ -480,6 +480,22 @@ __WB_AMAP_SDK__
     runPrecheckAll();
   }
 
+  // 订单详情截图（可选）：只更新选中态文案，不参与形状/预检逻辑。
+  function setSummary(f) {
+    pickedSummary = f || null;
+    if (pickedSummary) {
+      dropSummary.querySelector('.big').textContent = pickedSummary.name;
+      dropSummary.querySelector('.hint').textContent =
+        (pickedSummary.size / 1024 / 1024).toFixed(2) + ' MB · 点击可重新选择';
+    } else {
+      dropSummary.querySelector('.big').textContent =
+        '上传订单详情页，识别里程/时长/卡路里/减碳/开始时间';
+      dropSummary.querySelector('.hint').textContent =
+        '与轨迹识别合并成一次完整的运动记录，可选';
+    }
+    updateGo();
+  }
+
   // ---------- 上传前输入预检 ----------
   // 分辨率不足 / 文件过大时，配准再准也拿不到道路细节。这里只做**纯前端**
   // 提示，不拦截上传（用户仍可能想用这张图试一次）；真正的低信息量判据
