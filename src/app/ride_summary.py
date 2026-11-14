@@ -33,8 +33,12 @@ from typing import Any, Iterable
 from .config import CONFIG
 
 # --- 通用单位正则（与来源无关，不进画像） ---
+# ⚠️ OCR 常把日期与时间之间的空格吞掉：「2026-11-11 20:20:26」粘连成
+# 「2026-11-1120:20:26」（2026-11-14 实测，duration_text 里可见）。
+# 分隔符必须可选，日期/时/分秒用位数切分；解析后还要做范围校验，
+# 防粘连错位读出 92 小时之类的胡值（见 test）。
 _RE_TIMESTAMP = re.compile(
-    r"(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?")
+    r"(\d{4})-(\d{1,2})-(\d{1,2})[ T]?(\d{1,2}):(\d{2})(?::(\d{2}))?")
 _RE_DURATION = re.compile(r"(?:(\d+)\s*小时)?\s*(\d+)\s*分(?:\s*(\d+)\s*秒)?")
 _RE_KCAL = re.compile(r"(\d+(?:\.\d+)?)\s*k?cal", re.IGNORECASE)
 # km 需词边界防「3.5kmX」误读；单独的 g 需排除 kg
@@ -115,13 +119,20 @@ def parse_ride_summary(
     out["duration_text"] = None
     notes: list[str] = []
 
-    # --- 开始时间 ---
+    # --- 开始时间（可能多候选/粘连，逐个校验取第一个合法的） ---
     for s in tokens:
-        m = _RE_TIMESTAMP.search(s)
-        if m:
+        for m in _RE_TIMESTAMP.finditer(s):
             y, mo, d, h, mi, sec = m.groups()
-            out["started_at"] = (f"{y}-{mo}-{d}T{h}:{mi}:"
-                                 + (sec or "00"))
+            mo_i, d_i = int(mo), int(d)
+            h_i, mi_i, sec_i = int(h), int(mi), int(sec or 0)
+            if not (1 <= mo_i <= 12 and 1 <= d_i <= 31
+                    and h_i <= 23 and mi_i <= 59 and sec_i <= 59):
+                continue  # 粘连错位/OCR 误读出的胡值，跳过看下一个
+            out["started_at"] = (
+                f"{int(y):04d}-{mo_i:02d}-{d_i:02d}T"
+                f"{h_i:02d}:{mi_i:02d}:{sec_i:02d}")
+            break
+        if out["started_at"]:
             break
 
     # --- 时长（「骑行20分35秒」，可能整块或含「小时」） ---
@@ -215,6 +226,11 @@ def parse_ride_summary(
         else:
             cc["note"] = "几何里程与订单里程量级一致"
     out["cross_check"] = cc
+
+    # GPX 时间轴需要「开始时间 + 时长」两个端点：只有时长给不出绝对
+    # 时刻序列（GPX 要求 UTC 绝对时间），提前说明缺什么。
+    if out["duration_s"] is not None and out["started_at"] is None:
+        notes.append("识别到时长但没有开始时间，GPX 导出将没有时间轴")
     out["notes"] = notes
     return out
 

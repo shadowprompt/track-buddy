@@ -71,6 +71,42 @@ def test_distance_without_label_falls_back_to_min() -> None:
     assert out["distance_km"] == pytest.approx(3.5)  # 无标签取最小（累计>本次）
 
 
+def test_timestamp_survives_ocr_glued_separator() -> None:
+    """回归锁定（2026-11-14 真实落盘数据）：OCR 吞掉日期与时间之间的
+    空格——「2026-11-11 20:20:26骑行20分35秒」粘连成
+    「2026-11-1120:20:26骑行20分35秒」——旧正则要求分隔符必选，
+    started_at 解析为 null，整条 GPX 时间轴跟着消失。"""
+    out = parse_ride_summary(
+        _items("2026-11-1120:20:26骑行20分35秒"),
+        ride_labels=MEITUAN_LABELS)
+    assert out["started_at"] == "2026-11-11T20:20:26"
+    assert out["duration_s"] == 20 * 60 + 35
+    assert "started_at" in out["fields_found"]
+
+
+def test_timestamp_with_space_still_parsed() -> None:
+    out = parse_ride_summary(
+        _items("2026-11-11 20:20:26"), ride_labels=MEITUAN_LABELS)
+    assert out["started_at"] == "2026-11-11T20:20:26"
+
+
+def test_timestamp_range_validation_rejects_garbled_values() -> None:
+    """粘连错位读出 92 时 90 分之类的胡值必须丢弃，宁缺勿错。"""
+    out = parse_ride_summary(
+        _items("2026-11-1192:90:26骑行20分35秒"),
+        ride_labels=MEITUAN_LABELS)
+    assert out["started_at"] is None
+    assert out["duration_s"] == 20 * 60 + 35
+
+
+def test_duration_without_start_warns_about_missing_gpx_time_axis() -> None:
+    out = parse_ride_summary(
+        _items("骑行20分35秒"), ride_labels=MEITUAN_LABELS)
+    assert out["started_at"] is None
+    assert out["duration_s"] == 20 * 60 + 35
+    assert any("GPX" in n and "时间轴" in n for n in out["notes"])
+
+
 def test_carbon_requires_label_neighbor() -> None:
     # g 候选存在但无「减碳」标签近邻 → 宁缺勿错
     out = parse_ride_summary(_items("172g", "行程免费", "203kcal"),

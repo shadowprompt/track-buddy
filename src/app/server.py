@@ -409,6 +409,16 @@ def _attach_gpx(payload: dict[str, Any]) -> None:
             coords = [[float(lo), float(la)] for lo, la in cs]
     if not coords:
         return
+    # 时间轴缺失要明说：GPX 没有 <time> 时 Strava 导入后无时长/配速，
+    # 用户看到「下载的 GPX 里连开始时间都没有」却不知道缺的是哪个环节。
+    rs = payload.get("ride_summary") or {}
+    if not (rs.get("started_at") and rs.get("duration_s")):
+        payload.setdefault("warnings", []).append(
+            "GPX 无时间轴：缺运动开始时间或时长（概要识别 "
+            f"started_at={rs.get('started_at')!r}, "
+            f"duration_s={rs.get('duration_s')!r}）——"
+            "逐点时刻只能由订单详情截图的「开始时间+总时长」插值得出，"
+            "轨迹截图本身没有时间信息")
     from .source_profile import PROFILES  # 延迟导入避免循环
 
     title = "骑行"
