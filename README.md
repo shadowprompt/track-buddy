@@ -1341,6 +1341,11 @@ residual 0.0021）才采信，否则静默回落原流程。命中时结果卡�
 行（模板 ID / 残差 / 覆盖 / 是否反向），`locate()` 命中会计入
 `hit_count`（`/api/health` 的 `templates.hits` 可观察复用频率）。
 
+⚠️ **双通道是必要条件，不是锦上添花（2026-11-14 实测确认）**：用户上传的
+真实概览图 OCR 宽泛占比始终 0.373，旧判据判定永远 false——若只保留宽泛
+通道，模板注册成功后也永远不会被召回，飞轮在「注册→召回」之间静默断裂。
+「库里有没有资产」本身就是触发信号，不能只依赖输入侧 OCR 启发式。
+
 🔴 **拼接曾会吞掉起终点徽章（已修）**：贴图时同一像素只留**先贴**的那张图，
 若含绿色「起」的截图恰好排在重叠区后面，徽章会被同区域另一张「没有徽章」的
 截图完整盖掉；画布上再也找不到起点，`extract_track()` 失去拓扑锚，整次识别
@@ -1394,6 +1399,15 @@ residual 0.0021）才采信，否则静默回落原流程。命中时结果卡�
 实测（2026-11-13 真实概览图 + 拼接画布复盘）：概览↔画布配对 residual
 **0.0116**、coverage 1.0；重构后 conf 0.2 直接过门注册；同图重放 locate
 residual **0.0021**、coverage 1.0，近复刻采信成立，反向变体同样命中。
+
+实测闭环（2026-11-14 用户两次真实上传）：① 传「概览 + 7 细节图」，SIFT
+拼接 verify 1.0、徽章守恒通过，`paired_registration.written=true`，
+`data/route_templates.json` 首次生成——在 `input_quality=reject` +
+conf 0.2 下过门，证明单图连坐门槛确实解除；② 只传同一张概览图，
+`diagnostics.template_match` residual **0.00207**、coverage 1.0 命中，
+输出 64 点插值坐标（GCJ 3406.1m，对比真值 3495.7m 差 ~2.6%），conf 0.449
+贴着参考级上限 0.45，`template_capture.written=false
+(reason=template_derived_result)` 证明模板派生结果不回写。
 
 🔴 **仍是参考级**：注册后的坐标没有当次地理核验，绝对尺度来自历史真值，
 `source="template"` / confidence ≤0.45 / `quality=reference_only_unverified`
