@@ -163,14 +163,21 @@
       <div class="card">
         <h2>上传截图</h2>
 
-        <label class="uplabel first" for="file">① 概览单图（必选）</label>
+        <label class="uplabel first" for="summary">① 运动概要截图（可选）</label>
+        <div class="drop sub" id="dropSummary">
+          <div class="big">识别本次运动的开始时间/时长/里程/卡路里/减碳</div>
+          <div class="hint">运动记录页截图，与轨迹识别合并成一次完整的运动记录</div>
+          <input type="file" id="summary" accept="image/*" hidden>
+        </div>
+
+        <label class="uplabel" for="file">② 概览单图（必选）</label>
         <div class="drop" id="drop">
           <div class="big">点击选择整条路线的概览图</div>
           <div class="hint">支持 JPG / PNG / WebP，最大 20MB · 缩放太高看不清街道名也能用</div>
           <input type="file" id="file" accept="image/*" hidden>
         </div>
 
-        <label class="uplabel" for="details">② 街道级细节图（可选）</label>
+        <label class="uplabel" for="details">③ 街道级细节图（可选）</label>
         <div class="drop sub" id="dropDetails">
           <div class="big">仅当概览图缩放太高、历史记录里还没有同类路线时补传</div>
           <div class="hint">沿路线连续截 2–6 张，相邻约 1/3 重叠</div>
@@ -180,13 +187,6 @@
           <input type="checkbox" id="detailsOnly" style="width:auto;">
           没有概览图，只用细节图识别（旧的多图模式）
         </label>
-
-        <label class="uplabel" for="summary">③ 订单详情截图（可选）</label>
-        <div class="drop sub" id="dropSummary">
-          <div class="big">上传订单详情页，识别里程/时长/卡路里/减碳/开始时间</div>
-          <div class="hint">与轨迹识别合并成一次完整的运动记录，可选</div>
-          <input type="file" id="summary" accept="image/*" hidden>
-        </div>
 
         <div class="note" id="multiNote" style="margin-top:10px; display:none;">
           <b>已选 <span id="fileCount">0</span> 张细节图</b>：
@@ -402,7 +402,7 @@ __WB_AMAP_SDK__
         dropSummary = $('dropSummary'), summaryInput = $('summary'),
         go = $('go'), status = $('status');
   // picked 是单张概览图；pickedDetails 是可选的街道级细节图列表；
-  // pickedSummary 是可选的订单详情页截图（运动概要来源）。
+  // pickedSummary 是可选的运动概要截图（本次运动的开始时间/时长等）。
   let picked = null, pickedDetails = [], pickedSummary = null, lastResult = null;
   // 底图适配层：业务代码只依赖 RideBasemap.Adapter，不再直接碰 TMap.*。
   // 服务商名由服务端按配置注入（BASEMAP_PROVIDER），改 .env 即可切换。
@@ -503,7 +503,7 @@ __WB_AMAP_SDK__
     runPrecheckAll();
   }
 
-  // 订单详情截图（可选）：只更新选中态文案，不参与形状/预检逻辑。
+  // 运动概要截图（可选）：只更新选中态文案，不参与形状/预检逻辑。
   function setSummary(f) {
     pickedSummary = f || null;
     if (pickedSummary) {
@@ -512,7 +512,7 @@ __WB_AMAP_SDK__
         (pickedSummary.size / 1024 / 1024).toFixed(2) + ' MB · 点击可重新选择';
     } else {
       dropSummary.querySelector('.big').textContent =
-        '上传订单详情页，识别里程/时长/卡路里/减碳/开始时间';
+        '识别本次运动的开始时间/时长/里程/卡路里/减碳';
       dropSummary.querySelector('.hint').textContent =
         '与轨迹识别合并成一次完整的运动记录，可选';
     }
@@ -968,7 +968,7 @@ __WB_AMAP_SDK__
 
     const dg = d.diagnostics || {};
 
-    // 运动概要（订单详情页截图识别）：放进顶部 stat 卡片与置信度/里程
+    // 运动概要截图识别结果：放进顶部 stat 卡片与置信度/里程
     // 并列展示，不埋进诊断信息——这是用户传概要截图最想看到的东西。
     // 缺哪个字段就不显示哪张卡，绝不用猜测值填充。
     const rsm = d.ride_summary || {};
@@ -983,7 +983,7 @@ __WB_AMAP_SDK__
       summaryStats.push(['骑行耗时', fmtDur(rsm.duration_s)]);
     }
     if (rsm.distance_km != null) {
-      summaryStats.push(['订单里程', rsm.distance_km + ' km']);
+      summaryStats.push(['概要里程', rsm.distance_km + ' km']);
     }
     if (rsm.calories_kcal != null) {
       summaryStats.push(['卡路里', Math.round(rsm.calories_kcal) + ' kcal']);
@@ -1023,7 +1023,7 @@ __WB_AMAP_SDK__
       (rsm.cross_check && rsm.cross_check.available
         ? '<div class="kv"><span>里程校验</span><span>' +
           (rsm.cross_check.consistent
-            ? '✓ 订单里程与轨迹里程一致（比值 ' + rsm.cross_check.ratio + '）'
+            ? '✓ 概要里程与轨迹里程一致（比值 ' + rsm.cross_check.ratio + '）'
             : '⚠ ' + esc(String(rsm.cross_check.note || '里程量级不符'))) +
           '</span></div>'
         : '') +

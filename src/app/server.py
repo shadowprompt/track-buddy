@@ -374,7 +374,7 @@ async def _attach_ride_summary(
     payload: dict[str, Any],
     summary_file: UploadFile | None,
 ) -> None:
-    """解析「订单详情页」截图，把运动概要并入识别结果（可选上传）。
+    """解析运动概要截图，把本次运动的开始时间/时长等并入识别结果（可选上传）。
 
     概要字段（里程/时长/卡路里/减碳/开始时间）进 ``payload["ride_summary"]``，
     非空字段同时并入 GeoJSON ``properties["ride_summary"]``——这样一次
@@ -390,7 +390,7 @@ async def _attach_ride_summary(
         img = None
     if img is None:
         payload.setdefault("warnings", []).append(
-            "订单详情截图无法解码，运动概要已跳过")
+            "运动概要截图无法解码，已跳过")
         return
     from .ocr_anchor import ocr_texts
     from .ride_summary import parse_ride_summary, summary_properties
@@ -437,7 +437,7 @@ def _attach_exports(payload: dict[str, Any]) -> None:
             "运动文件无时间轴（GPX 无 <time>、TCX 无法生成）：缺运动"
             f"开始时间或时长（概要识别 started_at={rs.get('started_at')!r}, "
             f"duration_s={rs.get('duration_s')!r}）——"
-            "逐点时刻只能由订单详情截图的「开始时间+总时长」插值得出，"
+            "逐点时刻只能由运动概要截图的「开始时间+总时长」插值得出，"
             "轨迹截图本身没有时间信息")
     # CONFIG.source_profile_id 读的是请求级画像上下文（source 入参 >
     # SOURCE_PROFILE 环境变量），单请求内导出层与识别链路自动同源。
