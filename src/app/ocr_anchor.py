@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass, field
 
 import cv2
@@ -93,12 +94,17 @@ class OcrEngine:
 
     def __init__(self) -> None:
         self._engine = None
+        # 启动预热线程与首个识别请求可能同时到达；没有锁会各加载一份
+        # onnxruntime 模型，内存翻倍且互相踩踏。
+        self._lock = threading.Lock()
 
     def _get(self):
         if self._engine is None:
-            from rapidocr_onnxruntime import RapidOCR
+            with self._lock:
+                if self._engine is None:
+                    from rapidocr_onnxruntime import RapidOCR
 
-            self._engine = RapidOCR()
+                    self._engine = RapidOCR()
         return self._engine
 
     def run(self, img: np.ndarray) -> list[TextItem]:
@@ -142,6 +148,19 @@ class OcrEngine:
 
 
 _OCR = OcrEngine()
+
+
+def warmup_ocr() -> bool:
+    """服务启动时在后台线程提前加载 OCR 模型，避开首个请求的冷启动。
+
+    RapidOCR 首次构造会加载 onnxruntime 模型，实测可达数十秒；叠加上
+    在线地理编码/路网查询后，第一个识别请求很容易撞上反代 60s 的读超时
+    （表现为 504）。预热只是优化，任何异常都吞掉：识别时仍会按需加载。
+    """
+    try:
+        return _OCR._get() is not None
+    except Exception:  # noqa: BLE001 — 预热失败不能影响服务启动
+        return False
 
 
 def ocr_texts(img: np.ndarray, cfg: VisionConfig) -> list[TextItem]:

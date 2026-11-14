@@ -457,6 +457,20 @@ class AppConfig:
         return self._env_value("RECORDS_TOKEN_SECRET")
 
     @property
+    def cos_http_timeout(self) -> float:
+        """COS SDK 单次请求超时（秒），默认 15，上限 120。
+
+        SDK 默认会重试且底层超时很长；云存储抖动时不能让识别响应一直
+        挂在保存记录上。单一用途变量 ``COS_HTTP_TIMEOUT``，无别名。
+        """
+        try:
+            raw = (self._env_value("COS_HTTP_TIMEOUT") or "").strip() or 15
+            value = float(raw)
+        except (TypeError, ValueError):
+            return 15.0
+        return max(3.0, min(value, 120.0))
+
+    @property
     def cos_prefix(self) -> str:
         """对象根前缀，便于 prod/dev 共用一个桶；末尾恒带一个 ``/``。"""
         raw = (self._env_value("COS_PREFIX") or "").strip().strip("/")

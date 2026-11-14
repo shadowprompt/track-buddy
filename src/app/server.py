@@ -12,6 +12,7 @@ from typing import Any
 import cv2
 import numpy as np
 from fastapi import (
+    BackgroundTasks,
     Body,
     Depends,
     FastAPI,
@@ -685,6 +686,7 @@ def _maybe_save_record(*, uid: str | None, rec_id: str,
 
 @app.post("/api/recognize_multi")
 async def recognize_multi(
+    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
     city: str = Form(""),
     output_crs: str = Form("WGS-84"),
@@ -912,7 +914,10 @@ async def recognize_multi(
     # 而误判「用户已经换了新图」，精修结果就不落盘了。
     if refine_args is not None:
         _start_refine(**refine_args)
-    _maybe_save_record(
+    # 云存储放到响应之后：COS 抖动/重试不该占用识别请求的等待时间，
+    # 更不能让同步 I/O 卡在 async 端点里挡住整个事件循环。
+    background_tasks.add_task(
+        _maybe_save_record,
         uid=record_uid, rec_id=shot_id, payload=payload,
         extra_images=[p for _, p in saved]
         + ([overview_path] if overview_path is not None else []),
@@ -924,6 +929,7 @@ async def recognize_multi(
 
 @app.post("/api/recognize")
 async def recognize(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     city: str = Form(""),
     output_crs: str = Form("WGS-84"),
@@ -1166,7 +1172,9 @@ async def recognize(
         _start_refine(shot_id, shot_path, base_result=result, mode="auto")
         payload["refine_pending"] = True
         payload["refine_state"] = "running"
-    _maybe_save_record(
+    # 与多图端点一致：记录写入不占用识别响应时间（见上）。
+    background_tasks.add_task(
+        _maybe_save_record,
         uid=record_uid, rec_id=shot_id, payload=payload,
         extra_images=detail_paths,
         summary_bytes=summary_sink[0] if summary_sink else b"",

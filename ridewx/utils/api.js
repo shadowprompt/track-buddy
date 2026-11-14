@@ -21,8 +21,16 @@ var BASE_URL = config.BASE_URL;
 function errText(res) {
   // 后端错误统一是 HTTPException，detail 里是人话原因
   if (res && res.data && res.data.detail) return String(res.data.detail);
+  var code = res && res.statusCode;
+  // 反代（Nginx）读超时会先于 wx.request 的 600s 超时返回，且 body 是
+  // HTML：dataType:'json' 下 res.data 不是对象。别让用户只看到「HTTP 504」。
+  if (code === 504 || code === 502) {
+    return '识别耗时较长，网关等待超时（' + code + '）。请稍后重试；'
+      + '若反复出现，需把服务器 Nginx 的 proxy_read_timeout 调大。';
+  }
+  if (code === 503) return '服务暂时不可用，请稍后重试（503）';
   if (res && res.errMsg) return res.errMsg;
-  return 'HTTP ' + (res && res.statusCode ? res.statusCode : '错误');
+  return 'HTTP ' + (code || '错误');
 }
 
 function extend(target, src) {
@@ -66,7 +74,9 @@ function rawRequest(method, path, opts) {
         reject(err);
       },
       fail: function (err) {
-        reject(new Error(err.errMsg || '网络请求失败'));
+        var msg = (err && err.errMsg) ? String(err.errMsg) : '网络请求失败';
+        if (/timeout/i.test(msg)) msg = '识别超时：请检查网络后重试';
+        reject(new Error(msg));
       }
     });
   });

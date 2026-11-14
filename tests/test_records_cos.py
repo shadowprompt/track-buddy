@@ -408,7 +408,9 @@ def test_static_wiring_contract():
     for needle in ("_maybe_save_record(", "records.optional_record_uid",
                    "records.require_record_uid", "/api/records/{rec_id}"):
         assert needle in server_src
-    assert server_src.count("_maybe_save_record(") >= 3  # 定义 + 两个端点
+    # 保存钩子已改为响应后的后台任务；两个端点仍必须各自接线。
+    assert server_src.count("_maybe_save_record") >= 3  # 定义 + 两处调用
+    assert server_src.count("background_tasks.add_task(") >= 2
 
 
 def test_config_properties_exist():

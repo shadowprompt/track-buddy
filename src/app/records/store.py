@@ -56,16 +56,20 @@ _CLIENT_LOCK = threading.Lock()
 
 
 def _cos_client():
-    """按 (id, key, region) 缓存单例；换凭据时自动重建。"""
+    """按 (id, key, region, timeout) 缓存单例；换凭据/超时时自动重建。"""
     global _CLIENT, _CLIENT_KEY
-    cfg_key = (CONFIG.cos_secret_id, CONFIG.cos_secret_key, CONFIG.cos_region)
+    cfg_key = (CONFIG.cos_secret_id, CONFIG.cos_secret_key,
+               CONFIG.cos_region, CONFIG.cos_http_timeout)
     if _CLIENT is not None and _CLIENT_KEY == cfg_key:
         return _CLIENT
     with _CLIENT_LOCK:
         if _CLIENT is None or _CLIENT_KEY != cfg_key:
             from qcloud_cos import CosConfig, CosS3Client
+            # Timeout 必须显式给：SDK 默认超时很长且带重试，COS 网络抖动时
+            # 一次 put_object 就能把识别请求拖过反代的 60s 读超时。
             conf = CosConfig(Region=cfg_key[2], SecretId=cfg_key[0],
-                             SecretKey=cfg_key[1], Scheme="https")
+                             SecretKey=cfg_key[1], Scheme="https",
+                             Timeout=cfg_key[3])
             _CLIENT = CosS3Client(conf)
             _CLIENT_KEY = cfg_key
     return _CLIENT

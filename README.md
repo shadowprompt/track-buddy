@@ -829,6 +829,7 @@ WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-
 | `RECORDS_TOKEN_SECRET` | ✅ | HMAC 签名 + openid→uid 派生，**写入后不要轮换**（轮换=数据迁移） |
 | `COS_PREFIX` | ❌ | 对象根前缀，默认 `ride-records/` |
 | `RECORDS_TOKEN_TTL` | ❌ | token 有效期秒数，默认 2592000（30 天） |
+| `COS_HTTP_TIMEOUT` | ❌ | COS SDK 单次请求超时秒数，默认 15（钳制在 3–120）。防止云存储抖动拖住识别 |
 
 七项必需配置任一缺失，或 `cos-python-sdk-v5` 未安装 → `GET /api/health`
 的 `records.enabled=false`，`wxlogin` 返回 503、`/api/records*` 返回 403，
@@ -843,9 +844,10 @@ WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-
    对象键形如 `{prefix}users/{uid}/records/{shot_id}/{meta,summary}.json`
    与 `images/...`；每条记录对象不可变，`index.json` 只是可重建的列表缓存。
 3. `POST /api/recognize` / `recognize_multi` **带合法 Bearer token 时**
-   在返回前自动保存；**不带 token 时一次 COS 调用都不发**。保存失败只记
-   warning，绝不影响识别响应。存的是「识别完成时刻的快照」——后台
-   路网精修仍只更新本地缓存与 `/api/refine/{shot_id}`，不回写 COS。
+   自动保存，写入放在**响应之后的后台任务**里（COS 抖动不占用识别等待
+   时间）；**不带 token 时一次 COS 调用都不发**。保存失败只记 warning，
+   绝不影响识别响应。存的是「识别完成时刻的快照」——后台路网精修仍只
+   更新本地缓存与 `/api/refine/{shot_id}`，不回写 COS。
 4. 正式发布需 https 域名。小程序侧已接线（见下节）；未配齐 `.env` 七项时
    小程序自动降级为「本机摘要」，识别行为与旧版一致。
 
@@ -894,6 +896,59 @@ curl -X DELETE -H "Authorization: Bearer $(cat token.txt)" \
      http://127.0.0.1:8848/api/records/<shot_id>
 # 换 --label devB 再取列表，验证两个身份互不可见
 ```
+
+### 反代超时与冷启动（部署必读）
+
+识别是**同步长任务**：OCR + 在线地理编码 + 路网查询，实测热服务单图
+15–18 秒；服务刚重启的冷启动还要额外加载 RapidOCR 模型，低缩放概览图
+会走 90 秒上限的路网查询。Nginx 默认 `proxy_read_timeout 60s` 会在这些
+场景直接返回 **504 Gateway Time-out**（小程序侧看到的就是它，而
+`wx.request` 自己的超时是 600000ms，不是客户端先放弃）。
+
+🔴 反代必须把超时与小程序对齐（保留现有 ssl / server_name 配置，只改
+`location`）：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name track.daozhao.com;
+    # ...原有 ssl_certificate 等配置保持不变...
+
+    client_max_body_size 64m;          # 单文件上限 20MB；多图叠加需留余量
+
+    location / {
+        proxy_pass http://127.0.0.1:8848;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Connection "";
+
+        proxy_connect_timeout 10s;
+        proxy_send_timeout    600s;
+        proxy_read_timeout    600s;    # 🔴 默认 60s 会导致 504
+        send_timeout          600s;
+        client_body_timeout   120s;
+        proxy_buffering off;
+    }
+}
+```
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx   # 只改网关，无需重启 Python 服务
+```
+
+配套的代码侧加固：
+
+- `run.py` 启动后在**后台线程**预热 OCR 模型（不阻塞起监听），避免首个
+  请求承担冷启动；预热失败静默，识别时仍会按需加载。`OcrEngine` 加了
+  双重检查锁，预热线程与首个请求不会各加载一份模型。
+- COS 记录写入移出请求链路（后台任务），并给 SDK 显式 `Timeout`
+  （`COS_HTTP_TIMEOUT`，默认 15s）——云存储慢不会再把识别拖成 504。
+- 部署/重启后建议先用「本地验收」里的 curl 打一次样例图预热；单
+  uvicorn worker 期间长识别会阻塞事件循环，`health` 也会一起等待，
+  因此保持 `instances: 1`，不要在识别中并发压测。
+- 小程序侧对 502/504 已给出明确提示；若仍反复超时，优先看网关
+  `proxy_read_timeout` 而不是加大 `wx.request` 的 timeout。
 
 ### 运维与限制
 
