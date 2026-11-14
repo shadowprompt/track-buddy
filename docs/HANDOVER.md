@@ -6420,3 +6420,41 @@ overview 域、64 点、上海）。关键在于这次是在 `input_quality=reje
 新增 `tests/test_ride_summary.py` 13 例（真实截图样例值 + 歧义 + 交叉
 校验 + server 直测）与 `tests/test_frontend_ride_summary.py` 3 例；
 全量见提交信息。未重启服务。
+
+### §22.60 GPX 导出：轨迹 + 时间轴合成（2026-11-14）
+
+**动机**：`ride_summary` 识别出来之后，里程/时长/开始时间只躺在
+JSON 与 GeoJSON `properties` 里；运动平台（Strava / Garmin / 佳明
+Connect）只认 GPX 的逐点 `<time>`——GeoJSON 没有时间轴，导入后时长、
+配速全丢。把「轨迹 + 概要」合成 GPX 才是完整闭环。
+
+**实现**（`src/app/gpx.py` + server 三处接线）：
+
+* `build_gpx(coords, ride_summary=..., source_title=...)`：WGS-84
+  `[lon, lat]` 序列 → GPX 1.1 文本。坐标必须取 `payload["geojson"]`
+  （WGS-84），GCJ-02 进 GPX 会整体偏 ~290m。
+* **时间插值**：按累计里程比例（haversine）分配逐点时刻
+  `t_i = start_utc + cumdist_i/total × duration`；里程 0 退化为按
+  序号均匀。**坑**：第一版在本地时间域插值完没换 UTC，
+  `_utc_z` 只做格式化不做换算，整条时间轴冒充 UTC 偏 8 小时——
+  被 `test_track_times_span_start_to_end` 抓住。
+* **时区**：订单页时间是东八区本地时间，GPX 要求 UTC；固定 +8h
+  换算（中国无夏令时），不引入 zoneinfo/tzdata（Windows 缺 IANA 库）。
+* 概要字段写 `<trk><extensions>` 自定义命名空间 `mr:`（distanceKm /
+  durationS / caloriesKcal / carbonG）；平台忽略未知扩展不影响导入。
+  只有时长没有开始时间时不给逐点 `<time>`（绝对时刻给不出，宁缺勿错）。
+* `server._attach_gpx(payload)`：`recognize` / `recognize_multi` 在
+  `_attach_ride_summary` 之后、`_persist_last_result` 之前调用；
+  无坐标时不产出。失败只告警，绝不影响识别。
+* **精修路径**：`_run_refine` 的 payload 重新组装，原只合并回
+  `paired_registration/template_capture`；现在 `ride_summary` 也进
+  合并清单（概要属于本次运动，精修不改起止时间），并按精修后坐标
+  重新合成 GPX。顺带修正了「merged 落盘但 last_stitch/响应 payload
+  拿不到合并字段」的不一致。
+* 前端：`payload["gpx"]` → Blob（`application/gpx+xml`）下载链接
+  「↓ 下载 GPX（含时间轴与运动概要）」，无 GPX 时隐藏。
+
+**验证**：新增 `tests/test_gpx.py` 17 例（结构/插值/UTC/扩展/转义/
+退化轨迹/server 直测/前端契约）；全量 567 passed。测试坑：自己先
+把 20:20:26+20分35秒 算错成 20:40:41（应为 20:41:01）——3 例失败
+全是断言算术错，代码无误。未重启服务。

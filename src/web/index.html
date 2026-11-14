@@ -275,6 +275,7 @@
         <a class="dl" id="stitchCheck" href="/stitch-check" target="_blank"
            style="margin-left:14px;">多图拼接核对页（拼接图 + 原图位置框 + 轨迹）</a>
         <a class="dl" id="dlG" style="margin-left:14px; display:none;" download="trajectory_wgs84.geojson">↓ 下载 WGS-84 版本（GPS 设备 / Strava）</a>
+        <a class="dl" id="dlGPX" style="margin-left:14px; display:none;" download="trajectory_wgs84.gpx">↓ 下载 GPX（含时间轴与运动概要，直接导入 Strava / Garmin）</a>
         <div class="note" style="margin-top:8px;">
           <b>在腾讯地图 / 高德 / 美团里查看，请用 GCJ-02 版本。</b>
           WGS-84 版本在中国境内与底图相差约 290 米，直接加载会明显偏离道路。
@@ -1236,6 +1237,16 @@ __WB_AMAP_SDK__
     const blobG = new Blob([JSON.stringify(d.geojson || {}, null, 2)], { type: 'application/geo+json' });
     $('dlG').href = URL.createObjectURL(blobG);
     $('dlG').style.display = 'inline-block';
+
+    // GPX（WGS-84 + 每点时间轴 + 运动概要扩展）由服务端合成，前端只转
+    // Blob。后端没产出（识别失败 / 无坐标）时隐藏链接。
+    if (d.gpx) {
+      const blobX = new Blob([d.gpx], { type: 'application/gpx+xml' });
+      $('dlGPX').href = URL.createObjectURL(blobX);
+      $('dlGPX').style.display = 'inline-block';
+    } else {
+      $('dlGPX').style.display = 'none';
+    }
 
     // 地图（返回是否真的刷新成功，异步精修要用它决定提示文案）
     mapOk = drawMap(d);

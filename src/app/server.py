@@ -26,6 +26,7 @@ from .stitch_backends import (
     list_backends,
     run_stitch,
 )
+from .gpx import build_gpx
 from .pipeline import RidePipeline, _result_is_self_consistent
 from .route_template import TemplateStore
 from .tmap_proxy import create_proxy_router, make_secret, render_page
@@ -390,6 +391,39 @@ async def _attach_ride_summary(
         payload.setdefault("warnings", []).append(str(cc["note"]))
 
 
+def _attach_gpx(payload: dict[str, Any]) -> None:
+    """把 WGS-84 轨迹 + 运动概要合成 GPX，放进 ``payload["gpx"]``。
+
+    前端直接把这段文本变成 Blob 下载链接——运动平台（Strava/Garmin）
+    只认 GPX 的时间轴，GeoJSON 里没有每个点的时刻，导入后时长/配速
+    全丢。合成放服务端是为了时间插值与 UTC 换算能进 pytest 契约测试。
+    无可用坐标时不产出（``payload["gpx"]`` 保持缺席，前端隐藏下载链接）。
+    """
+    gj = payload.get("geojson") or {}
+    feats = gj.get("features") or []
+    coords: list[list[float]] | None = None
+    if feats:
+        geom = feats[0].get("geometry") or {}
+        cs = geom.get("coordinates") or []
+        if cs:
+            coords = [[float(lo), float(la)] for lo, la in cs]
+    if not coords:
+        return
+    from .source_profile import PROFILES  # 延迟导入避免循环
+
+    title = "骑行"
+    if CONFIG.source_profile_id in PROFILES:
+        title = PROFILES[CONFIG.source_profile_id].title
+    try:
+        payload["gpx"] = build_gpx(
+            coords,
+            ride_summary=payload.get("ride_summary"),
+            source_title=title,
+        )
+    except Exception:  # noqa: BLE001 —— GPX 失败不影响轨迹识别本身
+        payload.setdefault("warnings", []).append("GPX 导出失败，已跳过")
+
+
 def _persist_last_result(payload: dict[str, Any]) -> None:
     """落盘给「轨迹地图对照页」用。
 
@@ -698,6 +732,7 @@ async def recognize_multi(
         payload["warnings"] = list(payload["warnings"]) + [note]
 
     await _attach_ride_summary(payload, summary)
+    _attach_gpx(payload)
     _persist_last_result(payload)
     # 多图结果单独存一份——否则之后跑一次单图识别就会把它冲掉，
     # 核对页就看不到了。
@@ -899,6 +934,7 @@ async def recognize(
         payload["template_capture"] = _capture_template(
             result, payload, city=city.strip(), shot_id=shot_id)
     await _attach_ride_summary(payload, summary)
+    _attach_gpx(payload)
     _persist_last_result(payload)
 
     # 需要后台精修吗？判据见 `_need_background_refine`：
@@ -1036,19 +1072,26 @@ def _run_refine(shot_id: str, shot_path: Path) -> None:
                 # 后来才加的沉淀字段；直接覆盖会把 paired_registration /
                 # template_capture 冲掉，事后复盘就再也找不到「这次有没有
                 # 注册模板」的证据。覆盖前把主流程的沉淀字段合并回来。
-                merged = dict(payload)
-                for k in ("paired_registration", "template_capture"):
-                    if k not in merged and k in prev:
-                        merged[k] = prev[k]
-                _persist_last_result(merged)
-                if ctx.get("multi"):
-                    # 多图结果单独存一份，否则之后跑一次单图识别
-                    # 会把核对页上的拼接结果冲掉。
-                    (DATA_DIR / "last_stitch.json").write_text(
-                        json.dumps(payload, ensure_ascii=False),
-                        encoding="utf-8")
+                # ride_summary 同理：订单页概要属于本次运动，精修不改轨迹
+                # 的起止时间，丢了它 GPX 就没有时间轴了。
+                for k in ("paired_registration", "template_capture",
+                          "ride_summary"):
+                    if k not in payload and k in prev:
+                        payload[k] = prev[k]
+                refine_valid = True
         except (OSError, ValueError, KeyError, TypeError):
-            pass
+            refine_valid = False
+        # GPX 按精修后的坐标重新合成（轨迹可能整体平移，旧 GPX 已过期）；
+        # 时间轴来自 ride_summary，与坐标无关，不受精修影响。
+        _attach_gpx(payload)
+        if refine_valid:
+            _persist_last_result(payload)
+            if ctx.get("multi"):
+                # 多图结果单独存一份，否则之后跑一次单图识别
+                # 会把核对页上的拼接结果冲掉。
+                (DATA_DIR / "last_stitch.json").write_text(
+                    json.dumps(payload, ensure_ascii=False),
+                    encoding="utf-8")
         # ⚠️ 落盘完成后才对外宣布 done：前端轮询拿到结果就会立刻渲染，
         # 若此时核对页的 last_result / last_stitch 还没写，用户刷新页面
         # 又会退回未精修的粗结果。
