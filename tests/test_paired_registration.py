@@ -562,4 +562,4 @@ def test_frontend_has_two_upload_entries():
     assert "fd.append('files', f, f.name);" in h
     assert "detailsOnly ? '/api/recognize_multi' : '/api/recognize'" in h
     assert "以后形状接近的概览图只需单独上传" in h
-    assert "概览单图（必选）" in h and "街道级细节图（可选）" in h
+    assert "轨迹概览图（必选）" in h and "轨迹街道级细节图（可选）" in h
