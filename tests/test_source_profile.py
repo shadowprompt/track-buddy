@@ -72,6 +72,7 @@ def test_source_profile_env_switches_profile_and_keywords(monkeypatch) -> None:
         id="amap", title="高德运动", vision=MEITUAN.vision,
         distance_positive=("总里程",),
         distance_negative=("历史",),
+        ride_labels=("总里程", "消耗", "减碳"),
     )
     monkeypatch.setitem(PROFILES, "amap", fake)
     monkeypatch.setenv("SOURCE_PROFILE", "amap")

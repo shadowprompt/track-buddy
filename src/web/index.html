@@ -181,6 +181,13 @@
           没有概览图，只用细节图识别（旧的多图模式）
         </label>
 
+        <label class="uplabel" for="summary">③ 订单详情截图（可选）</label>
+        <div class="drop sub" id="dropSummary">
+          <div class="big">上传订单详情页，识别里程/时长/卡路里/减碳/开始时间</div>
+          <div class="hint">与轨迹识别合并成一次完整的运动记录，可选</div>
+          <input type="file" id="summary" accept="image/*" hidden>
+        </div>
+
         <div class="note" id="multiNote" style="margin-top:10px; display:none;">
           <b>已选 <span id="fileCount">0</span> 张细节图</b>：
           <span id="fileNames"></span>
@@ -369,9 +376,11 @@ __WB_AMAP_SDK__
   const $ = (id) => document.getElementById(id);
   const drop = $('drop'), fileInput = $('file'),
         dropDetails = $('dropDetails'), detailsInput = $('details'),
+        dropSummary = $('dropSummary'), summaryInput = $('summary'),
         go = $('go'), status = $('status');
-  // picked 是单张概览图；pickedDetails 是可选的街道级细节图列表。
-  let picked = null, pickedDetails = [], lastResult = null;
+  // picked 是单张概览图；pickedDetails 是可选的街道级细节图列表；
+  // pickedSummary 是可选的订单详情页截图（运动概要来源）。
+  let picked = null, pickedDetails = [], pickedSummary = null, lastResult = null;
   // 底图适配层：业务代码只依赖 RideBasemap.Adapter，不再直接碰 TMap.*。
   // 服务商名由服务端按配置注入（BASEMAP_PROVIDER），改 .env 即可切换。
   // ⚠️ 变量名不能与占位符 __WB_BASEMAP_PROVIDER__ 同名：
@@ -414,11 +423,13 @@ __WB_AMAP_SDK__
   }
   bindDrop(drop, fileInput, setOverview, false);
   bindDrop(dropDetails, detailsInput, setDetails, true);
+  bindDrop(dropSummary, summaryInput, setSummary, false);
 
   $('clearFiles').onclick = (e) => {
     e.stopPropagation();
     detailsInput.value = '';
     setDetails([]);
+    setSummary(null);
   };
   $('detailsOnly').onchange = () => { updateGo(); hideStatus(); };
 
@@ -561,6 +572,7 @@ __WB_AMAP_SDK__
       fd.append('file', picked, picked.name);
       for (const f of pickedDetails) fd.append('details', f, f.name);
     }
+    if (pickedSummary) fd.append('summary', pickedSummary, pickedSummary.name);
     fd.append('city', $('city').value.trim());
     fd.append('output_crs', $('crs').value);
     fd.append('online', $('online').value);
@@ -931,6 +943,23 @@ __WB_AMAP_SDK__
       '<div class="kv"><span>锚点反投影偏移</span><span>' + (typeof chk === 'number' && isFinite(chk) && chk >= 0 ? chk.toFixed(0) + ' px' : '—') + '</span></div>' +
       '<div class="kv"><span>OCR 文本框</span><span>' + int(dg.ocr_texts, 0) + '</span></div>' +
       '<div class="kv"><span>耗时</span><span>' + int(d.elapsed_ms, 0) + ' ms</span></div>' +
+      // 运动概要：订单详情页截图解析出的运动元数据（可选上传）。
+      (d.ride_summary && d.ride_summary.available
+        ? '<div class="kv"><span>运动概要</span><span>' +
+          [
+            d.ride_summary.distance_km != null ? d.ride_summary.distance_km + ' km' : '',
+            d.ride_summary.duration_s != null
+              ? Math.floor(d.ride_summary.duration_s / 60) + '分' +
+                (d.ride_summary.duration_s % 60) + '秒' : '',
+            d.ride_summary.calories_kcal != null ? d.ride_summary.calories_kcal + ' kcal' : '',
+            d.ride_summary.carbon_g != null ? '减碳 ' + d.ride_summary.carbon_g + 'g' : '',
+            d.ride_summary.started_at
+              ? String(d.ride_summary.started_at).replace('T', ' ') : '',
+            d.ride_summary.cross_check && d.ride_summary.cross_check.available
+              ? (d.ride_summary.cross_check.consistent ? '✓ 与轨迹里程一致' : '⚠ 里程量级不符')
+              : '',
+          ].filter(Boolean).join(' · ') + '</span></div>'
+        : '') +
       // 模板命中：概览单图免传细节图的复用通道（参考级定位）。
       (dg.template_match && dg.template_match.template
         ? '<div class="kv"><span>历史模板</span><span>命中 ' +

@@ -348,6 +348,48 @@ def _build_payload_from(result: Any, shot_id: str, shot_url: str) -> dict[str, A
     }
 
 
+async def _attach_ride_summary(
+    payload: dict[str, Any],
+    summary_file: UploadFile | None,
+) -> None:
+    """解析「订单详情页」截图，把运动概要并入识别结果（可选上传）。
+
+    概要字段（里程/时长/卡路里/减碳/开始时间）进 ``payload["ride_summary"]``，
+    非空字段同时并入 GeoJSON ``properties["ride_summary"]``——这样一次
+    识别的输出就是「轨迹几何 + 运动元数据」的完整运动记录。解析失败
+    只加告警，绝不影响轨迹识别本身。
+    """
+    if summary_file is None or not (summary_file.filename or "").strip():
+        return
+    try:
+        data = await summary_file.read()
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    except Exception:
+        img = None
+    if img is None:
+        payload.setdefault("warnings", []).append(
+            "订单详情截图无法解码，运动概要已跳过")
+        return
+    from .ocr_anchor import ocr_texts
+    from .ride_summary import parse_ride_summary, summary_properties
+
+    texts = ocr_texts(img, CONFIG.vision)
+    summary = parse_ride_summary(
+        texts, geom_distance_m=payload.get("distance_m"),
+        ride_labels=CONFIG.source.ride_labels)
+    payload["ride_summary"] = summary
+    props = summary_properties(summary)
+    if props:
+        for gj_key in ("geojson_gcj02", "geojson"):
+            gj = payload.get(gj_key) or {}
+            feats = gj.get("features") or []
+            if feats:
+                feats[0].setdefault("properties", {})["ride_summary"] = dict(props)
+    cc = summary.get("cross_check") or {}
+    if cc.get("available") and not cc.get("consistent"):
+        payload.setdefault("warnings", []).append(str(cc["note"]))
+
+
 def _persist_last_result(payload: dict[str, Any]) -> None:
     """落盘给「轨迹地图对照页」用。
 
@@ -473,6 +515,7 @@ async def recognize_multi(
     road_names: str = Form(""),
     stitch_backend: str = Form(DEFAULT_BACKEND),
     overview: UploadFile | None = File(None),
+    summary: UploadFile | None = File(None),
 ) -> JSONResponse:
     """上传**多张**街道级截图，拼成一张大图后识别。
 
@@ -654,6 +697,7 @@ async def recognize_multi(
             note = "本次未启动后台精修（结果尚无可用坐标）"
         payload["warnings"] = list(payload["warnings"]) + [note]
 
+    await _attach_ride_summary(payload, summary)
     _persist_last_result(payload)
     # 多图结果单独存一份——否则之后跑一次单图识别就会把它冲掉，
     # 核对页就看不到了。
@@ -681,6 +725,7 @@ async def recognize(
     road_names: str = Form(""),
     stitch_backend: str = Form(DEFAULT_BACKEND),
     details: list[UploadFile] | None = File(None),
+    summary: UploadFile | None = File(None),
 ) -> JSONResponse:
     """上传**一张概览单图**识别；缩放过高时可补传多张街道级细节图。
 
@@ -853,6 +898,7 @@ async def recognize(
     else:
         payload["template_capture"] = _capture_template(
             result, payload, city=city.strip(), shot_id=shot_id)
+    await _attach_ride_summary(payload, summary)
     _persist_last_result(payload)
 
     # 需要后台精修吗？判据见 `_need_background_refine`：

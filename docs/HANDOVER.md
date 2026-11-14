@@ -6376,3 +6376,47 @@ overview 域、64 点、上海）。关键在于这次是在 `input_quality=reje
 画像与词表立即跟随（含「词表只影响优先级、裸数字兜底」语义）、
 诊断透传、注册表无占位。受影响组 89 passed；全量见提交信息。
 未重启服务。
+
+### 22.59 运动概要识别：订单详情页 → 完整运动记录（2026-11-14）
+
+#### 诉求
+
+此前只识别轨迹截图的经纬度；用户要求补「该次骑行的概要信息」——订单
+详情页截图（美团：3.5km 本次骑行 / 骑行20分35秒 / 203kcal 本次消耗 /
+172g 本次减碳 / 2026-11-11 20:20:26），与轨迹组合成完整运动记录。
+
+#### 设计
+
+* 新增 `src/app/ride_summary.py`：`parse_ride_summary(texts,
+  geom_distance_m, ride_labels)` 纯函数解析。**防歧义按风险分级**：
+  kcal / 时间戳 / 时长单位模式唯一直接提；`km` 多候选（页面同时有
+  「1314km」累计与「3.5km」本次）用「本次骑行」标签的**文本块近邻绑定**
+  （OCR 按阅读顺序输出、索引相邻），无标签取最小候选；减碳 `g` 极易
+  误报，**必须**有「碳」标签近邻才采信（`_bind_labeled` 的单候选短路
+  会绕过标签检查，碳字段单独判定——第一版在这里有 bug，被
+  `test_carbon_requires_label_neighbor` 抓住）。
+* 标签词表进 `SourceProfile.ride_labels`（美团：「本次骑行/本次消耗/
+  本次减碳」），语义映射通用（含「骑行/里程」→距离、「消耗/卡」→
+  卡路里、「碳」→减碳），文案随画像——画像层第一个真实复用点。
+* 交叉校验：订单里程 vs 轨迹几何里程，比值 0.6–1.7 合理（复用
+  input_quality 的尺度区间思想），不符出告警——订单值来自平台记账，
+  偏差通常说明轨迹截图没截全。
+* `server`：`recognize` / `recognize_multi` 均加可选 `summary: UploadFile`；
+  `_attach_ride_summary()` 在 `_persist_last_result` 之前并入
+  （顺序有契约测试锁定），解析失败只告警绝不影响轨迹识别。
+* GeoJSON `properties["ride_summary"]`：非空字段并入 GCJ/WGS 两份
+  FeatureCollection——输出即可直接导入运动记录库。
+* 前端：第三个可选上传控件「③ 订单详情截图」+ 结果卡「运动概要」行
+  （里程/时长/卡路里/减碳/开始时间/✓ 一致性）。
+
+#### 测试坑
+
+* `_bind_labeled` 单候选短路 vs 碳标签强校验的语义冲突（见上）。
+* `SourceProfile` 加必填字段后，既有测试里的 fake profile 需要补
+  `ride_labels`——dataclass 必填字段变更的连带面。
+
+#### 验证
+
+新增 `tests/test_ride_summary.py` 13 例（真实截图样例值 + 歧义 + 交叉
+校验 + server 直测）与 `tests/test_frontend_ride_summary.py` 3 例；
+全量见提交信息。未重启服务。

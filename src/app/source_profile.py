@@ -55,6 +55,13 @@ class SourceProfile:
     distance_negative: tuple[str, ...]
     """里程 OCR 干扰词：命中时整块排除（如「累计骑行 1024 公里」）。"""
 
+    ride_labels: tuple[str, ...]
+    """订单详情页的「本次」字段标签（ride_summary 解析用）。
+
+    语义映射是通用的：含「骑行/里程」→ 本次距离、「消耗/卡」→ 卡路里、
+    「碳」→ 减碳克数；标签**文案**随 App 不同，各画像自备。
+    """
+
 
 # 当前唯一注册的画像：美团骑行。参数值与模块化之前完全一致——
 # VisionConfig 的默认值就是为美团截图标定的。
@@ -64,6 +71,7 @@ MEITUAN = SourceProfile(
     vision=VisionConfig(),
     distance_positive=("里程", "本次", "骑行", "行程", "全程", "共计", "合计", "距离"),
     distance_negative=("免费", "累计", "套餐", "赠送", "优惠", "已骑", "封顶"),
+    ride_labels=("本次骑行", "本次消耗", "本次减碳"),
 )
 
 # 画像注册表：新增来源（amap / xiaomi / keep ...）在这里加条目，
