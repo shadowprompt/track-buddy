@@ -931,6 +931,22 @@ __WB_AMAP_SDK__
       '<div class="kv"><span>锚点反投影偏移</span><span>' + (typeof chk === 'number' && isFinite(chk) && chk >= 0 ? chk.toFixed(0) + ' px' : '—') + '</span></div>' +
       '<div class="kv"><span>OCR 文本框</span><span>' + int(dg.ocr_texts, 0) + '</span></div>' +
       '<div class="kv"><span>耗时</span><span>' + int(d.elapsed_ms, 0) + ' ms</span></div>' +
+      // 模板命中：概览单图免传细节图的复用通道（参考级定位）。
+      (dg.template_match && dg.template_match.template
+        ? '<div class="kv"><span>历史模板</span><span>命中 ' +
+          esc(String(dg.template_match.template.id || '—')) +
+          (dg.template_match.template.city
+            ? ' · ' + esc(String(dg.template_match.template.city)) : '') +
+          ' · 形状残差 ' + num(dg.template_match.residual, 4, '—') +
+          ' · 覆盖 ' + num(dg.template_match.coverage, 2, '—') +
+          (dg.template_match.reversed ? ' · 反向' : '') +
+          '（参考级，未核验）</span></div>' +
+          (typeof dg.template_match.template_length_m === 'number'
+            ? '<div class="kv"><span>模板路线里程</span><span>' +
+              (dg.template_match.template_length_m / 1000).toFixed(1) +
+              ' km</span></div>'
+            : '')
+        : '') +
       (d.stitch ? stitchBlock(d.stitch) : '') +
       (d.warnings && d.warnings.length
         ? '<ul class="warnlist">' + d.warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>'

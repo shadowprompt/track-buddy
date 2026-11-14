@@ -23,8 +23,35 @@ from .input_quality import (
 )
 from .ocr_anchor import Anchor, build_anchors, classify_text, ocr_texts
 from .register import AnchorPair, Registration, apply_to_polyline, register
-from .route_template import TEMPLATE_CONFIDENCE_CAP, TemplateStore, polyline_length_m
-from .route_template import SHAPE_DOMAIN_OVERVIEW
+from .route_template import (
+    SHAPE_DOMAIN_OVERVIEW,
+    TEMPLATE_CONFIDENCE_CAP,
+    TemplateStore,
+    polyline_length_m,
+)
+
+# 非宽泛图的模板采信门槛：「近复刻」才直跳。实测同一张概览图重传时
+# residual≈0.0116，而不同路线即便形状相近也在 0.05 以上；0.045 与
+# route_template.DEDUP_RESIDUAL 对齐，覆盖率 0.90 表示整条折线都参与匹配。
+NEAR_HIT_RESIDUAL = 0.045
+NEAR_HIT_COVERAGE = 0.90
+
+
+def _near_template_hit(located: dict[str, Any]) -> bool:
+    """非宽泛概览图是否达到「近复刻」采信门槛。
+
+    宽泛概览图走 locate() 自身的门槛即可；普通截图（街道名较多、
+    OCR 判不出宽泛概览）只有在形状与已注册概览模板**几乎一致**时才
+    采信模板结果，否则一律回落原流程——普通截图本来就有机会拿到
+    带当次地理核验的正式配准，比参考级插值更可信。
+    """
+    m = located.get("match") or {}
+    try:
+        residual = float(m.get("residual", 1.0))
+        coverage = float(m.get("coverage", 0.0))
+    except (TypeError, ValueError):
+        return False
+    return residual <= NEAR_HIT_RESIDUAL and coverage >= NEAR_HIT_COVERAGE
 from .template_fallback import assess_broad_overview, reference_confidence
 from .track import TrackResult, extract_track
 
@@ -378,10 +405,15 @@ class RidePipeline:
         main_crs = "WGS-84" if use_wgs else "GCJ-02"
         match = located["match"]
         conf = reference_confidence(match, cap=TEMPLATE_CONFIDENCE_CAP)
+        if broad.get("broad_overview"):
+            why = ("本图地名多为行政区/地铁线/高架，空间精度只有公里级，"
+                   "本次未做地理配准")
+        else:
+            why = ("本图轨迹与一条历史路线的形状高度一致（近复刻命中），"
+                   "本次未做地理配准")
         ref_warns = list(warnings) + [
-            "⚠️ 参考级定位（未核验）：本图地名多为行政区/地铁线/高架，"
-            "空间精度只有公里级，本次未做地理配准；坐标是把轨迹形状对齐到"
-            "一条历史同类路线后按弧长插值得到的，仅供轮廓参考，"
+            f"⚠️ 参考级定位（未核验）：{why}；坐标是把轨迹形状对齐到"
+            "一条历史路线后按弧长插值得到的，仅供轮廓参考，"
             "不能当作精确轨迹使用。",
             "如需街区级精度，请放大地图到能看到街道名后重新截图，"
             "或用人工核验反馈把这条路线标为已核验。",
@@ -476,7 +508,22 @@ class RidePipeline:
         # 尺度崩坏的假解（HANDOVER §21.4、§22.43）。
         # 只有命中模板才「直跳」；没命中就继续原流程，零回归。
         broad = assess_broad_overview(texts, road_names)
-        if self.templates is not None and broad["broad_overview"]:
+        # 触发模板探测的两种情形：
+        #   1) 宽泛概览图（原判据，OCR 主导）；
+        #   2) 库里已有 overview 域模板——「上次拼过的同一条路线又来了」。
+        #      这类图 OCR 往往有街道名、判不出宽泛概览，但只要形状与已
+        #      注册模板近乎复刻（近复刻门槛见 _near_template_hit），就
+        #      可以免传细节图直接复用历史真值；不够像则静默回落原流程。
+        stats_fn = (getattr(self.templates, "stats", None)
+                    if self.templates is not None else None)
+        n_overview_tpl = 0
+        if callable(stats_fn):
+            try:
+                n_overview_tpl = int((stats_fn() or {}).get("overview", 0))
+            except Exception:  # noqa: BLE001 — 统计失败不影响主流程
+                n_overview_tpl = 0
+        if self.templates is not None and (
+                broad["broad_overview"] or n_overview_tpl > 0):
             located: dict[str, Any] | None = None
             try:
                 # 这里进来的必然是概览图，只比对「概览图形状」注册的模板。
@@ -488,15 +535,19 @@ class RidePipeline:
             except Exception as exc:  # noqa: BLE001 — 兜底失败必须回落原流程
                 warnings.append(
                     f"轨迹模板匹配异常，已回落原流程：{type(exc).__name__}")
-            if located is not None:
+            if located is not None and (
+                    broad["broad_overview"]
+                    or _near_template_hit(located)):
                 return self._template_result(
                     located, img=img, track=track, texts=texts, broad=broad,
                     output_crs=output_crs, t0=t0, warnings=warnings)
-            warnings.append(
-                "这张图是城市级概览（地名多为行政区/地铁线/高架，公里级精度），"
-                "但轨迹模板库里没有形状足够接近的同类路线；仍按原流程尝试，"
-                "结果可能偏差较大。"
-            )
+            if broad["broad_overview"]:
+                warnings.append(
+                    "这张图是城市级概览（地名多为行政区/地铁线/高架，公里级精度），"
+                    "但轨迹模板库里没有形状足够接近的同类路线；仍按原流程尝试，"
+                    "结果可能偏差较大。"
+                )
+            # 非宽泛图探测未命中/不够像：静默回落原流程，不打扰用户。
 
         # --- 阶段 3：地理编码 ---
         pairs = self._resolve_anchors(anchors, city, allow_online, warnings)

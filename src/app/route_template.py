@@ -487,13 +487,23 @@ class TemplateStore:
             return {"written": False, "reason": "invalid_coordinate"}
         if not math.isfinite(conf):
             return {"written": False, "reason": "invalid_value"}
-        if not verified and source != "user":
+        if not verified and source == "auto":
             if not self_consistent:
                 return {"written": False, "reason": "self_inconsistent"}
             if not input_ok:
                 return {"written": False, "reason": "low_information_input"}
             if conf < MIN_TEMPLATE_CONFIDENCE:
                 return {"written": False, "reason": "low_confidence"}
+        elif not verified and source == "paired":
+            # 配对注册的可信度来自**多图拼接证据**（拼接成功、逐像素复核、
+            # 徽章守恒、形状配对 coverage≥0.85），这些由调用方核对后通过
+            # ``self_consistent`` 传入。画布 OCR 的 input_quality 与单画布
+            # 置信度封顶（无路名时 0.2）是给「单图自动沉淀」设计的门槛：
+            # 概览↔画布形状配对本身 residual 0.0116 / coverage 1.0 依然会
+            # 被 0.2<0.35 与 input_quality=reject 连坐拒写（死锁 A/C，
+            # HANDOVER §22.56），因此这里只保留 self_consistent 一道门。
+            if not self_consistent:
+                return {"written": False, "reason": "self_inconsistent"}
 
         px_rs = resample_by_arc(px)
         geo_rs = resample_by_arc(geo)
@@ -590,6 +600,10 @@ class TemplateStore:
             if not m.accepted:
                 continue
             if (not tpl.get("verified")
+                    # paired 模板的写入门槛是多图拼接证据而非置信度（见
+                    # remember()），读侧不得再用 0.35 连坐；detail/auto
+                    # 模板维持原判。
+                    and str(tpl.get("source") or "") != "paired"
                     and float(tpl.get("confidence", 0) or 0) < MIN_TEMPLATE_CONFIDENCE):
                 continue
             row = m.as_dict()
@@ -637,6 +651,10 @@ class TemplateStore:
             if not (MIN_TEMPLATE_LENGTH_M <= length_m <= MAX_TEMPLATE_LENGTH_M):
                 continue
             if (not tpl.get("verified")
+                    # paired 模板的写入门槛是多图拼接证据而非置信度（见
+                    # remember()），读侧不得再用 0.35 连坐；detail/auto
+                    # 模板维持原判。
+                    and str(tpl.get("source") or "") != "paired"
                     and float(tpl.get("confidence", 0) or 0) < MIN_TEMPLATE_CONFIDENCE):
                 continue
             m = match_shape(query_px, tpl)
@@ -667,6 +685,15 @@ class TemplateStore:
             if best is None or score < (
                     best["match"]["residual"] - 0.02 * best["match"]["coverage"]):
                 best = row
+        if best is not None:
+            # 命中即计数（调用方可能因更严的采信门槛不用这个结果，计数
+            # 表达的是「形状召回发生」，供 /api/health 观察复用频率）。
+            with self._lock:
+                for t in self._data.setdefault("templates", []):
+                    if t.get("id") == best["template"]["id"]:
+                        t["hit_count"] = int(t.get("hit_count", 0) or 0) + 1
+                        break
+                self.save()
         return best
 
     def register_pair(
@@ -703,8 +730,21 @@ class TemplateStore:
         if not (np.all(geo[:, 0] >= -180) and np.all(geo[:, 0] <= 180)
                 and np.all(geo[:, 1] >= -90) and np.all(geo[:, 1] <= 90)):
             return {"written": False, "reason": "invalid_coordinate"}
-        if not shape_has_enough_info(px) or not shape_has_enough_info(dp):
+        # 概览图是模板的 key，退化形状（起终点连线）必须拒——否则 locate()
+        # 会拿它跟任何细长路线假阳性匹配（§22.45 教训）。画布/细节图一侧
+        # **不再**做扁长否决：它的职责只是提供「弧长 ↔ 真值坐标」的对应
+        # 关系，对应质量已由下方 match_shape（残差/覆盖率/方向签名）把关。
+        # 实测一条沿河的近直路线，画布轨迹 aspect≥4 被旧判据一刀切拒掉，
+        # 而概览↔画布配对本身 residual 0.0116 / coverage 1.0（HANDOVER §22.56）。
+        if not shape_has_enough_info(px):
             return {"written": False, "reason": "degenerate_shape"}
+
+        # 地理真值里程必须落在合理区间：里程异常（过短像起终点连线、
+        # 过长像坐标系坏掉）说明这次配准解不可信，注册会固化错误。
+        length_m = polyline_length_m(geo)
+        if not (MIN_TEMPLATE_LENGTH_M <= length_m <= MAX_TEMPLATE_LENGTH_M):
+            return {"written": False, "reason": "geo_length_out_of_range",
+                    "length_m": round(length_m, 1)}
 
         # match_shape / project_to_geo 都以「重采样后 64 点」的下标解释
         # span，临时真值模板必须先按弧长重采样，不能喂原始点数（78 点等）。

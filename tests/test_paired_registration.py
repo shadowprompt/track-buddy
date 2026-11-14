@@ -4,14 +4,17 @@
 几何 fixture，服务端用进程内 TestClient + 桩件，运行期目录与模板库一律
 指向 tmp_path。
 
-重点覆盖四件事：
+重点覆盖五件事：
 1. 「概览单图形状 ↔ 多图地理真值」按弧长配对注册成功，之后相似概览图
    （含反向）能直接命中，不必再带多图；
 2. 形状域隔离：旧的 detail 模板（细节图 / 拼接画布）不得参与概览图定位，
    堵住 §22.45 实测的跨缩放假阳性；
-3. 多图未覆盖整条路线、形状不符、点数 / 坐标 / 置信度不达标时一律拒收，
-   且拒绝绝不影响识别请求；
-4. ``/api/recognize`` 纯单图路径零回归，配对路径返回拼接画布叠加图 +
+3. 多图未覆盖整条路线、形状不符、点数 / 坐标 / 里程不达标时一律拒收，
+   且拒绝绝不影响识别请求；画布扁长、低置信、input_ok 不再连坐 paired
+   注册（§22.56 死锁 A/C 解除），自洽性仍是硬门；
+4. 召回触发双通道：宽泛概览图照旧；库里已有 overview 模板时普通截图也
+   探测一次，但只有「近复刻」（残差/覆盖率达标）才采信，否则静默回落；
+5. ``/api/recognize`` 纯单图路径零回归，配对路径返回拼接画布叠加图 +
    overview_url，仅多图旧端点仍可用。
 """
 from __future__ import annotations
@@ -195,9 +198,8 @@ def test_pair_rejects_short_or_invalid_data(tmp_path):
 
 
 @pytest.mark.parametrize("kwargs,reason", [
-    ({"confidence": 0.2}, "low_confidence"),
+    # paired 的写入门槛只剩自洽性；低置信与 input_ok 不再连坐（§22.56）。
     ({"self_consistent": False}, "self_inconsistent"),
-    ({"input_ok": False}, "low_information_input"),
 ])
 def test_pair_inherits_auto_write_guards(tmp_path, kwargs, reason):
     px = _bent()
@@ -208,6 +210,67 @@ def test_pair_inherits_auto_write_guards(tmp_path, kwargs, reason):
     out = _store(tmp_path).register_pair(**args)
     assert out["written"] is False
     assert out["reason"] == reason
+
+
+def test_paired_low_confidence_registers_and_locates(tmp_path):
+    """配对真值可信度来自多图拼接证据：单画布置信度封顶（0.2）不得连坐。
+
+    无街道名锚点的长路线整图置信度被 pipeline 封到 0.2，旧门槛
+    0.2 < 0.35 会把「概览↔真值」配对拒写（死锁 A）；本用例锁定：
+    低置信 paired 模板可注册、可定位。
+    """
+    px = _bent()
+    detail = _render_detail(px)
+    store = _store(tmp_path)
+    out = store.register_pair(
+        overview_px=px, detail_px=detail, geo_polyline=_geo(detail),
+        confidence=0.2, city="上海")
+    assert out["written"] is True, out
+    tpl = store.templates[0]
+    assert tpl["source"] == "paired"
+    assert tpl["confidence"] == 0.2
+    # 读侧同样不得用 0.35 连坐 paired 模板。
+    hit = store.locate(px, city_hint="上海",
+                       shape_domain=SHAPE_DOMAIN_OVERVIEW)
+    assert hit is not None
+    assert hit["template"]["id"] == tpl["id"]
+
+
+def test_canvas_thin_shape_no_longer_vetoes_pair(monkeypatch, tmp_path):
+    """画布轨迹扁长（aspect≥4）不再否决配对：对应质量由 match_shape 把关。
+
+    实测沿河近直路线：概览↔画布 residual 0.0116 / coverage 1.0，却被
+    「画布侧 shape_has_enough_info」一刀切拒成 degenerate_shape（§22.56）。
+    用 spy 模拟「概览侧形状合格、画布侧退化」，锁定配对仍成立。
+    """
+    px = _bent()
+    detail = _render_detail(px)
+    calls = {"n": 0}
+    real = RT.shape_has_enough_info
+
+    def spy(p):
+        calls["n"] += 1
+        return real(p) if calls["n"] == 1 else False
+
+    monkeypatch.setattr(RT, "shape_has_enough_info", spy)
+    out = _store(tmp_path).register_pair(
+        overview_px=px, detail_px=detail, geo_polyline=_geo(detail),
+        confidence=0.8)
+    # 只剩概览侧一次调用：画布侧的退化否决已从 register_pair 移除。
+    assert calls["n"] == 1, calls
+    assert out["written"] is True, out
+
+
+def test_geo_length_out_of_range_is_rejected(tmp_path):
+    """地理真值里程异常（<100m）说明配准解不可信，不能固化成模板。"""
+    px = _bent()
+    detail = _render_detail(px)
+    tiny = [[121.20 + i * 1e-6, 31.30] for i in range(64)]
+    out = _store(tmp_path).register_pair(
+        overview_px=px, detail_px=detail, geo_polyline=tiny,
+        confidence=0.8)
+    assert out["written"] is False
+    assert out["reason"] == "geo_length_out_of_range"
 
 
 def test_pair_projection_failure_is_reported(monkeypatch, tmp_path):
@@ -232,7 +295,7 @@ def test_pipeline_requests_overview_domain(monkeypatch, tmp_path):
     monkeypatch.setattr(P, "extract_track", lambda img, cfg: track)
     monkeypatch.setattr(P, "ocr_texts",
                         lambda img, cfg: [SimpleNamespace(text=t)
-                                         for t in OCR_OVERVIEW])
+                                          for t in OCR_OVERVIEW])
     monkeypatch.setattr(P, "build_anchors", lambda img, items, cfg: [])
     monkeypatch.setattr(P.RidePipeline, "_resolve_anchors",
                         lambda self, a, c, ao, w: [])
@@ -248,6 +311,104 @@ def test_pipeline_requests_overview_domain(monkeypatch, tmp_path):
     pipe.run(np.zeros((100, 100, 3), np.uint8), city="上海",
              allow_online=False, output_crs="WGS-84", refine=False)
     assert calls == [SHAPE_DOMAIN_OVERVIEW], calls
+
+
+# --- 召回触发双通道（§22.56）--------------------------------------------
+
+def _located_stub(residual: float, coverage: float = 1.0) -> dict:
+    """构造一个 locate() 命中返回值：上海范围内的 64 点折线。"""
+    coords = [[121.20 + i * 0.002, 31.30 + 0.001 * (i % 4)] for i in range(64)]
+    return {
+        "coords_gcj": coords,
+        "match": {"accepted": True, "residual": residual,
+                  "coverage": coverage, "signature": 0.1, "reversed": False,
+                  "span": [0, 64], "mode": "query_in_template", "reason": "ok"},
+        "template": {"id": "tpl_x", "city": "上海", "confidence": 0.2,
+                     "verified": False, "hit_count": 1},
+        "length_m": 5200.0,
+    }
+
+
+def _probe_pipeline(monkeypatch, tmp_path, store, texts):
+    track = TrackResult(
+        polyline=np.asarray(_bent(), float), start_marker=(0, 0),
+        end_marker=(1, 1), mask=np.zeros((10, 10), np.uint8),
+        bbox=(0, 0, 10, 10), confidence=0.95, notes=[])
+    monkeypatch.setattr(P, "extract_track", lambda img, cfg: track)
+    monkeypatch.setattr(
+        P, "ocr_texts",
+        lambda img, cfg: [SimpleNamespace(text=t) for t in texts])
+    monkeypatch.setattr(P, "build_anchors", lambda img, items, cfg: [])
+    monkeypatch.setattr(P.RidePipeline, "_resolve_anchors",
+                        lambda self, a, c, ao, w: [])
+    cfg = replace(CONFIG, lexicon_path=tmp_path / "lexicon.json")
+    return P.RidePipeline(cfg, templates=store)
+
+
+def test_non_broad_overview_hits_near_duplicate_template(monkeypatch, tmp_path):
+    """库里有 overview 模板时，普通截图也探测；近复刻命中直跳参考级。
+
+    实测概览图 OCR 宽泛占比 0.373 < 0.5，宽泛判据不触发，但「上次拼过
+    的路线又来了」——只要形状近乎复刻就该免传细节图。
+    """
+    street_texts = ["祁连山南路", "金沙江路", "淞虹路", "北翟路", "天山西路"]
+    calls: list[str | None] = []
+
+    class HitStore:
+        def stats(self):
+            return {"templates": 1, "overview": 1}
+
+        def locate(self, query_px, *, city_hint="", shape_domain=None):
+            calls.append(shape_domain)
+            return _located_stub(residual=0.010, coverage=1.0)
+
+    pipe = _probe_pipeline(monkeypatch, tmp_path, HitStore(), street_texts)
+    res = pipe.run(np.zeros((100, 100, 3), np.uint8), city="上海",
+                   allow_online=False, output_crs="WGS-84", refine=False)
+    assert calls == [SHAPE_DOMAIN_OVERVIEW], calls
+    assert res.diagnostics.get("source") == "template"
+    assert res.diagnostics.get("template_match") is not None
+    assert any("近复刻命中" in w for w in res.warnings)
+
+
+def test_non_broad_overview_far_match_falls_through(monkeypatch, tmp_path):
+    """探测到了相似模板但不够「近复刻」：静默回落原流程，绝不硬套参考级。"""
+    street_texts = ["祁连山南路", "金沙江路", "淞虹路", "北翟路", "天山西路"]
+    calls: list[str | None] = []
+
+    class FarStore:
+        def stats(self):
+            return {"templates": 1, "overview": 1}
+
+        def locate(self, query_px, *, city_hint="", shape_domain=None):
+            calls.append(shape_domain)
+            return _located_stub(residual=0.20, coverage=1.0)
+
+    pipe = _probe_pipeline(monkeypatch, tmp_path, FarStore(), street_texts)
+    res = pipe.run(np.zeros((100, 100, 3), np.uint8), city="上海",
+                   allow_online=False, output_crs="WGS-84", refine=False)
+    assert calls == [SHAPE_DOMAIN_OVERVIEW], calls
+    assert res.diagnostics.get("source") != "template"
+    assert not any("近复刻命中" in w for w in res.warnings)
+
+
+def test_no_templates_no_probe(monkeypatch, tmp_path):
+    """库里没有 overview 模板且非宽泛图：不做探测，行为与旧版一致。"""
+    street_texts = ["祁连山南路", "金沙江路", "淞虹路", "北翟路", "天山西路"]
+    calls: list[str | None] = []
+
+    class EmptyStore:
+        def stats(self):
+            return {"templates": 0, "overview": 0}
+
+        def locate(self, query_px, *, city_hint="", shape_domain=None):
+            calls.append(shape_domain)
+            return None
+
+    pipe = _probe_pipeline(monkeypatch, tmp_path, EmptyStore(), street_texts)
+    pipe.run(np.zeros((100, 100, 3), np.uint8), city="上海",
+             allow_online=False, output_crs="WGS-84", refine=False)
+    assert calls == [], calls
 
 
 # --- 服务端三分支 -------------------------------------------------------
@@ -346,6 +507,37 @@ def test_paired_failure_does_not_break_response(server_stub, monkeypatch):
     assert d["ok"] is True
     assert d["paired_registration"]["written"] is False
     assert any("下次同类图仍需补传" in w for w in d["warnings"])
+
+
+def test_capture_paired_requires_recognition_and_evidence(server_stub):
+    """配对注册的证据门：识别成功 + 徽章守恒 + 逐像素复核缺一不可。
+
+    画布 input_quality 与置信度封顶不再参与（§22.56 死锁 A/C 解除）。
+    """
+    store, fake = server_stub
+    detail = _render_detail(_bent())
+    base = dict(overview_img=np.zeros((10, 10, 3), np.uint8),
+                truth_result=fake, city="上海", shot_id="x")
+    ok_payload = {"ok": True, "track_polyline_px": detail,
+                  "geojson_gcj02": fake.geojson_gcj02}
+    r1 = S._capture_paired_template(
+        truth_payload={"ok": False}, stitch_info={}, **base)
+    assert r1 == {"written": False, "reason": "recognition_failed"}
+    r2 = S._capture_paired_template(
+        truth_payload=dict(ok_payload),
+        stitch_info={"badge_conservation": {"ok": False}}, **base)
+    assert r2["written"] is False
+    assert r2["reason"] == "self_inconsistent"
+    r3 = S._capture_paired_template(
+        truth_payload=dict(ok_payload),
+        stitch_info={"verify": {"s1": 0.03, "s2": 1.0}}, **base)
+    assert r3["written"] is False
+    assert r3["reason"] == "self_inconsistent"
+    r4 = S._capture_paired_template(
+        truth_payload=dict(ok_payload),
+        stitch_info={"verify": {"s1": 1.0, "s2": 0.9}}, **base)
+    assert r4["written"] is True, r4
+    assert store.stats()["overview"] == 1
 
 
 def test_multi_only_endpoint_still_works(server_stub):

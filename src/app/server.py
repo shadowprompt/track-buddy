@@ -256,6 +256,8 @@ _PAIRED_FAILURE_REASONS: dict[str, str] = {
     "deduped": "轨迹形状与已有模板重复，本次跳过",
     "template_derived_result": "本次是模板参考级定位，不能再拿去注册模板",
     "stitch_failed": "细节图拼接未成功，本次没有可用的多图地理真值",
+    "recognition_failed": "本次多图识别未产出可用几何（见上方告警），没有可注册的真值",
+    "geo_length_out_of_range": "地理真值里程不在合理区间，疑似错误解，不能固化成模板",
 }
 
 
@@ -404,6 +406,7 @@ def _capture_paired_template(
     truth_result: Any,
     city: str,
     shot_id: str,
+    stitch_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """把「概览单图形状 ↔ 多图配准真值」注册成 ``overview`` 域模板。
 
@@ -411,8 +414,28 @@ def _capture_paired_template(
     接近的概览单图上传时由 ``pipeline`` 阶段 2.5 直接命中模板，不必再带
     多图。``register_pair()`` 会校验多图覆盖整条路线并把真值按弧长投影
     到单图形状上；失败只写进 payload，绝不影响本次识别结果。
+
+    证据门与单图自动沉淀不同（§22.56 死锁 A/C）：多图真值的可信度来自
+    「拼接成功 + 逐像素复核 + 徽章守恒 + 识别产出几何」，画布 OCR 的
+    input_quality 与单画布置信度封顶（无路名时 0.2）对它不适用——实测
+    概览↔画布形状配对 residual 0.0116 / coverage 1.0，依然会被这两道
+    单图门槛连坐拒写。
     """
     try:
+        if not truth_payload.get("ok"):
+            return {"written": False, "reason": "recognition_failed"}
+        si = stitch_info or {}
+        evidence_ok = True
+        cons = si.get("badge_conservation")
+        if isinstance(cons, dict) and not cons.get("ok"):
+            evidence_ok = False
+        verify = si.get("verify")
+        if isinstance(verify, dict) and verify:
+            try:
+                if min(float(v) for v in verify.values()) < 0.5:
+                    evidence_ok = False
+            except (TypeError, ValueError):
+                pass
         tr = extract_track(overview_img, CONFIG.vision)
         overview_px = tr.polyline.tolist()
         detail_px = truth_payload.get("track_polyline_px") or []
@@ -420,9 +443,6 @@ def _capture_paired_template(
               or truth_payload.get("geojson") or {})
         feats = gj.get("features") or []
         geo = feats[0]["geometry"]["coordinates"] if feats else []
-        diag = truth_result.diagnostics or {}
-        iq = diag.get("input_quality") or {}
-        input_ok = bool(iq.get("usable", True)) if isinstance(iq, dict) else True
         return _templates.register_pair(
             overview_px=overview_px,
             detail_px=detail_px,
@@ -430,8 +450,10 @@ def _capture_paired_template(
             confidence=float(truth_result.confidence or 0.0),
             city=city,
             shot_id=shot_id,
-            self_consistent=_result_is_self_consistent(diag),
-            input_ok=input_ok,
+            self_consistent=evidence_ok,
+            # input_quality 是画布 OCR 的属性，与「概览↔真值」配对的可信
+            # 度无关，配对路径恒按通过处理（死锁 C 的解除）。
+            input_ok=True,
         )
     except Exception as exc:  # noqa: BLE001 — 配对注册是附加能力
         return {"written": False, "reason": f"error:{type(exc).__name__}"}
@@ -787,7 +809,7 @@ async def recognize(
         else:
             cap = _capture_paired_template(
                 overview_img=img, truth_payload=payload, truth_result=result,
-                city=city.strip(), shot_id=shot_id)
+                city=city.strip(), shot_id=shot_id, stitch_info=stitch_info)
         payload["paired_registration"] = cap
         if cap.get("written"):
             pair_notes.append(
@@ -960,7 +982,15 @@ def _run_refine(shot_id: str, shot_path: Path) -> None:
                 (DATA_DIR / "last_result.json").read_text(encoding="utf-8")
             )
             if prev.get("shot_id") == shot_id:
-                _persist_last_result(payload)
+                # 精修 payload 是 _build_payload 重新组装的，天然没有主流程
+                # 后来才加的沉淀字段；直接覆盖会把 paired_registration /
+                # template_capture 冲掉，事后复盘就再也找不到「这次有没有
+                # 注册模板」的证据。覆盖前把主流程的沉淀字段合并回来。
+                merged = dict(payload)
+                for k in ("paired_registration", "template_capture"):
+                    if k not in merged and k in prev:
+                        merged[k] = prev[k]
+                _persist_last_result(merged)
                 if ctx.get("multi"):
                     # 多图结果单独存一份，否则之后跑一次单图识别
                     # 会把核对页上的拼接结果冲掉。
