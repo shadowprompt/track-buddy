@@ -1,0 +1,27 @@
+src/web/index.html
+  s_45d918583e64b2::t_d3c88fd671c6ef 934-949
+tests/test_paired_registration.py
+  s_45d918583e64b2::t_d3c88fd671c6ef 7,12-17,201,215-275,298,316-413,512-540
+README.md
+  s_45d918583e64b2::t_d3c88fd671c6ef 1336-1343,1385-1386,1388-1396
+src/app/server.py
+  s_45d918583e64b2::t_d3c88fd671c6ef 259-260,409,417-422,425-438,453-456,812,985-993
+docs/HANDOVER.md
+  s_45d918583e64b2::t_d3c88fd671c6ef 6205-6275
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.52-trip",
+  "base_commit_sha": "c40a55a67bd67b4ea0f4f4f1d69ea554db684127",
+  "prompts": {},
+  "sessions": {
+    "s_45d918583e64b2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1d819-fb48-7ab2-85d6-41d9dfe85ac3",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Shadow Prompt <shadowprompt@users.noreply.github.com>"
+    }
+  }
+}
