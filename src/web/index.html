@@ -226,6 +226,17 @@
               决定轨迹线提取参数与概要词表；截图来自哪个 App 就选哪个。
             </div>
           </div>
+          <div>
+            <label for="templateMode">模板复用</label>
+            <select id="templateMode">
+              <option value="auto">自动（推荐）</option>
+              <option value="prefer">优先模板</option>
+              <option value="off">禁用模板</option>
+            </select>
+            <div class="note" style="margin-top:6px;">
+              自动：没传细节图时才用历史模板；优先模板：带细节图也先查模板（命中即省配准）；禁用：每次都独立配准。
+            </div>
+          </div>
         </div>
 
         <div class="row">
@@ -618,6 +629,8 @@ __WB_AMAP_SDK__
     if ($('sourceSel') && $('sourceSel').value) {
       fd.append('source', $('sourceSel').value);
     }
+    // 模板复用策略（auto/prefer/off），两个接口共用。
+    if ($('templateMode')) fd.append('template', $('templateMode').value);
 
     let data;
     try {
@@ -979,11 +992,18 @@ __WB_AMAP_SDK__
       summaryStats.push(['减碳', rsm.carbon_g + ' g']);
     }
 
+    // 模板复用状态：一眼看出这次结果是「历史模板插值（参考级）」还是
+    // 「当次独立地理配准」——识别准不准的第一判断依据。
+    const tplStat = dg.template_derived
+      ? '⚠️ 参考历史模板'
+      : '本次独立配准';
+
     $('stats').innerHTML = [
       ['置信度', (typeof d.confidence === 'number' ? d.confidence * 100 : 0).toFixed(0) + '%'],
       ['轨迹点', int(d.track_points, 0)],
       ['里程', dist],
       ['坐标系', text(d.crs, '—')],
+      ['模板', tplStat],
       ['配准残差', num(dg.rmse_m, 0, '—') + (dg.rmse_m !== undefined ? ' m' : '')],
       ['内点/离群', int(dg.inliers, 0) + '/' + int(dg.outliers, 0)],
     ].concat(summaryStats).map(([k, v]) =>

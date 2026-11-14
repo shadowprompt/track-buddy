@@ -596,6 +596,30 @@ async def _active_source(
         yield profile
 
 
+TEMPLATE_MODES = ("auto", "prefer", "off")
+
+
+def _template_mode_skip(mode: str, paired: bool) -> bool:
+    """把 ``template`` 入参翻译成 pipeline 的 ``skip_template_recall``。
+
+    * ``auto``：没传细节图时允许召回；带了细节图（paired）则跳过——
+      用户愿意传细节图就一定走当次地理配准（§22.65 事故教训）；
+    * ``prefer``：优先模板，paired 也不跳过（命中即省配准时间）；
+    * ``off``：一律跳过。
+    """
+    m = (mode or "auto").strip().lower() or "auto"
+    if m not in TEMPLATE_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"template 取值 {mode!r} 无效；可用值："
+                   f"{', '.join(TEMPLATE_MODES)}")
+    if m == "off":
+        return True
+    if m == "prefer":
+        return False
+    return paired
+
+
 @app.post("/api/recognize_multi")
 async def recognize_multi(
     files: list[UploadFile] = File(...),
@@ -605,6 +629,7 @@ async def recognize_multi(
     refine: str = Form("auto"),
     road_names: str = Form(""),
     stitch_backend: str = Form(DEFAULT_BACKEND),
+    template: str = Form("auto"),
     overview: UploadFile | None = File(None),
     summary: UploadFile | None = File(None),
     profile: SourceProfile = Depends(_active_source),
@@ -615,6 +640,10 @@ async def recognize_multi(
     （可用值见 ``GET /api/health`` 的 ``source_profiles``）。不传走
     ``SOURCE_PROFILE`` 环境变量默认；未知 id 返回 400。模板召回/沉淀
     按该画像隔离。
+
+    ``template`` 表单入参同 ``/api/recognize``：``auto``（默认，多图
+    场景一律走当次配准）/ ``prefer``（优先模板，近复刻命中即返回
+    参考级结果）/ ``off``（禁用模板）。
 
     ## 为什么需要这个接口
 
@@ -707,6 +736,8 @@ async def recognize_multi(
     # --- 识别（复用单图流程）---
     want_refine = refine.strip().lower() in ("1", "true", "yes", "on", "auto")
     do_sync_refine = refine.strip().lower() in ("1", "true", "yes", "on")
+    # 模板复用模式在重活之前校验（400 不能被 except Exception 包成 500）。
+    tpl_skip = _template_mode_skip(template, True)
     try:
         result = _pipeline.run(
             canvas,
@@ -715,15 +746,16 @@ async def recognize_multi(
             output_crs=output_crs,
             refine=do_sync_refine,
             road_names=names or None,
-            # 多图本来就有当次地理配准的真值路径，绝不让模板召回短路它
-            # （2026-11-14 事故：拼接画布被历史模板误命中，真值被跳过）。
-            skip_template_recall=True,
+            # 多图本来就有当次地理配准的真值路径，auto 模式绝不让模板
+            # 召回短路它（2026-11-14 事故）；「优先模板」显式选择。
+            skip_template_recall=tpl_skip,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc
 
     shot_id, shot_path = saved[0]
     payload = _build_payload_from(result, shot_id, f"/api/shots/{shot_id}{shot_path.suffix}")
+    payload["template_mode"] = (template or "auto").strip().lower() or "auto"
     payload["stitch"] = stitch_info
     payload["n_shots"] = len(imgs)
     if overview_path is not None:
@@ -826,6 +858,7 @@ async def recognize(
     refine: str = Form("auto"),
     road_names: str = Form(""),
     stitch_backend: str = Form(DEFAULT_BACKEND),
+    template: str = Form("auto"),
     details: list[UploadFile] | None = File(None),
     summary: UploadFile | None = File(None),
     profile: SourceProfile = Depends(_active_source),
@@ -836,6 +869,16 @@ async def recognize(
     （可用值见 ``GET /api/health`` 的 ``source_profiles``）。不传走
     ``SOURCE_PROFILE`` 环境变量默认；未知 id 返回 400。模板召回/沉淀
     按该画像隔离。
+
+    ``template`` 表单入参（可选）控制「轨迹模板」复用策略：
+
+    * ``auto``（默认）：没传细节图时允许模板召回（飞轮核心价值）；
+      传了细节图则一律走当次地理配准真值，召回不与真值竞争
+      （§22.65 事故教训）；
+    * ``prefer``：优先模板——即使带了细节图也先探测召回，近复刻命中
+      直接返回参考级结果（省配准时间），未命中回落完整流程；
+    * ``off``：禁用模板，每次都做当次地理配准。
+    未知取值返回 400。
 
     两个上传入口的语义
     ------------------
@@ -939,6 +982,9 @@ async def recognize(
                 canvas_url = f"/api/shots/{shot_id}{ext}"
             # 「本次结果为地理真值」要等识别结束才能说，见下方 paired_mode 分支。
 
+    # 模板复用模式必须在重活之前校验：HTTPException 在 _pipeline.run
+    # 的参数求值里抛出会被 except Exception 包成 500，语义就错了。
+    tpl_skip = _template_mode_skip(template, paired_mode)
     try:
         result = _pipeline.run(
             run_img,
@@ -947,15 +993,18 @@ async def recognize(
             output_crs=output_crs,
             refine=do_sync_refine,
             road_names=_names or None,
-            # paired 模式（带细节图）走当次地理配准真值，模板召回只服务
-            # 「免传细节图」的复用，绝不与真值竞争（2026-11-14 事故）。
-            skip_template_recall=paired_mode,
+            # paired 模式（带细节图）默认走当次地理配准真值；「优先模板」
+            # 由 template 入参显式选择（2026-11-14 事故教训）。
+            skip_template_recall=tpl_skip,
         )
     except Exception as exc:  # noqa: BLE001 — 兜底，避免单次请求打挂服务
         raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc
 
     shot_url = canvas_url or f"/api/shots/{shot_id}{ext}"
     payload = _build_payload_from(result, shot_id, shot_url)
+    # 本次生效的模板复用策略与结果是否参考了模板：前端展示、排查
+    # 「结果准不准」时的第一依据。
+    payload["template_mode"] = (template or "auto").strip().lower() or "auto"
     if paired_mode:
         payload["overview_url"] = f"/api/shots/{shot_id}{ext}"
         payload["n_shots"] = n_details
@@ -986,6 +1035,13 @@ async def recognize(
             pair_notes.insert(0, (
                 f"已收到 {n_details} 张细节图，但本次拼接未成功，"
                 "结果基于第 1 张图识别，不能作为地理真值"))
+        elif (payload.get("diagnostics") or {}).get("template_derived"):
+            # prefer 模式近复刻命中：结果是参考级而非本次配准真值。
+            # 「已用细节图拼接 → 地理真值」在这里不成立，必须明说。
+            pair_notes.insert(0, (
+                "「优先模板」已命中历史路线：本次结果为参考级"
+                "（由历史模板插值得出，未做当次地理配准）；"
+                "如需本次独立配准，请把模板复用改为「自动」后重试"))
         else:
             pair_notes.insert(0, (
                 f"已用 {n_details} 张细节图拼接配准，本次结果为地理真值"

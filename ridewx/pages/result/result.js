@@ -86,6 +86,12 @@ Page({
       stats.push({ k: '轨迹里程', v: haversineKm(coords).toFixed(2) + ' km' });
     }
     stats.push({ k: '坐标系', v: 'WGS-84' });
+    // 模板复用状态：参考级（历史模板插值）vs 本次独立配准
+    var diag = payload.diagnostics || {};
+    stats.push({
+      k: '模板',
+      v: diag.template_derived ? '⚠️ 参考历史模板' : '本次独立配准'
+    });
 
     // --- 运动概要 -----------------------------------------------------
     var rs = payload.ride_summary || {};

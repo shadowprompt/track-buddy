@@ -19,6 +19,7 @@ pipeline 阶段 2.5 在配准之前执行，画布形状被历史模板「近复
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
@@ -169,6 +170,123 @@ def test_multi_endpoint_skips_recall(recall_stub) -> None:
     assert recall_stub["skip_template_recall"] is True
 
 
+# --- 2b. template 三态入参（2026-11-14 用户需求） ------------------------
+#
+# auto：默认策略（无细节图才召回）；prefer：优先模板（paired 也先探测）；
+# off：禁用模板。payload["template_mode"] 回显本次生效策略。
+
+def test_template_prefer_overrides_paired_skip(recall_stub) -> None:
+    """「优先模板」：带细节图也先探测召回（用户显式选择，允许命中）。"""
+    client = TestClient(S.app)
+    r = client.post(
+        "/api/recognize",
+        files=[("file", ("overview.jpg", _jpg(), "image/jpeg")),
+               ("details", ("d1.jpg", _jpg(), "image/jpeg"))],
+        data={"template": "prefer"})
+    assert r.status_code == 200, r.text
+    assert recall_stub["skip_template_recall"] is False
+    assert r.json()["template_mode"] == "prefer"
+
+
+def test_template_off_forces_skip(recall_stub) -> None:
+    """「禁用模板」：即使没传细节图也不探测。"""
+    client = TestClient(S.app)
+    r = client.post(
+        "/api/recognize",
+        files=[("file", ("overview.jpg", _jpg(), "image/jpeg"))],
+        data={"template": "off"})
+    assert r.status_code == 200, r.text
+    assert recall_stub["skip_template_recall"] is True
+    assert r.json()["template_mode"] == "off"
+
+
+def test_template_auto_default_keeps_paired_skip(recall_stub) -> None:
+    client = TestClient(S.app)
+    r = client.post(
+        "/api/recognize",
+        files=[("file", ("overview.jpg", _jpg(), "image/jpeg")),
+               ("details", ("d1.jpg", _jpg(), "image/jpeg"))],
+        data={"template": "auto"})
+    assert r.status_code == 200, r.text
+    assert recall_stub["skip_template_recall"] is True
+    assert r.json()["template_mode"] == "auto"
+
+
+def test_template_invalid_value_rejected(recall_stub) -> None:
+    client = TestClient(S.app)
+    r = client.post(
+        "/api/recognize",
+        files=[("file", ("overview.jpg", _jpg(), "image/jpeg"))],
+        data={"template": "always"})
+    assert r.status_code == 400
+    assert "prefer" in r.json()["detail"] and "off" in r.json()["detail"]
+
+
+def test_multi_template_prefer(recall_stub) -> None:
+    client = TestClient(S.app)
+    r = client.post(
+        "/api/recognize_multi",
+        files=[("files", ("d1.jpg", _jpg(), "image/jpeg")),
+               ("files", ("d2.jpg", _jpg(), "image/jpeg"))],
+        data={"template": "prefer"})
+    assert r.status_code == 200, r.text
+    assert recall_stub["skip_template_recall"] is False
+
+
+def test_prefer_hit_does_not_claim_ground_truth(recall_stub) -> None:
+    """prefer 模式近复刻命中时：pair_notes 绝不能宣称「地理真值」。
+
+    §22.65 事故的展示层教训——模板插值结果混一句「本次结果为地理
+    真值」是最误导人的组合，必须由「优先模板已命中」文案替代。
+    """
+    from app.pipeline import TEMPLATE_CONFIDENCE_CAP
+    diag = {
+        "input_quality": {"usable": False},
+        "template_derived": True,
+        "source": "template",
+        "template_match": {"accepted": True, "residual": 0.01,
+                           "coverage": 0.99, "signature": 0.02,
+                           "reversed": False, "span": [0, 63],
+                           "mode": "query_in_template", "reason": "ok",
+                           "template": {"id": "tpl_x", "city": "上海",
+                                        "confidence": 0.9}},
+    }
+    client = TestClient(S.app)
+    # 直接改桩件返回模板结果：pipeline 内部由 _near_template_hit 决定
+    # 采信，这里只验证 server 层的文案分流。
+    recall_stub  # fixture 已就绪
+
+    orig = S._pipeline.run
+
+    def fake_run(img, **kwargs):
+        return SimpleNamespace(
+            confidence=TEMPLATE_CONFIDENCE_CAP, track_points=64,
+            geojson={"type": "FeatureCollection", "features": []},
+            geojson_gcj02={"type": "FeatureCollection", "features": []},
+            crs="GCJ-02", distance_m=9278.7, anchors_used=[],
+            anchors_rejected=[], road_attribution={},
+            road_fit={"ok": False, "shift_m": 0.0},
+            road_name_constraints=[], road_name_fit={}, alternatives=[],
+            diagnostics=diag,
+            warnings=["⚠️ 参考级定位（未核验）：近复刻命中"],
+            elapsed_ms=1, track_polyline_px=[], map_matched=False,
+            image_size=(100, 100, 3))
+
+    S._pipeline.run = fake_run
+    try:
+        r = client.post(
+            "/api/recognize",
+            files=[("file", ("overview.jpg", _jpg(), "image/jpeg")),
+                   ("details", ("d1.jpg", _jpg(), "image/jpeg"))],
+            data={"template": "prefer"})
+    finally:
+        S._pipeline.run = orig
+    assert r.status_code == 200, r.text
+    notes = " ".join(r.json().get("warnings") or [])
+    assert "参考级" in notes and "地理真值" not in notes.replace(
+        "未做当次地理配准", "")
+
+
 # --- 3. pipeline 层行为：旗标置位时根本不探测 ----------------------------
 
 def test_run_impl_skips_locate_when_flag_set(monkeypatch) -> None:
@@ -230,3 +348,65 @@ def test_run_impl_skips_locate_when_flag_set(monkeypatch) -> None:
     with pytest.raises(RuntimeError, match="sentinel"):
         pipe._run_impl(img)
     assert calls["locate"] == 1
+
+
+# --- 4. 前端契约（静态源码断言） -----------------------------------------
+
+def test_web_template_mode_select_and_display() -> None:
+    from pathlib import Path
+    html = (Path(__file__).resolve().parents[1]
+            / "src" / "web" / "index.html").read_text(encoding="utf-8")
+    # 三态下拉与提交
+    assert 'id="templateMode"' in html
+    for v in ("auto", "prefer", "off"):
+        assert f'<option value="{v}"' in html
+    assert "fd.append('template'" in html
+    # 顶部 stat 卡展示是否参考模板
+    assert "template_derived" in html
+    assert "参考历史模板" in html and "本次独立配准" in html
+
+
+def test_miniprogram_template_mode_wired() -> None:
+    root = (Path(__file__).resolve().parents[1] / "ridewx")
+    api = (root / "utils" / "api.js").read_text(encoding="utf-8")
+    assert "opts.templateMode" in api
+    assert "'template'" in api
+    idx_js = (root / "pages" / "index" / "index.js").read_text(encoding="utf-8")
+    assert "templateModes" in idx_js and "onTemplateModeChange" in idx_js
+    idx_wxml = (root / "pages" / "index" / "index.wxml").read_text(
+        encoding="utf-8")
+    assert "templateModes" in idx_wxml
+    res_js = (root / "pages" / "result" / "result.js").read_text(
+        encoding="utf-8")
+    assert "template_derived" in res_js and "参考历史模板" in res_js
+
+
+# --- 4. 前端契约（静态源码断言） -----------------------------------------
+
+def test_web_template_mode_select_and_display() -> None:
+    from pathlib import Path
+    html = (Path(__file__).resolve().parents[1]
+            / "src" / "web" / "index.html").read_text(encoding="utf-8")
+    # 三态下拉与提交
+    assert 'id="templateMode"' in html
+    for v in ("auto", "prefer", "off"):
+        assert f'<option value="{v}"' in html
+    assert "fd.append('template'" in html
+    # 顶部 stat 卡展示是否参考模板
+    assert "template_derived" in html
+    assert "参考历史模板" in html and "本次独立配准" in html
+
+
+def test_miniprogram_template_mode_wired() -> None:
+    root = (Path(__file__).resolve().parents[1] / "ridewx")
+    api = (root / "utils" / "api.js").read_text(encoding="utf-8")
+    assert "opts.templateMode" in api
+    assert "'template'" in api
+    idx_js = (root / "pages" / "index" / "index.js").read_text(encoding="utf-8")
+    assert "templateModes" in idx_js and "onTemplateModeChange" in idx_js
+    idx_wxml = (root / "pages" / "index" / "index.wxml").read_text(
+        encoding="utf-8")
+    assert "templateModes" in idx_wxml
+    res_js = (root / "pages" / "result" / "result.js").read_text(
+        encoding="utf-8")
+    assert "template_derived" in res_js and "参考历史模板" in res_js

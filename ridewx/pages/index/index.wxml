@@ -44,6 +44,12 @@
       <view class="field-input picker-value">{{sources[sourceIndex].title}}</view>
     </picker>
   </view>
+  <view class="field">
+    <text class="field-label">模板复用</text>
+    <picker range="{{templateModes}}" range-key="title" value="{{templateModeIndex}}" bindchange="onTemplateModeChange">
+      <view class="field-input picker-value">{{templateModes[templateModeIndex].title}}</view>
+    </picker>
+  </view>
   <view class="note">截图来自哪个 App 就选哪个；路名是强约束，提供后精度显著提升</view>
 </view>
 

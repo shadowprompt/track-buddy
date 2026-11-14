@@ -12,7 +12,14 @@ Page({
     // 输入源画像选择器：加载时从 /api/health 拉取可用清单。
     // sourceIndex=0 固定为「默认（服务端配置）」，即不传 source。
     sources: [{ id: '', title: '默认（服务端配置）' }],
-    sourceIndex: 0
+    sourceIndex: 0,
+    // 模板复用策略：auto（默认）/ prefer（优先模板）/ off（禁用）
+    templateModes: [
+      { id: 'auto', title: '自动（推荐）' },
+      { id: 'prefer', title: '优先模板' },
+      { id: 'off', title: '禁用模板' }
+    ],
+    templateModeIndex: 0
   },
 
   onLoad: function () {
@@ -36,6 +43,10 @@ Page({
 
   onSourceChange: function (e) {
     this.setData({ sourceIndex: Number(e.detail.value) });
+  },
+
+  onTemplateModeChange: function (e) {
+    this.setData({ templateModeIndex: Number(e.detail.value) });
   },
 
   pickOverview: function () {
@@ -112,7 +123,8 @@ Page({
         summary: this.data.summary,
         city: this.data.city,
         roadNames: this.data.roadNames,
-        source: src
+        source: src,
+        templateMode: this.data.templateModes[this.data.templateModeIndex].id
       })
       .then(function (payload) {
         getApp().globalData.lastResult = payload;

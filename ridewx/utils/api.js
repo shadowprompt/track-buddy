@@ -89,6 +89,8 @@ function recognize(opts) {
     if (opts.roadNames) fields.push({ name: 'road_names', value: opts.roadNames });
     // 输入源画像（可选）：截图来自哪个 App。空 = 走服务端 SOURCE_PROFILE 默认。
     if (opts.source) fields.push({ name: 'source', value: opts.source });
+    // 模板复用策略：auto（默认）/ prefer（优先模板）/ off（禁用）。
+    if (opts.templateMode) fields.push({ name: 'template', value: opts.templateMode });
 
     var body = multipart.build(fields, files);
     return new Promise(function (resolve, reject) {
