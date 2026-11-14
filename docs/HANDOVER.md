@@ -6458,3 +6458,67 @@ Connect）只认 GPX 的逐点 `<time>`——GeoJSON 没有时间轴，导入后
 退化轨迹/server 直测/前端契约）；全量 567 passed。测试坑：自己先
 把 20:20:26+20分35秒 算错成 20:40:41（应为 20:41:01）——3 例失败
 全是断言算术错，代码无误。未重启服务。
+
+### §22.61 GPX 时间轴消失根因：OCR 吞空格（2026-11-14 15:48）
+
+用户实测反馈「GPX 里连运动开始时间都没有」。复盘 `last_result.json`：
+时长 1235s / 里程 3.5km / 卡路里 203 全部解析成功，唯独 `started_at`
+为 null——`duration_text` 是 **"2026-11-1120:20:26骑行20分35秒"**：
+OCR 把日期与时间之间的空格吞掉，整块粘连输出。旧时间戳正则
+`(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):...` 分隔符必选，匹配失败。
+GPX 规则是「开始时间+时长齐全才写逐点 <time>」，于是整条时间轴
+跟着消失——用户看到的现象与数据完全对上。
+
+**修复**（ride_summary.py）：
+
+* 分隔符改 `[ T]?`，按位数切分（日/时各 2 位、月可 1-2 位）；
+* 解析后做**范围校验**（月≤12、日≤31、时≤23、分/秒≤59），
+  粘连错位读出的胡值跳过、`finditer` 继续找下一个候选；
+* 时长有但开始缺时，notes 提示「GPX 导出将没有时间轴」；
+* `_attach_gpx` 缺时间轴时往 warnings 写明缺的字段与原因
+  （started_at/duration_s 实际值），不再让用户对着 GPX 文件猜。
+
+**教训**：OCR 输出的粘连是常态不是异常，时间/数字类正则的分隔符
+一律可选 + 结果范围校验。新增 4 例回归（粘连样例用真实落盘字符串）；
+全量 571 passed。未重启服务。
+
+### §22.62 导出层模块化（exporters/）+ 交付坐标系统一 WGS-84（2026-11-14 16:26）
+
+用户需求：文件生成模块化，后续加 TCX / FIT；GeoJSON 交付只留 WGS-84。
+
+**实现**（`src/app/exporters/` 包）：
+
+* `base.py` 公共基座：WGS-84 输入约定、haversine 累计里程、按里程
+  比例的时间插值（含 2026-11-14 踩过的「本地域插值没换 UTC」防回归
+  注释）、东八区固定 +8h、XML 转义、started_at 解析。
+* `gpx.py`：从 `app/gpx.py` 迁入（原文件删除），签名统一为
+  `build_gpx(coords, *, ride_summary, source_title, geom_distance_m)`
+  ——GPX 不用几何里程（避免与订单里程两套数字），参数只是为注册表
+  统一签名。第一版漏加该参数，`build_exports` 里 TypeError 被兜底
+  告警吞掉只表现为「gpx 缺席」，测试抓住。
+* `tcx.py`（新）：TCX v2，`Activity Sport="Biking"` + Lap
+  （TotalTimeSeconds/DistanceMeters/Calories/TriggerMethod 必填序列）
+  + 逐 Trackpoint Time/Position。**关键契约**：TCX 规范要求逐点
+  `<Time>`，缺时间轴返回 `None` 缺席——宁缺勿错不产半合规文件。
+  DistanceMeters 订单里程优先、退化几何里程；Calories 缺失填 0
+  （schema 必填，0 合法且诚实）。
+* `__init__.py`：注册表 `_REGISTRY` + `build_exports()`（跑全部格式，
+  None 缺席）+ `export_one()`（未知格式报错并说明 FIT 待实现）。
+  **加新格式只需：实现 build_xxx + 注册表加一行**。
+* server：`_attach_gpx` → `_attach_exports`，payload 加 `payload["tcx"]`
+  （`gpx` 键不变）；缺时间轴告警文案覆盖 GPX/TCX 两格式。
+* 前端：GeoJSON 下载收敛为单个 WGS-84 链接（GCJ-02 链接删除），
+  新增 TCX 链接（无产出隐藏），说明文案改为「导出统一 WGS-84，
+  地图显示自动换算对齐 GCJ-02 底图」。
+* CLI：只产出 `trajectory_wgs84.geojson`（`_summary` JSON 里的
+  start/end_gcj02 字段保留——程序化消费契约，不动）。
+
+**边界明确**：GCJ-02 **没有**从识别流水线移除——它是锚点地理编码
+（`maps/geocoding` 契约统一输出 GCJ-02）的原生产物，页面地图 /
+对照页 / 核对页 / trajmap 全靠它对齐 GCJ-02 底图；收敛的只是
+「交付下载」。pipeline 的 `geojson_gcj02` 字段与 payload 字段保留。
+
+**验证**：`tests/test_gpx.py` → `tests/test_exporters.py`（25 例，
+新增注册表分发/TCX 结构与时间/TCX 缺时间轴/距离与卡路里退化/
+payload 双格式/源标题注入/前端链接契约）；全量 579 passed。
+未重启服务。

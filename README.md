@@ -749,24 +749,45 @@ HSV、形态学核、RANSAC 内点容差、里程 OCR 词表，每个 App 一套
   本次减碳」），数值单位正则通用；未来高德/小米只需在画像里填自家
   标签文案。
 
-### GPX 导出：轨迹 + 时间轴一起进运动平台
+### 运动文件导出层：GPX / TCX（模块化，后续 FIT）
 
 GeoJSON 只有几何，没有每个点的时刻——导入 Strava / Garmin 后时长、
-配速、平均速度全丢。`src/app/gpx.py` 把 WGS-84 轨迹与概要合成 GPX 1.1：
+配速、平均速度全丢。`src/app/exporters/` 是独立的文件导出层：
 
-- `payload["gpx"]`（GPX 文本），前端「↓ 下载 GPX（含时间轴与运动概要）」
-  一键保存；识别失败 / 无坐标时不产出、链接隐藏。
-- **时间插值**：截图识别拿不到逐点时刻，只有开始时间 + 总时长，
-  按**累计里程比例**分配中间时刻（`t_i = start + cumdist_i/total ×
-  duration`）——按里程而不是点序号分配，识别点间距不均时才不会产生
-  忽快忽慢的假速度曲线。
-- **时区**：订单页时间是东八区本地时间，GPX `<time>` 规范要求 UTC；
-  固定 +8h 换算（中国无夏令时），不引入 zoneinfo 依赖（Windows 缺
-  IANA 时区库）。
-- 概要字段（里程/时长/卡路里/减碳）写进 `<trk><extensions>` 自定义
-  命名空间 `mr:`，平台忽略未知扩展，不影响导入。
-- 概要缺失仍输出纯轨迹 GPX（无 `<time>`）；后台贴路精修完成后按
-  新坐标**重新合成**（精修 payload 会从主流程结果合并回 `ride_summary`）。
+```
+exporters/
+├── base.py    公共基座：WGS-84 输入约定、按累计里程的时间插值、
+│              东八区→UTC 换算、XML 转义
+├── gpx.py     GPX 1.1（概要写 <extensions> 命名空间 mr:）
+├── tcx.py     TCX v2（Garmin/Strava，Lap 带总时长/距离/卡路里）
+└── __init__.py 格式注册表：build_exports() 一次跑全部格式
+```
+
+**新增格式只需两步**：实现 `build_xxx(coords, *, ride_summary,
+source_title, geom_distance_m) -> str | None` 并在注册表加一行——
+server、前端、测试契约全部自动生效。FIT 是二进制格式（需 FIT SDK），
+注册表已留位，尚未实现。
+
+- **格式契约**：数据不足以产出**合规**文件时返回 `None` 缺席
+  （TCX 规范要求逐点 `<Time>`，缺时间轴就产不出），宁缺勿错，
+  不输出半合规的坏文件；前端对应下载链接自动隐藏。
+- **payload 字段**：`payload["gpx"]` / `payload["tcx"]`（文件文本）。
+- **时间插值**：按**累计里程比例**分配中间时刻（匀速假设）——
+  按里程而不是点序号分配，识别点间距不均时才不会产生忽快忽慢的
+  假速度曲线。
+- **时区**：订单页时间是东八区本地时间，导出 `<time>` 规范要求
+  UTC；固定 +8h 换算（中国无夏令时），不引入 zoneinfo 依赖。
+- GPX 概要缺失仍输出纯轨迹；TCX 的 `DistanceMeters` 订单里程优先、
+  退化用几何里程，`Calories` 缺失填 0（schema 必填，0 合法且诚实）。
+
+### 交付坐标系统一为 WGS-84
+
+**对外交付的文件（GeoJSON / GPX / TCX）全部是 WGS-84**（GPS 标准，
+Strava / Garmin / GIS 直接可用）。GCJ-02 是识别流水线的内部坐标
+（锚点地理编码原生产物，页面地图 / 核对页用它对齐腾讯、高德的
+GCJ-02 底图），**不再作为下载交付物**——此前「GCJ-02 版 GeoJSON +
+WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-84
+下载。CLI 同步只产出 `trajectory_wgs84.geojson`。
 
 ---
 

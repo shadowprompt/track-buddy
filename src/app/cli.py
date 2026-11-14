@@ -6,8 +6,9 @@
                         [--online] [--no-chart] [--no-road-verify]
 
 产出（写入 --out 目录）：
-  trajectory_gcj02.geojson   GCJ-02 基准，腾讯/高德底图直接可用
-  trajectory_wgs84.geojson   WGS-84 基准，GPS 设备 / Strava / GIS 工具
+  trajectory_wgs84.geojson   WGS-84 基准（交付统一坐标系），GPS 设备 /
+                             Strava / GIS 工具；GCJ-02 是识别与底图
+                             显示的内部坐标，不再作为 CLI 交付物
   overlay_result.png         原截图 + 识别轨迹叠加
   trajectory_chart.png       独立轨迹图（米制等比例，标注路名）
   road_verify.png            OSM 道路几何投影回截图 + 轨迹（绝对位置验证）
@@ -93,13 +94,11 @@ def main(argv: list[str] | None = None) -> int:
 
     files: dict[str, str] = {}
     if res.track_points:
-        p_gcj = os.path.join(out_dir, "trajectory_gcj02.geojson")
+        # 交付文件统一 WGS-84（GPS 标准）；GCJ-02 是识别/显示的内部坐标，
+        # 不再作为 CLI 交付物。
         p_wgs = os.path.join(out_dir, "trajectory_wgs84.geojson")
-        with open(p_gcj, "w", encoding="utf-8") as f:
-            json.dump(res.geojson_gcj02, f, ensure_ascii=False, indent=1)
         with open(p_wgs, "w", encoding="utf-8") as f:
             json.dump(res.geojson, f, ensure_ascii=False, indent=1)
-        files["geojson_gcj02"] = p_gcj
         files["geojson_wgs84"] = p_wgs
 
     try:

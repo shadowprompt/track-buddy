@@ -26,7 +26,7 @@ from .stitch_backends import (
     list_backends,
     run_stitch,
 )
-from .gpx import build_gpx
+from .exporters import build_exports
 from .pipeline import RidePipeline, _result_is_self_consistent
 from .route_template import TemplateStore
 from .tmap_proxy import create_proxy_router, make_secret, render_page
@@ -391,13 +391,12 @@ async def _attach_ride_summary(
         payload.setdefault("warnings", []).append(str(cc["note"]))
 
 
-def _attach_gpx(payload: dict[str, Any]) -> None:
-    """把 WGS-84 轨迹 + 运动概要合成 GPX，放进 ``payload["gpx"]``。
+def _attach_exports(payload: dict[str, Any]) -> None:
+    """把 WGS-84 轨迹 + 运动概要交给导出层，产出 GPX / TCX 等运动文件。
 
-    前端直接把这段文本变成 Blob 下载链接——运动平台（Strava/Garmin）
-    只认 GPX 的时间轴，GeoJSON 里没有每个点的时刻，导入后时长/配速
-    全丢。合成放服务端是为了时间插值与 UTC 换算能进 pytest 契约测试。
-    无可用坐标时不产出（``payload["gpx"]`` 保持缺席，前端隐藏下载链接）。
+    产出放进 ``payload["gpx"]`` / ``payload["tcx"]``（内容为文件文本），
+    前端转 Blob 下载链接；数据不足产不出的格式键缺席，前端据此隐藏
+    链接。无可用坐标时全部不产出。导出失败只告警，绝不影响轨迹识别。
     """
     gj = payload.get("geojson") or {}
     feats = gj.get("features") or []
@@ -409,13 +408,13 @@ def _attach_gpx(payload: dict[str, Any]) -> None:
             coords = [[float(lo), float(la)] for lo, la in cs]
     if not coords:
         return
-    # 时间轴缺失要明说：GPX 没有 <time> 时 Strava 导入后无时长/配速，
-    # 用户看到「下载的 GPX 里连开始时间都没有」却不知道缺的是哪个环节。
+    # 时间轴缺失要明说：GPX/TCX 没有 <time> 时 Strava 导入后无时长/配速
+    # （TCX 甚至产不出合规文件），用户却不知道缺的是哪个环节。
     rs = payload.get("ride_summary") or {}
     if not (rs.get("started_at") and rs.get("duration_s")):
         payload.setdefault("warnings", []).append(
-            "GPX 无时间轴：缺运动开始时间或时长（概要识别 "
-            f"started_at={rs.get('started_at')!r}, "
+            "运动文件无时间轴（GPX 无 <time>、TCX 无法生成）：缺运动"
+            f"开始时间或时长（概要识别 started_at={rs.get('started_at')!r}, "
             f"duration_s={rs.get('duration_s')!r}）——"
             "逐点时刻只能由订单详情截图的「开始时间+总时长」插值得出，"
             "轨迹截图本身没有时间信息")
@@ -425,13 +424,17 @@ def _attach_gpx(payload: dict[str, Any]) -> None:
     if CONFIG.source_profile_id in PROFILES:
         title = PROFILES[CONFIG.source_profile_id].title
     try:
-        payload["gpx"] = build_gpx(
+        exports = build_exports(
             coords,
-            ride_summary=payload.get("ride_summary"),
+            ride_summary=rs,
             source_title=title,
+            geom_distance_m=payload.get("distance_m"),
         )
-    except Exception:  # noqa: BLE001 —— GPX 失败不影响轨迹识别本身
-        payload.setdefault("warnings", []).append("GPX 导出失败，已跳过")
+    except Exception:  # noqa: BLE001 —— 导出失败不影响轨迹识别本身
+        payload.setdefault("warnings", []).append("运动文件导出失败，已跳过")
+        return
+    for fmt, content in exports.items():
+        payload[fmt] = content
 
 
 def _persist_last_result(payload: dict[str, Any]) -> None:
@@ -742,7 +745,7 @@ async def recognize_multi(
         payload["warnings"] = list(payload["warnings"]) + [note]
 
     await _attach_ride_summary(payload, summary)
-    _attach_gpx(payload)
+    _attach_exports(payload)
     _persist_last_result(payload)
     # 多图结果单独存一份——否则之后跑一次单图识别就会把它冲掉，
     # 核对页就看不到了。
@@ -944,7 +947,7 @@ async def recognize(
         payload["template_capture"] = _capture_template(
             result, payload, city=city.strip(), shot_id=shot_id)
     await _attach_ride_summary(payload, summary)
-    _attach_gpx(payload)
+    _attach_exports(payload)
     _persist_last_result(payload)
 
     # 需要后台精修吗？判据见 `_need_background_refine`：
@@ -1093,7 +1096,7 @@ def _run_refine(shot_id: str, shot_path: Path) -> None:
             refine_valid = False
         # GPX 按精修后的坐标重新合成（轨迹可能整体平移，旧 GPX 已过期）；
         # 时间轴来自 ride_summary，与坐标无关，不受精修影响。
-        _attach_gpx(payload)
+        _attach_exports(payload)
         if refine_valid:
             _persist_last_result(payload)
             if ctx.get("multi"):

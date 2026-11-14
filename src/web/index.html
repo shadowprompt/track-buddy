@@ -271,15 +271,14 @@
       <div class="card" id="resultCard" style="margin-top:16px; display:none;">
         <h2>识别结果</h2>
         <div class="stats" id="stats"></div>
-        <a class="dl" id="dl" download="trajectory_gcj02.geojson">↓ 下载 GeoJSON（GCJ-02，腾讯/高德底图）</a>
+        <a class="dl" id="dlG" download="trajectory_wgs84.geojson">↓ 下载 GeoJSON（WGS-84，GPS / Strava 标准）</a>
         <a class="dl" id="stitchCheck" href="/stitch-check" target="_blank"
            style="margin-left:14px;">多图拼接核对页（拼接图 + 原图位置框 + 轨迹）</a>
-        <a class="dl" id="dlG" style="margin-left:14px; display:none;" download="trajectory_wgs84.geojson">↓ 下载 WGS-84 版本（GPS 设备 / Strava）</a>
         <a class="dl" id="dlGPX" style="margin-left:14px; display:none;" download="trajectory_wgs84.gpx">↓ 下载 GPX（含时间轴与运动概要，直接导入 Strava / Garmin）</a>
+        <a class="dl" id="dlTCX" style="margin-left:14px; display:none;" download="trajectory_wgs84.tcx">↓ 下载 TCX（Garmin / Strava，需订单概要提供时间轴）</a>
         <div class="note" style="margin-top:8px;">
-          <b>在腾讯地图 / 高德 / 美团里查看，请用 GCJ-02 版本。</b>
-          WGS-84 版本在中国境内与底图相差约 290 米，直接加载会明显偏离道路。
-          只有导入 GPS 设备、Strava、Garmin 或 GIS 工具时才用 WGS-84。
+          <b>导出统一为 WGS-84（GPS 标准），可直接导入 Strava / Garmin / GPS 设备。</b>
+          页面地图与核对页显示时会自动换算对齐腾讯/高德的 GCJ-02 底图，无需手动转换。
         </div>
         <div class="note" id="diag"></div>
       </div>
@@ -1242,25 +1241,29 @@ __WB_AMAP_SDK__
       b.onclick = () => startCorrect(b.dataset.fix);
     });
 
-    // GeoJSON 下载：默认给 GCJ-02（中文底图能直接对上），WGS-84 作为次选
+    // GeoJSON 下载：只导出 WGS-84（GPS 标准，Strava/设备直接可用）。
+    // 页面地图显示用的 GCJ-02 是内部坐标（对齐腾讯/高德底图），不对外导出。
     // 识别失败时后端返回的是空几何，这里必须容错——
     // 否则 blob 内容是 undefined，下载下来是个坏文件。
-    const gjGeo = (d.geojson_gcj02 && d.geojson_gcj02.features) ? d.geojson_gcj02 : d.geojson;
-    const blob = new Blob([JSON.stringify(gjGeo || {}, null, 2)],
-                          { type: 'application/geo+json' });
-    $('dl').href = URL.createObjectURL(blob);
     const blobG = new Blob([JSON.stringify(d.geojson || {}, null, 2)], { type: 'application/geo+json' });
     $('dlG').href = URL.createObjectURL(blobG);
     $('dlG').style.display = 'inline-block';
 
-    // GPX（WGS-84 + 每点时间轴 + 运动概要扩展）由服务端合成，前端只转
-    // Blob。后端没产出（识别失败 / 无坐标）时隐藏链接。
+    // 运动文件（GPX / TCX）由服务端导出层合成，前端只转 Blob。
+    // 后端没产出（识别失败 / 无坐标 / 缺时间轴导致 TCX 不可生成）时隐藏链接。
     if (d.gpx) {
       const blobX = new Blob([d.gpx], { type: 'application/gpx+xml' });
       $('dlGPX').href = URL.createObjectURL(blobX);
       $('dlGPX').style.display = 'inline-block';
     } else {
       $('dlGPX').style.display = 'none';
+    }
+    if (d.tcx) {
+      const blobT = new Blob([d.tcx], { type: 'application/vnd.garmin.tcx+xml' });
+      $('dlTCX').href = URL.createObjectURL(blobT);
+      $('dlTCX').style.display = 'inline-block';
+    } else {
+      $('dlTCX').style.display = 'none';
     }
 
     // 地图（返回是否真的刷新成功，异步精修要用它决定提示文案）
