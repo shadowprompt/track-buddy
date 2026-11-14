@@ -8,6 +8,9 @@ scipy>=1.11
 shapely>=2.0
 rapidocr-onnxruntime>=1.3
 requests>=2.31
+# 运动记录云存储（腾讯 COS）；缺失时记录功能自动关闭，识别行为不变。
+# 只补缺包：D:\soft\Python311\python.exe -m pip install cos-python-sdk-v5
+cos-python-sdk-v5>=1.9
 
 # 可选：真实浏览器端到端验证（tools/verify_browser.py）
 # pip install playwright && python -m playwright install chromium

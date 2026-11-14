@@ -226,6 +226,8 @@ def test_recognize_endpoints_accept_summary_form() -> None:
     for fn in (S.recognize, S.recognize_multi):
         src = inspect.getsource(fn)
         assert "summary: UploadFile | None = File(None)" in src
-        assert "await _attach_ride_summary(payload, summary)" in src
+        assert "await _attach_ride_summary(" in src
+        # 记录存 COS 时还需要把概要图字节交给 byte_sink（不落盘）
+        assert "byte_sink=summary_sink if record_uid else None" in src
         # 概要必须在落盘之前并入（否则对照页看不到）
         assert src.index("_attach_ride_summary") < src.index("_persist_last_result")

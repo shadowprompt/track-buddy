@@ -73,6 +73,14 @@ TMAP_GEOCODER = "https://apis.map.qq.com/ws/geocoder/v1/"
 # 高德 WebService 端点
 AMAP_PLACE_SEARCH = "https://restapi.amap.com/v3/place/text"
 
+# 运动记录云存储（腾讯 COS + 微信登录）的必需配置。
+# 单一用途、无别名；缺任一项时 records_enabled() 自动降级，
+# 识别端点保持零回归。密钥只在服务端 .env，绝不下发客户端。
+RECORDS_REQUIRED_ENV = (
+    "COS_SECRET_ID", "COS_SECRET_KEY", "COS_BUCKET", "COS_REGION",
+    "WX_APPID", "WX_APP_SECRET", "RECORDS_TOKEN_SECRET",
+)
+
 # 腾讯地图 GL JS 的官方公开示例 key。
 #
 # 用途只有一个：**渲染网页底图**。它被局限在本地代理内部使用，
@@ -416,6 +424,58 @@ class AppConfig:
     def amap_js_security(self) -> str | None:
         """高德 JS API 的安全密钥（``securityJsCode``）。"""
         return self._env_value(AMAP_JS_SECURITY_ENV)
+
+    # --- 运动记录云存储（腾讯 COS / 微信登录）--------------------------
+    # 与地图 key 同一套读取范式：@property + _env_value（改 .env 立即生效）。
+    @property
+    def cos_secret_id(self) -> str | None:
+        return self._env_value("COS_SECRET_ID")
+
+    @property
+    def cos_secret_key(self) -> str | None:
+        return self._env_value("COS_SECRET_KEY")
+
+    @property
+    def cos_bucket(self) -> str | None:
+        return self._env_value("COS_BUCKET")
+
+    @property
+    def cos_region(self) -> str | None:
+        return self._env_value("COS_REGION")
+
+    @property
+    def wx_appid(self) -> str | None:
+        return self._env_value("WX_APPID")
+
+    @property
+    def wx_app_secret(self) -> str | None:
+        return self._env_value("WX_APP_SECRET")
+
+    @property
+    def records_token_secret(self) -> str | None:
+        """HMAC 签名密钥，同时用于 openid → uid 派生，**必须稳定不轮换**。"""
+        return self._env_value("RECORDS_TOKEN_SECRET")
+
+    @property
+    def cos_prefix(self) -> str:
+        """对象根前缀，便于 prod/dev 共用一个桶；末尾恒带一个 ``/``。"""
+        raw = (self._env_value("COS_PREFIX") or "").strip().strip("/")
+        return f"{raw}/" if raw else "ride-records/"
+
+    @property
+    def records_token_ttl(self) -> int:
+        """token 有效期（秒），默认 30 天，下限 60 秒。"""
+        try:
+            ttl = int((self._env_value("RECORDS_TOKEN_TTL") or "").strip()
+                      or 2592000)
+        except ValueError:
+            return 2592000
+        return max(60, ttl)
+
+    @property
+    def records_config_ready(self) -> bool:
+        """7 项必需配置是否齐全（SDK 是否可导入由 records 包另行判断）。"""
+        return all(self._env_value(name) for name in RECORDS_REQUIRED_ENV)
 
 
 def _read_env_file(env_path: Path) -> dict[str, str]:

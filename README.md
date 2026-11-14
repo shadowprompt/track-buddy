@@ -71,6 +71,12 @@ python -m app.server --reload    # 开发模式（热重载，需 PYTHONPATH=src
 
 打开浏览器访问 `http://127.0.0.1:8000`，上传截图即可。
 
+🔴 **已有环境只补缺包**：运动记录云存储需要 `cos-python-sdk-v5`，
+用 `D:\soft\Python311\python.exe -m pip install cos-python-sdk-v5` 单独安装；
+不要在已装 `opencv-python` 的环境跑全量 `pip install -r requirements.txt`
+（requirements 写的是 `opencv-python-headless`，混装会覆盖冲突）。
+未装 SDK 或未配云端凭据时，记录功能自动关闭，**识别行为完全不变**。
+
 跑验收测试：
 
 ```bash
@@ -728,10 +734,10 @@ HSV、形态学核、RANSAC 内点容差、里程 OCR 词表，每个 App 一套
 ## 运动概要识别：与轨迹组合成完整运动记录
 
 轨迹截图只产出「经纬度几何」；`/api/recognize` 与 `/api/recognize_multi`
-新增**可选**的 `summary` 上传（前端「③ 订单详情截图」控件），上传 App 的
-订单详情页截图后，识别结果会附带运动元数据，组合成一次完整的运动记录：
+新增**可选**的 `summary` 上传（前端「① 运动概要截图」控件），上传 App 的
+运动概要截图后，识别结果会附带运动元数据，组合成一次完整的运动记录：
 
-| 字段 | 来源 | 实测样例（美团订单页） |
+| 字段 | 来源 | 实测样例（美团运动概要） |
 |---|---|---|
 | `distance_km` | 「3.5km 本次骑行」 | 3.5（自动避开「1314km」累计值） |
 | `duration_s` / `duration_text` | 「骑行20分35秒」 | 1235 秒 |
@@ -749,7 +755,7 @@ HSV、形态学核、RANSAC 内点容差、里程 OCR 词表，每个 App 一套
 - `km` 多候选用「本次骑行」标签的**文本块近邻绑定**（OCR 按阅读顺序
   输出，标签与数值块索引相邻）；无标签时取最小候选（累计恒大于本次）。
 - 减碳克数的单位 `g` 极易误报，**必须**有「减碳」标签近邻才采信。
-- 订单里程与轨迹几何里程做量级交叉校验（0.6–1.7 合理区间），不符时
+- 概要里程与轨迹几何里程做量级交叉校验（0.6–1.7 合理区间），不符时
   出告警——订单值来自平台记账，偏差通常说明轨迹截图没截全。
 - 标签词表在 `SourceProfile.ride_labels`（美团：「本次骑行/本次消耗/
   本次减碳」），数值单位正则通用；未来高德/小米只需在画像里填自家
@@ -781,9 +787,9 @@ server、前端、测试契约全部自动生效。FIT 是二进制格式（需 
 - **时间插值**：按**累计里程比例**分配中间时刻（匀速假设）——
   按里程而不是点序号分配，识别点间距不均时才不会产生忽快忽慢的
   假速度曲线。
-- **时区**：订单页时间是东八区本地时间，导出 `<time>` 规范要求
+- **时区**：概要截图时间是东八区本地时间，导出 `<time>` 规范要求
   UTC；固定 +8h 换算（中国无夏令时），不引入 zoneinfo 依赖。
-- GPX 概要缺失仍输出纯轨迹；TCX 的 `DistanceMeters` 订单里程优先、
+- GPX 概要缺失仍输出纯轨迹；TCX 的 `DistanceMeters` 概要里程优先、
   退化用几何里程，`Calories` 缺失填 0（schema 必填，0 合法且诚实）。
 
 ### 交付坐标系统一为 WGS-84
@@ -794,6 +800,96 @@ Strava / Garmin / GIS 直接可用）。GCJ-02 是识别流水线的内部坐标
 GCJ-02 底图），**不再作为下载交付物**——此前「GCJ-02 版 GeoJSON +
 WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-84
 下载。CLI 同步只产出 `trajectory_wgs84.geojson`。
+
+---
+
+## 运动记录云存储（腾讯 COS）
+
+一次识别的完整结果（概要 + 轨迹 + GPX/TCX + 诊断 + 截图）可以沉淀为
+**运动记录**，权威源放在腾讯 COS；后续「运动记录列表」从 COS 拉取：
+
+```
+小程序 → GET /api/records → 后端用 COS SDK 列/读对象 → JSON
+```
+
+🔴 **私钥只在服务端**：小程序包可被反编译，把 `COS_SECRET_ID/KEY` 放进
+客户端等于把整个 Bucket（所有用户、读/写/删）公开；预签名 URL 也会
+产生可转发的公网可读链接，与项目「真实骑行位置不得公开」的隐私边界
+冲突。因此 COS 只由服务端访问，客户端只持短期 HMAC token。
+`data/uploads/`、`last_result.json`、`last_stitch.json` 仍是本地调试缓存
+（`/traj-map`、`/stitch-check`、后台精修依赖），不因云存储移除。
+
+### 配置（写进根目录 `.env`，已被 .gitignore 忽略）
+
+| 变量 | 必需 | 说明 |
+|---|---|---|
+| `COS_SECRET_ID` / `COS_SECRET_KEY` | ✅ | 建议用**最小权限子账号密钥**，只授权该 Bucket |
+| `COS_BUCKET` / `COS_REGION` | ✅ | 形如 `ride-records-1250000000` / `ap-shanghai` |
+| `WX_APPID` / `WX_APP_SECRET` | ✅ | `wx.login` code → jscode2session 用 |
+| `RECORDS_TOKEN_SECRET` | ✅ | HMAC 签名 + openid→uid 派生，**写入后不要轮换**（轮换=数据迁移） |
+| `COS_PREFIX` | ❌ | 对象根前缀，默认 `ride-records/` |
+| `RECORDS_TOKEN_TTL` | ❌ | token 有效期秒数，默认 2592000（30 天） |
+
+七项必需配置任一缺失，或 `cos-python-sdk-v5` 未安装 → `GET /api/health`
+的 `records.enabled=false`，`wxlogin` 返回 503、`/api/records*` 返回 403，
+**两个识别端点保持原有行为、零回归**。
+
+### 鉴权与自动保存
+
+1. `POST /api/auth/wxlogin` 收 `wx.login` 的 `code`，服务端换 openid 后
+   只返回 `{token, expires_in}`；`openid` / `session_key` / 微信 errcode
+   一律不进响应、不落 COS。
+2. 记录按 `uid = HMAC(RECORDS_TOKEN_SECRET, openid)[:32]` 分目录，
+   对象键形如 `{prefix}users/{uid}/records/{shot_id}/{meta,summary}.json`
+   与 `images/...`；每条记录对象不可变，`index.json` 只是可重建的列表缓存。
+3. `POST /api/recognize` / `recognize_multi` **带合法 Bearer token 时**
+   在返回前自动保存；**不带 token 时一次 COS 调用都不发**。保存失败只记
+   warning，绝不影响识别响应。存的是「识别完成时刻的快照」——后台
+   路网精修仍只更新本地缓存与 `/api/refine/{shot_id}`，不回写 COS。
+4. 正式发布需 https 域名；小程序侧 `wx.login` / token 缓存 / 列表页接线
+   **本轮尚未做**（后端能力已就绪，等待下一轮前端接入）。
+
+### 记录 API（除 wxlogin 外都要 `Authorization: Bearer <token>`）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/auth/wxlogin` | `{"code": "..."}` → `{token, expires_in}` |
+| GET | `/api/records` | `?limit=20&cursor=` → `{items, next_cursor, total}`，keyset 分页 |
+| GET | `/api/records/{id}` | 完整记录（payload 含 geojson/gpx/tcx/diagnostics） |
+| GET | `/api/records/{id}/images/{name}` | 图片后端代理流，不签发公网预签名 URL |
+| DELETE | `/api/records/{id}` | 删除我的整条记录（对象 + 列表卡片） |
+
+401 = 缺/无效/过期 token；403 = 功能未启用；跨用户访问统一 404（不泄露对象是否存在）。
+
+### 本地验收（尚未接小程序时）
+
+```bash
+# 1) 生成测试 token（只输出 token，不回显密钥）
+D:\soft\Python311\python.exe tools\mint_dev_token.py --label devA > token.txt
+# 2) 带 token 识别 → 自动写 COS
+curl -H "Authorization: Bearer $(cat token.txt)" \
+     -F "file=@samples/meituan_ride_shanghai.jpg" \
+     http://127.0.0.1:8848/api/recognize
+# 3) 列表 / 详情 / 删除
+curl -H "Authorization: Bearer $(cat token.txt)" \
+     http://127.0.0.1:8848/api/records
+curl -H "Authorization: Bearer $(cat token.txt)" \
+     http://127.0.0.1:8848/api/records/<shot_id>
+curl -X DELETE -H "Authorization: Bearer $(cat token.txt)" \
+     http://127.0.0.1:8848/api/records/<shot_id>
+# 换 --label devB 再取列表，验证两个身份互不可见
+```
+
+### 运维与限制
+
+- Bucket 设**私有读写**，在控制台配置生命周期规则（如 N 天后转低频/
+  删除）控制费用；代码层不做清理任务，`limit` 上限 100。
+- 列表走每用户 `index.json`（1 次 GET），丢失/损坏会从 `summary.json`
+  自动重建；`index` 的读-改-写用进程内 uid 锁串行化，**按单 uvicorn
+  worker 部署**。多 worker/多机需改为 append-only 事件日志 + 合并。
+- 图片经服务端代理会产生出口流量；COS 请求/存储按量计费。
+- 记录含真实骑行位置，请给账号提供删除能力（已提供 DELETE），并避免把
+  token 写进日志。
 
 ---
 
@@ -1596,11 +1692,16 @@ TIANDITU_API_KEY=
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/health` | 服务状态、可用地理编码能力、词典统计 |
-| POST | `/api/recognize` | 上传截图，返回 GeoJSON 轨迹与诊断信息 |
-| POST | `/api/recognize_multi` | 多张截图拼接成一张画布后识别 |
+| GET | `/api/health` | 服务状态、可用地理编码能力、词典统计、`records.enabled` |
+| POST | `/api/recognize` | 上传截图，返回 GeoJSON 轨迹与诊断信息（带 Bearer token 时另存运动记录） |
+| POST | `/api/recognize_multi` | 多张截图拼接成一张画布后识别（同上） |
 | GET | `/api/refine/{shot_id}` | 查询后台路网精修进度与结果 |
 | GET | `/api/shots/{name}` | 回传原图，供前端叠加显示 |
+| POST | `/api/auth/wxlogin` | `wx.login` code 换运动记录 token |
+| GET | `/api/records` | 我的运动记录列表（分页） |
+| GET | `/api/records/{id}` | 单条完整运动记录 |
+| GET | `/api/records/{id}/images/{name}` | 记录里的截图（代理流） |
+| DELETE | `/api/records/{id}` | 删除我的运动记录 |
 | POST | `/api/feedback` | 提交锚点纠正，写入词典 |
 | POST | `/api/feedback/reset` | 清空全部人工纠正（body 需 `{"confirm": true}`，保留自动点位） |
 | GET | `/api/lexicon` | 查看词典内容与统计 |

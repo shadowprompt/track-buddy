@@ -12,6 +12,7 @@ from typing import Any
 import cv2
 import numpy as np
 from fastapi import (
+    Body,
     Depends,
     FastAPI,
     File,
@@ -20,9 +21,15 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 
+from . import records
 from .config import CONFIG, DATA_DIR, ROOT, SRC_ROOT, load_dotenv
 from .cv_utils import imread_unicode
 # 保留这个模块级别名：既有回归测试通过 monkeypatch `server.stitch_images`
@@ -159,6 +166,11 @@ def health() -> dict[str, Any]:
         "maps": maps_status,
         "lexicon": _pipeline.lexicon.stats(),
         "templates": _templates.stats(),
+        # 零网络：只看配置齐全与 SDK 是否可导入，不真的连 COS。
+        "records": {
+            "enabled": records.records_enabled(),
+            "sdk_available": records.store.cos_sdk_available(),
+        },
     }
 
 
@@ -373,6 +385,8 @@ def _build_payload_from(result: Any, shot_id: str, shot_url: str) -> dict[str, A
 async def _attach_ride_summary(
     payload: dict[str, Any],
     summary_file: UploadFile | None,
+    *,
+    byte_sink: list[bytes] | None = None,
 ) -> None:
     """解析运动概要截图，把本次运动的开始时间/时长等并入识别结果（可选上传）。
 
@@ -385,6 +399,10 @@ async def _attach_ride_summary(
         return
     try:
         data = await summary_file.read()
+        # 运动概要图不落盘；只有调用方要把记录存进 COS 时才收集字节。
+        # byte_sink=None（默认）时行为与旧版逐字节一致。
+        if byte_sink is not None:
+            byte_sink.append(data)
         img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     except Exception:
         img = None
@@ -620,6 +638,51 @@ def _template_mode_skip(mode: str, paired: bool) -> bool:
     return paired
 
 
+# --- 运动记录云存储接线 ------------------------------------------------
+# 本地 data/uploads 仍是调试缓存（/traj-map、/stitch-check、后台精修依赖），
+# COS 才是运动记录的权威源。只有识别请求带合法 Bearer token 时才保存，
+# 无 token 一次 COS 调用都不发 —— 保证旧客户端零回归。
+
+def _local_shot_paths(payload: dict[str, Any]) -> list[Path]:
+    """从 payload 里的 /api/shots/ 链接反查已落盘的图片（只读，不新存）。"""
+    out: list[Path] = []
+    for key in ("shot_url", "overview_url", "stitched_url"):
+        url = payload.get(key)
+        if not isinstance(url, str) or "/api/shots/" not in url:
+            continue
+        path = UPLOAD_DIR / url.rsplit("/", 1)[-1]
+        if path.is_file():
+            out.append(path)
+    return out
+
+
+def _record_image_paths(payload: dict[str, Any],
+                        extra: list[Path] | None = None) -> list[Path]:
+    out: list[Path] = []
+    seen: set[str] = set()
+    for path in list(extra or []) + _local_shot_paths(payload):
+        if path is not None and path.is_file() and path.name not in seen:
+            seen.add(path.name)
+            out.append(path)
+    return out
+
+
+def _maybe_save_record(*, uid: str | None, rec_id: str,
+                       payload: dict[str, Any],
+                       extra_images: list[Path] | None = None,
+                       summary_bytes: bytes = b"",
+                       city: str = "") -> None:
+    """识别返回前的钩子；任何云存储异常都由 service 层吞掉。"""
+    if not uid:
+        return
+    records.service.try_save_record(
+        uid=uid, rec_id=rec_id, payload=payload,
+        image_paths=_record_image_paths(payload, extra_images),
+        summary_bytes=summary_bytes, city=city,
+        store=records.store.get_record_store(),
+    )
+
+
 @app.post("/api/recognize_multi")
 async def recognize_multi(
     files: list[UploadFile] = File(...),
@@ -633,6 +696,7 @@ async def recognize_multi(
     overview: UploadFile | None = File(None),
     summary: UploadFile | None = File(None),
     profile: SourceProfile = Depends(_active_source),
+    record_uid: str | None = Depends(records.optional_record_uid),
 ) -> JSONResponse:
     """上传**多张**街道级截图，拼成一张大图后识别。
 
@@ -830,7 +894,9 @@ async def recognize_multi(
             note = "本次未启动后台精修（结果尚无可用坐标）"
         payload["warnings"] = list(payload["warnings"]) + [note]
 
-    await _attach_ride_summary(payload, summary)
+    summary_sink: list[bytes] = []
+    await _attach_ride_summary(
+        payload, summary, byte_sink=summary_sink if record_uid else None)
     _attach_exports(payload)
     _persist_last_result(payload)
     # 多图结果单独存一份——否则之后跑一次单图识别就会把它冲掉，
@@ -846,6 +912,13 @@ async def recognize_multi(
     # 而误判「用户已经换了新图」，精修结果就不落盘了。
     if refine_args is not None:
         _start_refine(**refine_args)
+    _maybe_save_record(
+        uid=record_uid, rec_id=shot_id, payload=payload,
+        extra_images=[p for _, p in saved]
+        + ([overview_path] if overview_path is not None else []),
+        summary_bytes=summary_sink[0] if summary_sink else b"",
+        city=city.strip(),
+    )
     return JSONResponse(payload)
 
 
@@ -862,6 +935,7 @@ async def recognize(
     details: list[UploadFile] | None = File(None),
     summary: UploadFile | None = File(None),
     profile: SourceProfile = Depends(_active_source),
+    record_uid: str | None = Depends(records.optional_record_uid),
 ) -> JSONResponse:
     """上传**一张概览单图**识别；缩放过高时可补传多张街道级细节图。
 
@@ -935,6 +1009,7 @@ async def recognize(
     paired_mode = False
     canvas_url: str | None = None
     n_details = 0
+    detail_paths: list[Path] = []
     pair_notes: list[str] = []
     stitch_info: dict[str, Any] = {}
     stitch_failed = False
@@ -950,6 +1025,7 @@ async def recognize(
                     detail=f"{f.filename or '文件'} 超过 {CONFIG.vision.max_upload_mb}MB 限制",
                 )
             _, sp = _save_upload(d, f.filename)
+            detail_paths.append(sp)
             try:
                 imgs.append(imread_unicode(sp))
             except (ValueError, FileNotFoundError) as exc:
@@ -1067,7 +1143,9 @@ async def recognize(
         payload["template_capture"] = _capture_template(
             result, payload, city=city.strip(), shot_id=shot_id,
             profile_id=profile.id)
-    await _attach_ride_summary(payload, summary)
+    summary_sink: list[bytes] = []
+    await _attach_ride_summary(
+        payload, summary, byte_sink=summary_sink if record_uid else None)
     _attach_exports(payload)
     _persist_last_result(payload)
 
@@ -1088,6 +1166,12 @@ async def recognize(
         _start_refine(shot_id, shot_path, base_result=result, mode="auto")
         payload["refine_pending"] = True
         payload["refine_state"] = "running"
+    _maybe_save_record(
+        uid=record_uid, rec_id=shot_id, payload=payload,
+        extra_images=detail_paths,
+        summary_bytes=summary_sink[0] if summary_sink else b"",
+        city=city.strip(),
+    )
     return JSONResponse(payload)
 
 
@@ -1309,6 +1393,107 @@ def get_shot(name: str) -> FileResponse:
     if not path.exists() or path.parent != UPLOAD_DIR:
         raise HTTPException(status_code=404, detail="图片不存在")
     return FileResponse(path)
+
+
+# --- 运动记录（腾讯 COS，后端代理）-------------------------------------
+# COS 私钥只在服务端：客户端拿到的只有短期 HMAC token 与 JSON/图片流。
+# 所有 /api/records* 都必须带 Bearer token；uid 由 openid 派生，
+# 对象键按 uid 分目录，跨用户访问一律 404（不泄露对象是否存在）。
+
+def _records_store():
+    store = records.store.get_record_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail="运动记录存储未就绪")
+    return store
+
+
+@app.post("/api/auth/wxlogin")
+async def wxlogin(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """``wx.login`` 的 code 换记录 token；绝不回显 openid/session_key。"""
+    if not records.records_enabled():
+        raise HTTPException(status_code=503, detail="运动记录功能未启用")
+    code = str((payload or {}).get("code") or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="缺少 code")
+    try:
+        data = records.auth.code2session(code)
+    except records.WeChatServiceError as exc:
+        raise HTTPException(status_code=502, detail="微信登录服务暂不可用") from exc
+    except records.TokenError as exc:
+        raise HTTPException(status_code=401, detail="微信登录失败，请重试") from exc
+    secret = CONFIG.records_token_secret or ""
+    uid = records.uid_from_openid(str(data["openid"]), secret)
+    token = records.issue_token(uid, secret=secret, ttl=CONFIG.records_token_ttl)
+    # session_key 到此为止：不落库、不落 COS、不进响应。
+    return {"token": token, "expires_in": CONFIG.records_token_ttl}
+
+
+@app.get("/api/records")
+def list_records(
+    limit: int = 20,
+    cursor: str | None = None,
+    uid: str = Depends(records.require_record_uid),
+) -> dict[str, Any]:
+    """当前用户的记录列表（keyset 分页，index.json 缺失会自动重建）。"""
+    store = _records_store()
+    try:
+        items, next_cursor, total = store.list_records(
+            uid, cursor=cursor, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="cursor 无效") from exc
+    except Exception as exc:  # noqa: BLE001 — 云故障统一 502
+        raise HTTPException(status_code=502, detail="运动记录读取失败") from exc
+    return {"items": items, "next_cursor": next_cursor, "total": total}
+
+
+@app.get("/api/records/{rec_id}")
+def get_record(
+    rec_id: str,
+    uid: str = Depends(records.require_record_uid),
+) -> dict[str, Any]:
+    """单条完整记录（含 geojson/gpx/tcx/diagnostics）。"""
+    store = _records_store()
+    try:
+        found = store.get_record(uid, rec_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="运动记录读取失败") from exc
+    if found is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    return records.service.record_to_response(found)
+
+
+@app.get("/api/records/{rec_id}/images/{name}")
+def get_record_image(
+    rec_id: str,
+    name: str,
+    uid: str = Depends(records.require_record_uid),
+) -> StreamingResponse:
+    """图片走后端代理流：不签发可被转发的公网预签名 URL。"""
+    store = _records_store()
+    try:
+        found = store.get_image(uid, rec_id, name)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="运动记录读取失败") from exc
+    if found is None:
+        raise HTTPException(status_code=404, detail="图片不存在")
+    data, media_type = found
+    return StreamingResponse(iter([data]), media_type=media_type)
+
+
+@app.delete("/api/records/{rec_id}")
+def delete_record(
+    rec_id: str,
+    uid: str = Depends(records.require_record_uid),
+) -> dict[str, Any]:
+    """删除我的整条记录（对象 + 列表卡片）。"""
+    store = _records_store()
+    try:
+        ok = store.delete_record(uid, rec_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="运动记录删除失败") from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    return {"ok": True}
 
 
 @app.post("/api/feedback")
