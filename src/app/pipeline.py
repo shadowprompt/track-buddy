@@ -212,8 +212,14 @@ DIAG_KEYS: tuple[str, ...] = (
 
 def _base_diagnostics(**over: Any) -> dict[str, Any]:
     """返回结构完整的 diagnostics，缺省值用 None（前端显示为「—」）。"""
+    from .config import CONFIG  # 延迟 import：避免 config ↔ pipeline 循环
+
     dg: dict[str, Any] = {k: None for k in DIAG_KEYS}
     dg["lexicon"] = {}
+    # 输入源画像（SOURCE_PROFILE）随诊断透传：多来源时代排查「参数用错
+    # 画像」的第一线索，一眼可见本次识别走的是哪套视觉参数。
+    src = CONFIG.source
+    dg["source"] = {"id": src.id, "title": src.title}
     dg.update(over)
     return dg
 

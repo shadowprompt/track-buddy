@@ -129,6 +129,10 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "version": app.version,
+        "source_profile": {
+            "id": CONFIG.source_profile_id,
+            "title": CONFIG.source.title,
+        },
         "geocoding": geo,
         "maps": maps_status,
         "lexicon": _pipeline.lexicon.stats(),

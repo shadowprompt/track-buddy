@@ -89,7 +89,13 @@ TMAP_PUBLIC_KEY = "OB4BZ-D4W3U-B7VVO-4PJWW-6TKDJ-WPB77"
 
 @dataclass
 class VisionConfig:
-    """图像处理参数。"""
+    """图像处理参数。
+
+    ⚠️ 这套默认值是**美团骑行截图**的标定结果（轨迹浅荧光绿、绿色「起」
+    红色「终」徽章、POI 标注偏移 7-28 像素）。它现在归属于输入源画像
+    ``SourceProfile("meituan")``（见 ``app/source_profile.py``）；未来
+    高德/小米等来源在此处**之外**新建 profile，不要直接改这里的默认值。
+    """
 
     # 起/终徽章检测：绿色「起」、红色「终」
     start_hsv_range: tuple = (35, 90, 90, 85, 255, 255)
@@ -253,6 +259,24 @@ class AppConfig:
         """
         raw = (self._env_value("POSE_GRAPH_ENABLED") or "").strip().lower()
         return raw in ("1", "true", "yes", "on")
+
+    @property
+    def source_profile_id(self) -> str:
+        """当前输入源画像 id：``SOURCE_PROFILE`` 环境变量，默认 ``meituan``。
+
+        切换画像会同时更换视觉提取参数与 OCR 文案词表（见
+        ``app/source_profile.py``）。遵守「同一功能只用一个环境变量」
+        的约定：来源选择只有 ``SOURCE_PROFILE`` 这一个开关。
+        """
+        raw = (self._env_value("SOURCE_PROFILE") or "").strip().lower()
+        return raw or "meituan"
+
+    @property
+    def source(self) -> "SourceProfile":
+        """当前输入源画像（含视觉参数与里程词表）；未知 id 直接报错。"""
+        from .source_profile import resolve_source_profile
+
+        return resolve_source_profile(self.source_profile_id)
 
     @property
     def map_match_enabled(self) -> bool:

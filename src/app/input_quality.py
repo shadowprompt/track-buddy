@@ -20,10 +20,11 @@ import statistics
 from typing import Any, Iterable
 
 _DISTANCE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(公里|千米|km|KM|Km)")
-# 运营文案 / 累计统计里的数字不是本次里程，优先排除。
-_DISTANCE_NEGATIVE = re.compile(r"免费|累计|套餐|赠送|优惠|已骑|封顶")
-# 明确指向「本次里程」的上下文，命中时优先于裸数字。
-_DISTANCE_POSITIVE = re.compile(r"里程|本次|骑行|行程|全程|共计|合计|距离")
+# 里程上下文词表跟随输入源画像（``CONFIG.source``，唯一来源见
+# ``app/source_profile.py``）：美团文案是「骑行 / 已骑 / 封顶」，高德等
+# 来源的页面文案不同，各画像自备一套。
+_KEYWORD_RE_CACHE: dict[tuple[tuple[str, ...], tuple[str, ...]],
+                        tuple[re.Pattern[str], re.Pattern[str]]] = {}
 _MIN_REASONABLE_KM = 0.1
 _MAX_REASONABLE_KM = 300.0
 # 还原轨迹长度 / 截图里程 的合理区间。取得较宽：轨迹简化、截图里
@@ -36,18 +37,35 @@ _ROUTE_BAD_FACTOR = 0.90
 _ROUTE_GOOD_FACTOR = 1.03
 
 
+def _keyword_patterns() -> tuple[re.Pattern[str], re.Pattern[str]]:
+    """当前输入源画像的（干扰词正则, 正面词正则），按词表元组缓存。"""
+    from .config import CONFIG  # 延迟 import：config 不依赖本模块，无循环
+
+    src = CONFIG.source
+    keywords = (tuple(src.distance_negative), tuple(src.distance_positive))
+    compiled = _KEYWORD_RE_CACHE.get(keywords)
+    if compiled is None:
+        neg_re = re.compile("|".join(map(re.escape, keywords[0])))
+        pos_re = re.compile("|".join(map(re.escape, keywords[1])))
+        compiled = (neg_re, pos_re)
+        _KEYWORD_RE_CACHE[keywords] = compiled
+    return compiled
+
+
 def extract_distance_km(texts: Iterable[Any]) -> float | None:
     """从 OCR 文本块里读出截图显示的骑行里程（公里）。
 
     兼容 ``TextItem`` 对象与纯字符串。多个命中取中位数，避免
-    「3 公里内免费」之类的运营文案盖过真实里程。
+    「3 公里内免费」之类的运营文案盖过真实里程。里程上下文词表
+    来自当前输入源画像（``SOURCE_PROFILE``）。
     """
+    neg_re, pos_re = _keyword_patterns()
     found: list[tuple[int, float]] = []
     for item in texts or []:
         s = item if isinstance(item, str) else str(getattr(item, "text", "") or "")
-        if _DISTANCE_NEGATIVE.search(s):
+        if neg_re.search(s):
             continue
-        priority = 1 if _DISTANCE_POSITIVE.search(s) else 0
+        priority = 1 if pos_re.search(s) else 0
         for num, _unit in _DISTANCE_RE.findall(s):
             try:
                 val = float(num)
