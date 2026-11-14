@@ -31,10 +31,22 @@ from .route_template import (
 )
 
 # 非宽泛图的模板采信门槛：「近复刻」才直跳。实测同一张概览图重传时
-# residual≈0.0116，而不同路线即便形状相近也在 0.05 以上；0.045 与
-# route_template.DEDUP_RESIDUAL 对齐，覆盖率 0.90 表示整条折线都参与匹配。
+# residual≈0.0116，而不同路线即便形状相近也**通常**在 0.05 以上；0.045
+# 与 route_template.DEDUP_RESIDUAL 对齐，覆盖率 0.90 表示整条折线都参与
+# 匹配。但 2026-11-14 18:18 实测证伪了「0.05 以上」的假设：上海一条
+# 不同路线与历史模板**反向**匹配 residual 仅 0.0266、coverage 0.98——
+# 两条不同的长路线在 64 点归一化形状空间里可以非常接近（尤其走向相近
+# 的带弯长条形）。因此追加两道门：
 NEAR_HIT_RESIDUAL = 0.045
 NEAR_HIT_COVERAGE = 0.90
+# 方向签名（direction_signature 距离）：实测同类（同路线重传）≈0.00、
+# 上面那次假阳性 0.3632。0.30 仍给真实复刻留足余量（渲染差异）。
+NEAR_HIT_SIGNATURE = 0.30
+# 反向匹配（reversed=True）：同一条路线反向重骑是合法场景，但归一化
+# 形状空间里反向匹配的假阳性率显著更高（本次事故即 reversed），门槛
+# 收紧到正向的一半——真复刻（正/反向）实测 residual 都在 0.01 量级，
+# 0.025 不会误伤真实反骑复用。
+NEAR_HIT_REVERSED_RESIDUAL = 0.0225
 
 
 def _near_template_hit(located: dict[str, Any]) -> bool:
@@ -44,6 +56,13 @@ def _near_template_hit(located: dict[str, Any]) -> bool:
     OCR 判不出宽泛概览）只有在形状与已注册概览模板**几乎一致**时才
     采信模板结果，否则一律回落原流程——普通截图本来就有机会拿到
     带当次地理核验的正式配准，比参考级插值更可信。
+
+    门槛三道（全部通过才算近复刻）：
+
+    * residual ≤ NEAR_HIT_RESIDUAL（反向匹配再收紧一半）；
+    * coverage ≥ NEAR_HIT_COVERAGE；
+    * 方向签名差 ≤ NEAR_HIT_SIGNATURE——形状距离度量不了「走法」，
+      两条不同的路可以几何形状相近，但转向序列不会。
     """
     m = located.get("match") or {}
     try:
@@ -51,7 +70,17 @@ def _near_template_hit(located: dict[str, Any]) -> bool:
         coverage = float(m.get("coverage", 0.0))
     except (TypeError, ValueError):
         return False
-    return residual <= NEAR_HIT_RESIDUAL and coverage >= NEAR_HIT_COVERAGE
+    if coverage < NEAR_HIT_COVERAGE or residual > NEAR_HIT_RESIDUAL:
+        return False
+    try:
+        sig = float(m.get("signature", 1.0))
+    except (TypeError, ValueError):
+        sig = 1.0
+    if sig > NEAR_HIT_SIGNATURE:
+        return False
+    if bool(m.get("reversed")) and residual > NEAR_HIT_REVERSED_RESIDUAL:
+        return False
+    return True
 from .template_fallback import assess_broad_overview, reference_confidence
 from .track import TrackResult, extract_track
 
@@ -344,6 +373,7 @@ class RidePipeline:
         output_crs: str = "WGS-84",
         refine: bool = True,
         road_names: list[str] | None = None,
+        skip_template_recall: bool = False,
     ) -> PipelineResult:
         """识别入口：外层只负责「词典写入会话」的生命周期。
 
@@ -365,6 +395,7 @@ class RidePipeline:
             result = self._run_impl(
                 img, city=city, allow_online=allow_online,
                 output_crs=output_crs, refine=refine, road_names=road_names,
+                skip_template_recall=skip_template_recall,
             )
         except BaseException:
             self.lexicon.discard_capture()
@@ -472,6 +503,7 @@ class RidePipeline:
         output_crs: str = "WGS-84",
         refine: bool = True,
         road_names: list[str] | None = None,
+        skip_template_recall: bool = False,
     ) -> PipelineResult:
         t0 = time.time()
         warnings: list[str] = []
@@ -528,8 +560,19 @@ class RidePipeline:
                 n_overview_tpl = int((stats_fn() or {}).get("overview", 0))
             except Exception:  # noqa: BLE001 — 统计失败不影响主流程
                 n_overview_tpl = 0
-        if self.templates is not None and (
-                broad["broad_overview"] or n_overview_tpl > 0):
+        # skip_template_recall：调用方传了细节图（paired 模式）时必须置位。
+        # 2026-11-14 18:18 事故：传了 5 张细节图、拼接成功拿真值在即，
+        # 但阶段 2.5 在 pipeline 内部最先执行，画布形状被历史模板
+        # 「近复刻」误命中（reversed、residual 0.0266）后直接 return——
+        # 真值路径被短路，payload 里同时出现「参考级定位」与
+        # 「本次结果为地理真值」两句自相矛盾的话。原则：用户愿意传
+        # 细节图，就一定走当次地理配准；模板召回只服务「免传细节图」
+        # 的复用场景，绝不与真值路径竞争。
+        if (
+            self.templates is not None
+            and not skip_template_recall
+            and (broad["broad_overview"] or n_overview_tpl > 0)
+        ):
             located: dict[str, Any] | None = None
             try:
                 # 这里进来的必然是概览图，只比对「概览图形状」注册的模板。

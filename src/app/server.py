@@ -715,6 +715,9 @@ async def recognize_multi(
             output_crs=output_crs,
             refine=do_sync_refine,
             road_names=names or None,
+            # 多图本来就有当次地理配准的真值路径，绝不让模板召回短路它
+            # （2026-11-14 事故：拼接画布被历史模板误命中，真值被跳过）。
+            skip_template_recall=True,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc
@@ -944,6 +947,9 @@ async def recognize(
             output_crs=output_crs,
             refine=do_sync_refine,
             road_names=_names or None,
+            # paired 模式（带细节图）走当次地理配准真值，模板召回只服务
+            # 「免传细节图」的复用，绝不与真值竞争（2026-11-14 事故）。
+            skip_template_recall=paired_mode,
         )
     except Exception as exc:  # noqa: BLE001 — 兜底，避免单次请求打挂服务
         raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc
