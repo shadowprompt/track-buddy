@@ -1,0 +1,48 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/records/records",
+    "pages/me/me",
+    "pages/result/result"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#111820",
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "运动记忆库",
+    "backgroundColor": "#111820"
+  },
+  "tabBar": {
+    "color": "#a5b4bd",
+    "selectedColor": "#ed86a4",
+    "backgroundColor": "#151e26",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "导入",
+        "iconPath": "assets/tabbar/import-normal.png",
+        "selectedIconPath": "assets/tabbar/import-active.png"
+      },
+      {
+        "pagePath": "pages/records/records",
+        "text": "记录",
+        "iconPath": "assets/tabbar/records-normal.png",
+        "selectedIconPath": "assets/tabbar/records-active.png"
+      },
+      {
+        "pagePath": "pages/me/me",
+        "text": "我的",
+        "iconPath": "assets/tabbar/me-normal.png",
+        "selectedIconPath": "assets/tabbar/me-active.png"
+      }
+    ]
+  },
+  "permission": {
+    "scope.userLocation": {
+      "desc": "用于在地图上选点，纠正地名对应的坐标"
+    }
+  },
+  "requiredPrivateInfos": ["chooseLocation"],
+  "lazyCodeLoading": "requiredComponents",
+  "sitemapLocation": "sitemap.json"
+}

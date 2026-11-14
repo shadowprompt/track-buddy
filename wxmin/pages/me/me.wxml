@@ -1,0 +1,32 @@
+<view class="me-page">
+  <view class="me-heading">
+    <text class="me-kicker">YOUR MOVEMENT ARCHIVE</text>
+    <text class="me-title">我的</text>
+    <text class="me-subtitle">属于你的运动记忆，从这里慢慢积累。</text>
+  </view>
+
+  <view class="profile-card">
+    <view class="profile-mark">记</view>
+    <view class="profile-copy"><text class="profile-name">运动记忆库</text><text class="profile-desc">当前从骑行轨迹开始收录</text></view>
+    <view class="profile-pill">持续成长</view>
+  </view>
+
+  <view class="section-head"><view><text class="section-title">我的收录概况</text><text class="section-desc">已收录的骑行轨迹</text></view><text class="section-accent">骑行</text></view>
+  <view class="stats-card">
+    <view class="stat-item"><text class="stat-value">{{recordCount}}</text><text class="stat-label">识别记录</text></view>
+    <view class="stat-divider"></view>
+    <view class="stat-item"><text class="stat-value stat-distance">{{distanceText}}</text><text class="stat-label">累计轨迹里程</text></view>
+    <view class="stat-divider"></view>
+    <view class="stat-item"><text class="stat-value">{{trackCount}}</text><text class="stat-label">有效轨迹</text></view>
+  </view>
+
+  <view class="section-head capability-head"><view><text class="section-title">当前已开放</text><text class="section-desc">运动记忆库正在逐步成长</text></view></view>
+  <view class="capability-list">
+    <view class="capability-row"><view class="capability-icon blue-icon">⌖</view><view class="capability-copy"><text class="capability-name">路线截图识别</text><text class="capability-desc">从骑行地图截图还原 GPS 轨迹</text></view><text class="capability-arrow">›</text></view>
+    <view class="capability-row"><view class="capability-icon rose-icon">⌁</view><view class="capability-copy"><text class="capability-name">路网精修与地名纠正</text><text class="capability-desc">结合真实道路，可提交地名位置纠正</text></view><text class="capability-arrow">›</text></view>
+    <view class="capability-row"><view class="capability-icon blue-icon">⇩</view><view class="capability-copy"><text class="capability-name">轨迹文件导出</text><text class="capability-desc">GeoJSON、GPX、TCX 多种格式</text></view><text class="capability-arrow">›</text></view>
+  </view>
+
+  <view class="local-note"><view class="local-check">✓</view><view><text class="local-title">{{storageTitle}}</text><text class="local-desc">{{storageDesc}}</text></view></view>
+  <text class="me-footer">运动记忆库 · 从骑行开始</text>
+</view>

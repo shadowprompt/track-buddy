@@ -1,14 +1,19 @@
 <view class="card" wx:if="{{ready}}">
-  <view class="stats">
-    <view class="stat" wx:for="{{stats}}" wx:key="k">
-      <view class="stat-k">{{item.k}}</view>
-      <view class="stat-v">{{item.v}}</view>
+  <view class="metrics-grid">
+    <view class="metric-cell" wx:for="{{stats}}" wx:key="k">
+      <text class="metric-k">{{item.k}}</text>
+      <text class="metric-v">{{item.v}}</text>
     </view>
   </view>
 
   <view class="summary-wrap" wx:if="{{summaryCards.length > 0}}">
-    <view class="summary-title">运动概要</view>
-    <view class="summary-line">{{summaryText}}</view>
+    <view class="metrics-title">运动概要</view>
+    <view class="metrics-grid two-col">
+      <view class="metric-cell" wx:for="{{summaryCards}}" wx:key="k">
+        <text class="metric-k">{{item.k}}</text>
+        <text class="metric-v">{{item.v}}</text>
+      </view>
+    </view>
   </view>
 
   <view class="warn-box" wx:if="{{warnings.length > 0}}">
@@ -50,7 +55,7 @@
     bindtap="doExport"
     data-key="{{item.key}}"
   >↓ {{item.label}}</button>
-  <view class="note">文件已统一 WGS-84 坐标；GPX/TCX 含时间轴（需订单详情截图提供开始时间与时长），可直接导入 Strava / Garmin</view>
+  <view class="note">文件已统一 WGS-84 坐标；GPX/TCX 含时间轴（需运动概要截图提供开始时间与时长），可直接导入 Strava / Garmin</view>
 </view>
 
 <view class="card" wx:if="{{ready && hasTrack}}">

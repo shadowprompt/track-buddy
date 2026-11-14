@@ -34,7 +34,6 @@ Page({
     hasTrack: false,
     stats: [],
     summaryCards: [],
-    summaryText: '',
     warnings: [],
     exports: [],
     // 地图
@@ -128,36 +127,33 @@ Page({
       v: diag.template_derived ? '⚠️ 参考历史记录' : '本次独立配准'
     });
 
-    // --- 运动概要 -----------------------------------------------------
+    // --- 运动概要：与顶部指标共用表格，逐项 {k, v}，两列排布 -------------
     var rs = payload.ride_summary || {};
     var summaryCards = [];
-    var summaryParts = [];
     if (rs.available) {
       if (rs.started_at) {
         var st = String(rs.started_at).replace('T', ' ');
-        summaryParts.push('开始 ' + st);
         summaryCards.push({ k: '开始时间', v: st });
       }
       if (rs.duration_s != null) {
-        var du = fmtDuration(rs.duration_s);
-        summaryParts.push('耗时 ' + du);
-        summaryCards.push({ k: '骑行耗时', v: du });
+        summaryCards.push({ k: '骑行耗时', v: fmtDuration(rs.duration_s) });
       }
       if (rs.distance_km != null) {
-        summaryParts.push('概要里程 ' + rs.distance_km + ' km');
         summaryCards.push({ k: '概要里程', v: rs.distance_km + ' km' });
       }
       if (rs.calories_kcal != null) {
-        summaryParts.push(rs.calories_kcal + ' kcal');
         summaryCards.push({ k: '卡路里', v: rs.calories_kcal + ' kcal' });
       }
       if (rs.carbon_g != null) {
-        summaryParts.push('减碳 ' + rs.carbon_g + 'g');
         summaryCards.push({ k: '减碳', v: rs.carbon_g + ' g' });
       }
+      // 里程一致性原先拼在整段文字末尾，表格化后单独占一格
       var cc = rs.cross_check || {};
       if (cc.available) {
-        summaryParts.push(cc.consistent ? '✓ 里程一致' : '⚠ 里程量级不符');
+        summaryCards.push({
+          k: '里程校验',
+          v: cc.consistent ? '✓ 一致' : '⚠ 量级不符'
+        });
       }
     }
 
@@ -255,7 +251,6 @@ Page({
       hasTrack: hasTrack,
       stats: stats,
       summaryCards: summaryCards,
-      summaryText: summaryParts.join(' · '),
       warnings: payload.warnings || [],
       exports: exports,
       centerLat: centerLat,

@@ -1,0 +1,98 @@
+<view class="import-page">
+  <view class="import-intro">
+    <view class="intro-copy">
+      <text class="intro-kicker">运动记忆库 · 骑行</text>
+      <text class="intro-title">收录一条骑行</text>
+      <text class="intro-subtitle">把经过的路，存进你的运动记忆库。</text>
+    </view>
+    <view class="ride-tag">骑行记录</view>
+  </view>
+
+  <view class="route-upload-card summary-card">
+    <view class="upload-card-head">
+      <view class="step-index step-muted">1</view>
+      <view class="upload-title-wrap">
+        <text class="upload-title">运动概要截图</text>
+        <text class="upload-desc">可选 · 识别开始时间、时长、里程、卡路里与减碳</text>
+      </view>
+    </view>
+    <view class="summary-pick" wx:if="{{!summary}}" bindtap="pickSummary">
+      <text class="summary-plus">＋</text><text>选择运动概要截图</text>
+    </view>
+    <view wx:else class="summary-preview">
+      <image class="summary-thumb" src="{{summary}}" mode="aspectFill" bindtap="pickSummary" />
+      <text class="summary-caption">已添加 · 点击图片可更换</text>
+      <text class="clear-summary" bindtap="clearSummary">移除</text>
+    </view>
+    <text class="card-footnote">运动记录页截图，识别后会与轨迹合并为一条完整记录</text>
+  </view>
+
+  <view class="route-upload-card">
+    <view class="upload-card-head">
+      <view class="step-index">2</view>
+      <view class="upload-title-wrap">
+        <text class="upload-title">轨迹概览图</text>
+        <text class="upload-desc">必选 · 选择能展示整条路线的概览图</text>
+      </view>
+      <text class="required-label">必选</text>
+    </view>
+    <view class="overview-drop" wx:if="{{!overview}}" bindtap="pickOverview">
+      <view class="drop-plus">＋</view>
+      <text class="drop-title">点击选择整条路线的概览图</text>
+      <text class="drop-desc">支持 JPG / PNG / WebP，最大 20MB · 缩放较高、街道名看不清也能用</text>
+    </view>
+    <view wx:else class="overview-preview">
+      <image class="overview-image" src="{{overview}}" mode="aspectFit" bindtap="pickOverview" />
+      <view class="preview-remove" catchtap="clearOverview">移除</view>
+      <text class="preview-caption">已添加 · 点击图片可更换</text>
+    </view>
+  </view>
+
+  <view class="route-upload-card details-card">
+    <view class="upload-card-head">
+      <view class="step-index step-muted">3</view>
+      <view class="upload-title-wrap">
+        <text class="upload-title">轨迹街道级细节图</text>
+        <text class="upload-desc">可选 · 仅当概览图缩放太高且历史记录没有相似路线时补传</text>
+      </view>
+      <text class="section-aside">最多 9 张</text>
+    </view>
+    <text class="card-footnote">建议沿路线连续截取 2–6 张，相邻截图约有 1/3 重叠</text>
+    <view class="detail-thumb-list">
+      <view class="detail-thumb-wrap" wx:for="{{details}}" wx:key="index">
+        <image class="detail-thumb" src="{{item}}" mode="aspectFill" />
+        <view class="detail-remove" catchtap="removeDetail" data-index="{{index}}">×</view>
+      </view>
+      <view class="add-detail" wx:if="{{details.length != 9}}" bindtap="pickDetails"><text>＋</text><text>添加细节图</text></view>
+    </view>
+  </view>
+
+  <view class="section-heading route-heading">
+    <view><text class="section-title">路线信息</text><text class="section-desc">可帮助定位和校准路线</text></view>
+  </view>
+  <view class="route-info-card">
+    <view class="info-row">
+      <text class="info-label">所在城市</text>
+      <input class="info-input" placeholder="例如：上海" placeholder-class="info-placeholder" value="{{city}}" bindinput="onCity" />
+    </view>
+    <view class="info-row">
+      <text class="info-label">途经道路</text>
+      <input class="info-input" placeholder="多个路名用逗号分隔" placeholder-class="info-placeholder" value="{{roadNames}}" bindinput="onRoadNames" />
+    </view>
+    <picker range="{{sources}}" range-key="title" value="{{sourceIndex}}" bindchange="onSourceChange">
+      <view class="info-row picker-row"><text class="info-label">截图来源</text><text class="info-value">{{sources[sourceIndex].title}}</text><text class="info-chevron">⌄</text></view>
+    </picker>
+    <picker range="{{templateModes}}" range-key="title" value="{{templateModeIndex}}" bindchange="onTemplateModeChange">
+      <view class="info-row picker-row last-row"><text class="info-label">参考历史记录</text><text class="info-value">{{templateModes[templateModeIndex].title}}</text><text class="info-chevron">⌄</text></view>
+    </picker>
+    <text class="info-footnote">路名是强约束；填写后有助于校准路线位置。</text>
+  </view>
+  <view class="import-bottom-space"></view>
+</view>
+
+<!-- 放在 .import-page 外面、与它平级：fixed 相对页面视口定位，不受父容器 padding 影响 -->
+<view class="submit-dock">
+  <text class="dock-note">截图来自骑行路线概览页，识别效果更好</text>
+  <button class="submit-button" bindtap="start" disabled="{{busy}}" loading="{{busy}}">{{busy ? '正在识别，请稍候…' : '＋  选择路线截图并开始识别'}}</button>
+  <text class="submit-error" wx:if="{{error}}">{{error}}</text>
+</view>

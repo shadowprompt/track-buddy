@@ -1,0 +1,45 @@
+/* 结果页沿用「导入」tab 的深色主题。
+   app.wxss 仍是早期浅色全局样式（白卡片 / 蓝按钮），导入、记录、我的
+   三个 tab 都在页面级 wxss 覆盖了 page 背景。结果页过去漏了这层覆盖，
+   所以是唯一还用浅色 .card 的页面——这里补齐，视觉与三个 tab 对齐。 */
+page { background:#111820; color:#f5f8fa; font-size:28rpx; }
+
+.card { padding:22rpx; margin:20rpx; border:1rpx solid #33424d; border-radius:20rpx; background:linear-gradient(145deg,#1a2932,#19232c); box-shadow:0 12rpx 30rpx rgba(0,0,0,.2); }
+.card-title { margin-bottom:18rpx; color:#f5f8fa; font-size:27rpx; font-weight:700; }
+
+/* 指标表格：顶部置信度三列、运动概要两列，共用同一套格子与格线 */
+.metrics-grid { display:flex; flex-wrap:wrap; border-top:1rpx solid #2b3943; border-left:1rpx solid #2b3943; border-radius:14rpx; overflow:hidden; }
+.metric-cell { width:33.333%; box-sizing:border-box; min-height:104rpx; padding:16rpx 12rpx; border-right:1rpx solid #2b3943; border-bottom:1rpx solid #2b3943; background:rgba(27,38,48,.55); display:flex; flex-direction:column; justify-content:center; }
+.two-col .metric-cell { width:50%; }
+.metric-k { display:block; color:#a9bdc8; font-size:19rpx; }
+.metric-v { display:block; margin-top:7rpx; color:#f5f8fa; font-size:24rpx; font-weight:650; line-height:1.35; word-break:break-all; }
+
+.summary-wrap { margin-top:22rpx; padding-top:20rpx; border-top:1rpx solid #2b3943; }
+.metrics-title { margin:0 0 14rpx; color:#f5f8fa; font-size:25rpx; font-weight:700; }
+
+.warn-box { margin-top:18rpx; padding:14rpx 18rpx; border:1rpx solid #5a4436; border-radius:14rpx; background:rgba(192,86,0,.08); }
+.warn-text { color:#ffb98a; font-size:21rpx; line-height:1.6; }
+
+.map { width:100%; height:560rpx; border-radius:14rpx; }
+.shot { width:100%; margin-top:20rpx; border-radius:14rpx; }
+
+.export-btn { margin-bottom:16rpx; text-align:left; }
+
+.field { display:flex; align-items:center; margin-bottom:20rpx; }
+.field-label { width:120rpx; flex:none; color:#c6d2d9; }
+.field-input { flex:1; border-bottom:1rpx solid #2b3943; padding:8rpx 0; font-size:24rpx; color:#f5f8fa; }
+
+.fb-row { display:flex; align-items:center; margin-bottom:20rpx; }
+.fb-btn { width:200rpx; font-size:24rpx; padding:0; margin-right:20rpx; }
+.fb-pos { font-size:21rpx; color:#c6d2d9; flex:1; }
+
+/* 页面级覆盖全局浅色按钮 / 说明文字 */
+.btn-primary { height:82rpx; line-height:82rpx; border:0; border-radius:17rpx; background:linear-gradient(100deg,#b95779,#8f4f8a); color:#fff; font-size:25rpx; font-weight:650; box-shadow:0 9rpx 22rpx rgba(185,87,121,.25); }
+.btn-primary[disabled] { opacity:.72; }
+.btn-primary::after { border:0; }
+.btn-plain { background:#1b2630; color:#79c8ed; border:1rpx solid #3b5967; border-radius:14rpx; font-size:24rpx; }
+.btn-plain::after { border:0; }
+.note { font-size:20rpx; color:#c6d2d9; line-height:1.6; }
+.note.ok { color:#7fd6a3; margin-top:16rpx; }
+
+.footer { padding:20rpx 40rpx 60rpx; }

@@ -1,0 +1,46 @@
+<view class="records-page">
+  <view class="records-heading">
+    <text class="records-kicker">运动记忆 · 我的记录</text>
+    <text class="records-title">记录</text>
+    <text class="records-subtitle">每一段路线，都是运动留下的记忆。</text>
+  </view>
+
+  <view class="records-summary" wx:if="{{records.length}}">
+    <view><text class="summary-number">{{records.length}}</text><text class="summary-label"> 条识别记录</text></view>
+    <text class="local-badge">{{storageBadge}}</text>
+  </view>
+
+  <text class="records-footnote" wx:if="{{loading || cloudHint}}">{{loading ? '正在读取记录…' : cloudHint}}</text>
+
+  <view class="records-list" wx:if="{{records.length}}">
+    <view class="record-card" wx:for="{{records}}" wx:key="id" bindtap="openRecord" data-id="{{item.id}}" bindlongpress="confirmDelete">
+      <view class="record-topline">
+        <view class="route-symbol">↗</view>
+        <view class="record-heading">
+          <text class="record-date">{{item.dateText}}</text>
+          <text class="record-name">{{item.routeLabel || item.city || '骑行路线'}} · {{item.hasTrack ? '轨迹已生成' : '未生成有效轨迹'}}</text>
+        </view>
+        <text class="confidence-badge" wx:if="{{item.confidenceText}}">{{item.confidenceText}}</text>
+      </view>
+      <view class="record-metrics">
+        <view class="metric"><text class="metric-value">{{item.distanceText}}</text><text class="metric-label">轨迹里程</text></view>
+        <view class="metric"><text class="metric-value">{{item.pointsText}}</text><text class="metric-label">轨迹点</text></view>
+        <view class="metric"><text class="metric-value">{{item.exportText}}</text><text class="metric-label">导出格式</text></view>
+      </view>
+      <text class="record-summary" wx:if="{{item.rideSummary}}">运动概要 · {{item.rideSummary}}</text>
+      <button class="record-open" wx:if="{{item.isCurrent}}" catchtap="openCurrent">查看本次识别结果 <text>→</text></button>
+    </view>
+  </view>
+
+  <view wx:else class="records-empty">
+    <view class="empty-route-art"><view class="empty-route-line"></view><view class="empty-route-pin"></view></view>
+    <text class="empty-title">你的运动仓库还空着</text>
+    <text class="empty-description">先从一条骑行路线开始收录。以后，这里会整理你留下的运动轨迹与记录。</text>
+    <button class="empty-action" bindtap="goImport">收录第一条骑行 <text>→</text></button>
+    <text class="empty-footnote">更多运动类型将随产品能力逐步开放</text>
+  </view>
+
+  <button class="record-open" wx:if="{{hasMore}}" bindtap="loadMore">加载更多记录 <text>→</text></button>
+
+  <text class="records-footnote" wx:if="{{records.length}}">{{footnote}}</text>
+</view>
