@@ -2,7 +2,7 @@
 //
 // 为什么不用 wx.uploadFile：它一个请求只能携带一个文件，而
 // /api/recognize 的契约是一次请求同时传 file（概览图，必填）、
-// details（细节图，可多张）、summary（订单详情截图，可选）。
+// details（细节图，可多张）、summary（运动概要截图，可选）。
 // wx.request 支持 ArrayBuffer 请求体，配合手动拼 multipart 即可。
 
 /** 字符串 → UTF-8 字节。城市名、路名等表单值可能含中文。 */

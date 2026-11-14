@@ -846,8 +846,23 @@ WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-
    在返回前自动保存；**不带 token 时一次 COS 调用都不发**。保存失败只记
    warning，绝不影响识别响应。存的是「识别完成时刻的快照」——后台
    路网精修仍只更新本地缓存与 `/api/refine/{shot_id}`，不回写 COS。
-4. 正式发布需 https 域名；小程序侧 `wx.login` / token 缓存 / 列表页接线
-   **本轮尚未做**（后端能力已就绪，等待下一轮前端接入）。
+4. 正式发布需 https 域名。小程序侧已接线（见下节）；未配齐 `.env` 七项时
+   小程序自动降级为「本机摘要」，识别行为与旧版一致。
+
+### 小程序侧接线（`ridewx/`）
+
+| 文件 | 职责 |
+|---|---|
+| `app.js` | 冷启动先探 `health.records.enabled` → `wx.login` → `/api/auth/wxlogin`；token 缓存到 Storage（提前 1 分钟判过期），提供 `ensureToken(force)` / `invalidateToken()` |
+| `utils/api.js` | 统一注入 `Authorization: Bearer`；401 时强制重登并重试一次；新增 `wxlogin/listRecords/getRecord/deleteRecord/downloadRecordImage` |
+| `utils/records.js` | 云端摘要卡片与本机摘要统一成列表视图模型，按 `shot_id` 去重（云为准）、`statsOf` 统计 |
+| `pages/index/index.js` | 识别成功后写一份本机摘要兜底（云端由服务端自动保存） |
+| `pages/records/records.js` | 云列表 + keyset 分页 + 本机兜底；点卡片看历史详情、长按删除 |
+| `pages/me/me.js` | 收录概况按云端记录统计 |
+| `pages/result/result.js` | `?recordId=` 时从 `/api/records/{id}` 拉完整 payload；截图经 `wx.downloadFile` 带 token 下载（`<image>` 不能自定义 header） |
+
+🔴 图片端点是**鉴权代理流**，不能把 `/api/records/{id}/images/{name}` 直接
+塞给 `<image src>`；必须走 `downloadRecordImage()` 换成本地临时文件。
 
 ### 记录 API（除 wxlogin 外都要 `Authorization: Bearer <token>`）
 
@@ -861,11 +876,11 @@ WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-
 
 401 = 缺/无效/过期 token；403 = 功能未启用；跨用户访问统一 404（不泄露对象是否存在）。
 
-### 本地验收（尚未接小程序时）
+### 本地验收（curl / Postman，绕过微信登录）
 
 ```bash
 # 1) 生成测试 token（只输出 token，不回显密钥）
-D:\soft\Python311\python.exe tools\mint_dev_token.py --label devA > token.txt
+D:\soft\Python311\python.exe src\tools\mint_dev_token.py --label devA > token.txt
 # 2) 带 token 识别 → 自动写 COS
 curl -H "Authorization: Bearer $(cat token.txt)" \
      -F "file=@samples/meituan_ride_shanghai.jpg" \

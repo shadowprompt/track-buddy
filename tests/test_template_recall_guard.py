@@ -378,7 +378,7 @@ def test_miniprogram_template_mode_wired() -> None:
     assert "templateModes" in idx_wxml
     res_js = (root / "pages" / "result" / "result.js").read_text(
         encoding="utf-8")
-    assert "template_derived" in res_js and "参考历史模板" in res_js
+    assert "template_derived" in res_js and "参考历史记录" in res_js
 
 
 # --- 4. 前端契约（静态源码断言） -----------------------------------------
@@ -409,4 +409,4 @@ def test_miniprogram_template_mode_wired() -> None:
     assert "templateModes" in idx_wxml
     res_js = (root / "pages" / "result" / "result.js").read_text(
         encoding="utf-8")
-    assert "template_derived" in res_js and "参考历史模板" in res_js
+    assert "template_derived" in res_js and "参考历史记录" in res_js

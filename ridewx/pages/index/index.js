@@ -1,4 +1,5 @@
 var api = require('../../utils/api.js');
+var records = require('../../utils/records.js');
 
 Page({
   data: {
@@ -13,11 +14,11 @@ Page({
     // sourceIndex=0 固定为「默认（服务端配置）」，即不传 source。
     sources: [{ id: '', title: '默认（服务端配置）' }],
     sourceIndex: 0,
-    // 模板复用策略：auto（默认）/ prefer（优先模板）/ off（禁用）
+    // 参考历史记录策略：auto（默认）/ prefer（优先历史记录）/ off（不参考历史记录）
     templateModes: [
       { id: 'auto', title: '自动（推荐）' },
-      { id: 'prefer', title: '优先模板' },
-      { id: 'off', title: '禁用模板' }
+      { id: 'prefer', title: '优先历史记录' },
+      { id: 'off', title: '不参考历史记录' }
     ],
     templateModeIndex: 0
   },
@@ -111,7 +112,7 @@ Page({
   start: function () {
     var that = this;
     if (!this.data.overview) {
-      this.setData({ error: '请先选择①轨迹截图' });
+      this.setData({ error: '请先选择②轨迹概览图' });
       return;
     }
     this.setData({ busy: true, error: '' });
@@ -128,6 +129,13 @@ Page({
       })
       .then(function (payload) {
         getApp().globalData.lastResult = payload;
+        // 云端记录由服务端在识别端点带 token 时自动保存；这里同时写一份
+        // 本机摘要，云端未启用/保存失败时记录页也不会空。两者以 shot_id
+        // 为同一 id，云端恢复后合并时自动去重（云为准）。
+        records.upsert(payload, {
+          city: that.data.city,
+          roadNames: that.data.roadNames
+        });
         that.setData({ busy: false });
         wx.navigateTo({ url: '/pages/result/result' });
       })

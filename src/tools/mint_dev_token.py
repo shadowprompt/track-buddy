@@ -4,8 +4,8 @@
 它只读取服务端 .env 的 ``RECORDS_TOKEN_SECRET``，不接触 COS、不联网，
 也不打印密钥。任何能读到 .env 的人本来就能签发 token，因此仅限本机使用。
 
-用法：
-    D:\\soft\\Python311\\python.exe tools\\mint_dev_token.py --label devA
+用法（工具与其它脚本一样放在 src/tools/ 下）：
+    D:\\soft\\Python311\\python.exe src\\tools\\mint_dev_token.py --label devA
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import argparse
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]  # src/tools/ → 仓库根
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 

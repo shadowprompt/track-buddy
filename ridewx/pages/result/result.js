@@ -1,6 +1,6 @@
 var api = require('../../utils/api.js');
 
-// WGS-84 轨迹的客户端侧里程（haversine），用于与订单里程并列展示
+// WGS-84 轨迹的客户端侧里程（haversine），用于与概要里程并列展示
 function haversineKm(coords) {
   var R = 6371.0088;
   var total = 0;
@@ -57,7 +57,10 @@ Page({
     fbError: ''
   },
 
-  onLoad: function () {
+  onLoad: function (options) {
+    // 从记录列表点开的历史记录：完整 payload 在云端，按 id 拉取。
+    var recordId = options && (options.recordId || options.record_id);
+    if (recordId) { this._loadCloudRecord(String(recordId)); return; }
     var payload = getApp().globalData.lastResult;
     if (!payload) {
       wx.showToast({ title: '没有识别结果', icon: 'none' });
@@ -70,6 +73,38 @@ Page({
     if (payload.refine_pending && payload.shot_id) {
       this.startRefinePolling(payload.shot_id);
     }
+  },
+
+  /** 云端历史记录：GET /api/records/{id} → payload；截图需带 token 下载。 */
+  _loadCloudRecord: function (id) {
+    var that = this;
+    wx.showLoading({ title: '加载记录…' });
+    api.getRecord(id).then(function (rec) {
+      wx.hideLoading();
+      var payload = rec && rec.payload;
+      if (!payload) {
+        wx.showToast({ title: '记录内容为空', icon: 'none' });
+        return;
+      }
+      that._recordId = id;
+      getApp().globalData.lastResult = payload;
+      that.renderPayload(payload);
+      // 服务端把 /api/shots/... 改写成了 /api/records/{id}/images/{name}，
+      // <image> 不能带 header，所以用 downloadFile 换成本地临时文件。
+      var url = payload.shot_url || payload.overview_url || payload.stitched_url;
+      if (url && String(url).indexOf('/api/records/') >= 0) {
+        var name = String(url).split('/').pop();
+        api.downloadRecordImage(id, name).then(function (p) {
+          that.setData({ shotUrl: p });
+        }).catch(function () { /* 截图缺失不影响轨迹展示 */ });
+      }
+    }).catch(function (err) {
+      wx.hideLoading();
+      wx.showToast({
+        title: '加载失败：' + (err.message || '未知错误'), icon: 'none'
+      });
+      setTimeout(function () { wx.navigateBack(); }, 1200);
+    });
   },
 
   renderPayload: function (payload) {
@@ -86,11 +121,11 @@ Page({
       stats.push({ k: '轨迹里程', v: haversineKm(coords).toFixed(2) + ' km' });
     }
     stats.push({ k: '坐标系', v: 'WGS-84' });
-    // 模板复用状态：参考级（历史模板插值）vs 本次独立配准
+    // 是否参考历史记录：参考级（历史路线插值）vs 本次独立配准
     var diag = payload.diagnostics || {};
     stats.push({
-      k: '模板',
-      v: diag.template_derived ? '⚠️ 参考历史模板' : '本次独立配准'
+      k: '历史记录',
+      v: diag.template_derived ? '⚠️ 参考历史记录' : '本次独立配准'
     });
 
     // --- 运动概要 -----------------------------------------------------
@@ -109,8 +144,8 @@ Page({
         summaryCards.push({ k: '骑行耗时', v: du });
       }
       if (rs.distance_km != null) {
-        summaryParts.push('订单里程 ' + rs.distance_km + ' km');
-        summaryCards.push({ k: '订单里程', v: rs.distance_km + ' km' });
+        summaryParts.push('概要里程 ' + rs.distance_km + ' km');
+        summaryCards.push({ k: '概要里程', v: rs.distance_km + ' km' });
       }
       if (rs.calories_kcal != null) {
         summaryParts.push(rs.calories_kcal + ' kcal');
@@ -209,6 +244,12 @@ Page({
       });
     }
 
+    // 云端历史记录的 shot_url 是 /api/records/{id}/images/{name}，
+    // 需要 Bearer 才能读，不能像 /api/shots 那样直接拼成 <image src>。
+    var shotUrl = '';
+    if (payload.shot_url && String(payload.shot_url).indexOf('/api/records/') < 0) {
+      shotUrl = api.BASE_URL + payload.shot_url;
+    }
     this.setData({
       ready: true,
       hasTrack: hasTrack,
@@ -222,7 +263,7 @@ Page({
       mapScale: mapScale,
       polyline: polyline,
       circles: circles,
-      shotUrl: payload.shot_url ? api.BASE_URL + payload.shot_url : ''
+      shotUrl: shotUrl
     });
   },
 
