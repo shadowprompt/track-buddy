@@ -310,7 +310,7 @@ def test_pipeline_miss_falls_back_to_original_flow(patched, tmp_path):
     res = pipe.run(_img(), city="上海", allow_online=False, refine=False)
     assert calls, "未命中必须继续走原来的地理编码流程"
     assert res.diagnostics.get("source") != "template"
-    assert any("模板库里没有" in w for w in res.warnings)
+    assert any("历史记录里没有" in w for w in res.warnings)
 
 
 def test_pipeline_without_store_is_unchanged(patched, tmp_path):

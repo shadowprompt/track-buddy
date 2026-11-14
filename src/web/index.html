@@ -172,7 +172,7 @@
 
         <label class="uplabel" for="details">② 街道级细节图（可选）</label>
         <div class="drop sub" id="dropDetails">
-          <div class="big">仅当概览图缩放太高、模板库里还没有同类路线时补传</div>
+          <div class="big">仅当概览图缩放太高、历史记录里还没有同类路线时补传</div>
           <div class="hint">沿路线连续截 2–6 张，相邻约 1/3 重叠</div>
           <input type="file" id="details" accept="image/*" multiple hidden>
         </div>
@@ -193,7 +193,7 @@
           <span id="fileNames"></span>
           <div style="margin-top:6px;">
             细节图会由服务端拼成大图做完整地理配准，本次返回真值坐标；
-            同时把这张概览图的形状注册进模板库，<b>以后形状接近的概览图只需单独上传</b>，
+            同时把这张概览图的形状记入历史记录，<b>以后形状接近的概览图只需单独上传</b>，
             不必再带细节图。
           </div>
           <button id="clearFiles" type="button"
@@ -227,14 +227,14 @@
             </div>
           </div>
           <div>
-            <label for="templateMode">模板复用</label>
+            <label for="templateMode">参考历史记录</label>
             <select id="templateMode">
               <option value="auto">自动（推荐）</option>
-              <option value="prefer">优先模板</option>
-              <option value="off">禁用模板</option>
+              <option value="prefer">优先历史记录</option>
+              <option value="off">不参考历史记录</option>
             </select>
             <div class="note" style="margin-top:6px;">
-              自动：没传细节图时才用历史模板；优先模板：带细节图也先查模板（命中即省配准）；禁用：每次都独立配准。
+              自动：没传细节图时才参考历史记录；优先：带细节图也先查历史记录（命中即省配准）；不参考：每次都独立配准。
             </div>
           </div>
         </div>
@@ -494,7 +494,7 @@ __WB_AMAP_SDK__
     } else {
       note.style.display = 'none';
       dropDetails.querySelector('.big').textContent =
-        '仅当概览图缩放太高、模板库里还没有同类路线时补传';
+        '仅当概览图缩放太高、历史记录里还没有同类路线时补传';
       dropDetails.querySelector('.hint').textContent =
         '沿路线连续截 2–6 张，相邻约 1/3 重叠';
     }
@@ -598,7 +598,7 @@ __WB_AMAP_SDK__
       ? '<span class="spin"></span> 正在拼接并同步执行贴路校正（大画布可能需要数分钟）…'
       : paired
         ? '<span class="spin"></span> 正在拼接 ' + pickedDetails.length +
-          ' 张细节图、配准并注册概览图模板…'
+          ' 张细节图、配准并把概览图记入历史记录…'
         : detailsOnly
           ? '<span class="spin"></span> 正在拼接 ' + pickedDetails.length + ' 张截图并识别…'
           : '<span class="spin"></span> 正在识别：提取轨迹线、OCR 识别地名、地理配准中…');
@@ -995,7 +995,7 @@ __WB_AMAP_SDK__
     // 模板复用状态：一眼看出这次结果是「历史模板插值（参考级）」还是
     // 「当次独立地理配准」——识别准不准的第一判断依据。
     const tplStat = dg.template_derived
-      ? '⚠️ 参考历史模板'
+      ? '⚠️ 参考历史记录'
       : '本次独立配准';
 
     $('stats').innerHTML = [
@@ -1003,7 +1003,7 @@ __WB_AMAP_SDK__
       ['轨迹点', int(d.track_points, 0)],
       ['里程', dist],
       ['坐标系', text(d.crs, '—')],
-      ['模板', tplStat],
+      ['历史记录', tplStat],
       ['配准残差', num(dg.rmse_m, 0, '—') + (dg.rmse_m !== undefined ? ' m' : '')],
       ['内点/离群', int(dg.inliers, 0) + '/' + int(dg.outliers, 0)],
     ].concat(summaryStats).map(([k, v]) =>
@@ -1029,7 +1029,7 @@ __WB_AMAP_SDK__
         : '') +
       // 模板命中：概览单图免传细节图的复用通道（参考级定位）。
       (dg.template_match && dg.template_match.template
-        ? '<div class="kv"><span>历史模板</span><span>命中 ' +
+        ? '<div class="kv"><span>参考历史记录</span><span>命中 ' +
           esc(String(dg.template_match.template.id || '—')) +
           (dg.template_match.template.city
             ? ' · ' + esc(String(dg.template_match.template.city)) : '') +
@@ -1038,7 +1038,7 @@ __WB_AMAP_SDK__
           (dg.template_match.reversed ? ' · 反向' : '') +
           '（参考级，未核验）</span></div>' +
           (typeof dg.template_match.template_length_m === 'number'
-            ? '<div class="kv"><span>模板路线里程</span><span>' +
+            ? '<div class="kv"><span>历史路线里程</span><span>' +
               (dg.template_match.template_length_m / 1000).toFixed(1) +
               ' km</span></div>'
             : '')

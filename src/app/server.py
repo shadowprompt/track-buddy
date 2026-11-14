@@ -271,19 +271,19 @@ _BADGE_LABELS = {"start": "起点", "end": "终点"}
 # 见 route_template.register_pair() / TemplateStore.remember()。
 _PAIRED_FAILURE_REASONS: dict[str, str] = {
     "not_enough_points": "本次轨迹提取未成功（见上方告警），没有可供注册的地理真值",
-    "low_confidence": "本次识别置信度不足，未达到模板写入门槛",
+    "low_confidence": "本次识别置信度不足，未达到历史记录写入门槛",
     "self_inconsistent": "本次识别结果自洽性校验未通过",
     "low_information_input": "本次输入信息量不足",
     "partial_route": "细节图只覆盖了路线的一部分，形状配对未通过",
-    "degenerate_shape": "轨迹形状退化，无法形成有效模板",
+    "degenerate_shape": "轨迹形状退化，无法形成有效历史记录",
     "projection_failed": "概览图形状投影到地理坐标失败",
     "invalid_value": "输入的起终点数值不合法",
     "invalid_coordinate": "地理坐标不合法",
-    "deduped": "轨迹形状与已有模板重复，本次跳过",
-    "template_derived_result": "本次是模板参考级定位，不能再拿去注册模板",
+    "deduped": "轨迹形状与已有历史记录重复，本次跳过",
+    "template_derived_result": "本次结果参考了历史记录，不能再注册成新的历史记录",
     "stitch_failed": "细节图拼接未成功，本次没有可用的多图地理真值",
     "recognition_failed": "本次多图识别未产出可用几何（见上方告警），没有可注册的真值",
-    "geo_length_out_of_range": "地理真值里程不在合理区间，疑似错误解，不能固化成模板",
+    "geo_length_out_of_range": "地理真值里程不在合理区间，疑似错误解，不能固化为历史记录",
 }
 
 
@@ -330,9 +330,9 @@ def _paired_failure_note(reason: Any) -> str:
         if r.startswith("shape_"):
             why = f"概览图与多图真值的形状配对未通过（{r}）"
         elif r.startswith("error:"):
-            why = f"模板注册过程出错（{r}）"
+            why = f"历史记录注册过程出错（{r}）"
         else:
-            why = f"模板注册条件未满足（{r}）"
+            why = f"历史记录注册条件未满足（{r}）"
     if r == "deduped":
         tail = "下次同类图可只传单图，不必重复注册"
     elif r == "template_derived_result":
@@ -1023,7 +1023,7 @@ async def recognize(
         payload["paired_registration"] = cap
         if cap.get("written"):
             pair_notes.append(
-                "这张概览图已注册进轨迹模板库；以后形状接近的概览图"
+                "这张概览图已记入历史记录；以后形状接近的概览图"
                 "只需单独上传，不必再带细节图")
         else:
             pair_notes.append(_paired_failure_note(cap.get("reason")))
@@ -1039,9 +1039,9 @@ async def recognize(
             # prefer 模式近复刻命中：结果是参考级而非本次配准真值。
             # 「已用细节图拼接 → 地理真值」在这里不成立，必须明说。
             pair_notes.insert(0, (
-                "「优先模板」已命中历史路线：本次结果为参考级"
-                "（由历史模板插值得出，未做当次地理配准）；"
-                "如需本次独立配准，请把模板复用改为「自动」后重试"))
+                "「优先参考」已命中历史路线：本次结果为参考级"
+                "（由历史记录插值得出，未做当次地理配准）；"
+                "如需本次独立配准，请把「参考历史记录」改为「自动」后重试"))
         else:
             pair_notes.insert(0, (
                 f"已用 {n_details} 张细节图拼接配准，本次结果为地理真值"

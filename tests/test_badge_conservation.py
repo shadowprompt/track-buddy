@@ -148,7 +148,7 @@ def test_paired_failure_note_is_reason_specific() -> None:
     assert "只覆盖了路线的一部分" in S._paired_failure_note("partial_route")
     assert "置信度不足" in S._paired_failure_note("low_confidence")
     assert "形状配对未通过" in S._paired_failure_note("shape_coverage")
-    assert "模板注册过程出错" in S._paired_failure_note("error:ValueError")
+    assert "历史记录注册过程出错" in S._paired_failure_note("error:ValueError")
     assert "可只传单图" in S._paired_failure_note("deduped")
     assert "unknown" in S._paired_failure_note(None)
 

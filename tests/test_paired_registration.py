@@ -492,7 +492,7 @@ def test_paired_path_registers_overview_template(server_stub):
     assert d["overview_url"].endswith(".jpg")
     assert d["n_shots"] == 2
     assert "template_capture" not in d
-    assert any("已注册" in w for w in d["warnings"])
+    assert any("已记入历史记录" in w for w in d["warnings"])
     assert store.stats()["overview"] == 1
 
 

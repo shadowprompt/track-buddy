@@ -363,7 +363,7 @@ def test_web_template_mode_select_and_display() -> None:
     assert "fd.append('template'" in html
     # 顶部 stat 卡展示是否参考模板
     assert "template_derived" in html
-    assert "参考历史模板" in html and "本次独立配准" in html
+    assert "参考历史记录" in html and "本次独立配准" in html
 
 
 def test_miniprogram_template_mode_wired() -> None:
@@ -394,7 +394,7 @@ def test_web_template_mode_select_and_display() -> None:
     assert "fd.append('template'" in html
     # 顶部 stat 卡展示是否参考模板
     assert "template_derived" in html
-    assert "参考历史模板" in html and "本次独立配准" in html
+    assert "参考历史记录" in html and "本次独立配准" in html
 
 
 def test_miniprogram_template_mode_wired() -> None:

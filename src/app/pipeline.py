@@ -467,7 +467,7 @@ class RidePipeline:
             input_quality={
                 "level": "reject",
                 "usable": False,
-                "reasons": ["参考级定位：坐标来自历史轨迹模板，无当次地理核验"],
+                "reasons": ["参考级定位：坐标来自历史记录，无当次地理核验"],
                 "suggestions": ["放大地图后重新截图，或用人工反馈核验路线"],
             },
             ocr_texts=len(texts),
@@ -586,7 +586,7 @@ class RidePipeline:
                     profile=self.cfg.source_profile_id)
             except Exception as exc:  # noqa: BLE001 — 兜底失败必须回落原流程
                 warnings.append(
-                    f"轨迹模板匹配异常，已回落原流程：{type(exc).__name__}")
+                    f"历史记录匹配异常，已回落原流程：{type(exc).__name__}")
             if located is not None and (
                     broad["broad_overview"]
                     or _near_template_hit(located)):
@@ -596,7 +596,7 @@ class RidePipeline:
             if broad["broad_overview"]:
                 warnings.append(
                     "这张图是城市级概览（地名多为行政区/地铁线/高架，公里级精度），"
-                    "但轨迹模板库里没有形状足够接近的同类路线；仍按原流程尝试，"
+                    "但历史记录里没有形状足够接近的同类路线；仍按原流程尝试，"
                     "结果可能偏差较大。"
                 )
             # 非宽泛图探测未命中/不够像：静默回落原流程，不打扰用户。
