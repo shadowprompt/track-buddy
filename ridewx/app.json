@@ -1,0 +1,22 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/result/result"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#1a73e8",
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "骑行轨迹识别",
+    "backgroundColor": "#f6f7fb"
+  },
+  "permission": {
+    "scope.userLocation": {
+      "desc": "用于在地图上选点，纠正地名对应的坐标"
+    }
+  },
+  "requiredPrivateInfos": [
+    "chooseLocation"
+  ],
+  "lazyCodeLoading": "requiredComponents",
+  "sitemapLocation": "sitemap.json"
+}

@@ -1,0 +1,74 @@
+<view class="card" wx:if="{{ready}}">
+  <view class="stats">
+    <view class="stat" wx:for="{{stats}}" wx:key="k">
+      <view class="stat-k">{{item.k}}</view>
+      <view class="stat-v">{{item.v}}</view>
+    </view>
+  </view>
+
+  <view class="summary-wrap" wx:if="{{summaryCards.length > 0}}">
+    <view class="summary-title">运动概要</view>
+    <view class="summary-line">{{summaryText}}</view>
+  </view>
+
+  <view class="warn-box" wx:if="{{warnings.length > 0}}">
+    <view class="warn-text" wx:for="{{warnings}}" wx:key="index">⚠ {{item}}</view>
+  </view>
+</view>
+
+<view class="card" wx:if="{{ready && hasTrack}}">
+  <view class="card-title">轨迹预览</view>
+  <map
+    id="map"
+    class="map"
+    latitude="{{centerLat}}"
+    longitude="{{centerLon}}"
+    scale="{{mapScale}}"
+    polyline="{{polyline}}"
+    circles="{{circles}}"
+    show-location="{{false}}"
+  />
+  <view class="note" wx:if="{{refineState === 'running'}}">后台路网精修中（已运行 {{refineElapsed}} 秒），完成后自动更新…</view>
+  <view class="note" wx:elif="{{refineState === 'done'}}">✓ 路网精修完成，轨迹已更新</view>
+  <view class="warn-text" wx:elif="{{refineState === 'error'}}">路网精修失败：{{refineMessage}}</view>
+
+  <image class="shot" src="{{shotUrl}}" mode="widthFix" wx:if="{{shotUrl}}" />
+</view>
+
+<view class="card" wx:if="{{ready && !hasTrack}}">
+  <view class="card-title">未识别到有效轨迹</view>
+  <view class="warn-text" wx:for="{{warnings}}" wx:key="index">⚠ {{item}}</view>
+  <view class="note">可尝试：降低概览图缩放级别 / 补传街道级细节图 / 填写城市与途经路名</view>
+</view>
+
+<view class="card" wx:if="{{ready && exports.length > 0}}">
+  <view class="card-title">导出文件</view>
+  <button
+    class="btn-plain export-btn"
+    wx:for="{{exports}}"
+    wx:key="key"
+    bindtap="doExport"
+    data-key="{{item.key}}"
+  >↓ {{item.label}}</button>
+  <view class="note">文件已统一 WGS-84 坐标；GPX/TCX 含时间轴（需订单详情截图提供开始时间与时长），可直接导入 Strava / Garmin</view>
+</view>
+
+<view class="card" wx:if="{{ready && hasTrack}}">
+  <view class="card-title">轨迹纠正（越用越准）</view>
+  <view class="note" style="margin-bottom: 16rpx;">如果某个地名识别偏了：填写正确地名 → 在地图上选真实位置 → 提交，下次识别同区域直接命中</view>
+  <view class="field">
+    <text class="field-label">地名</text>
+    <input class="field-input" placeholder="如：深圳湾公园" value="{{fbName}}" bindinput="onFbName" />
+  </view>
+  <view class="fb-row">
+    <button class="btn-plain fb-btn" bindtap="pickLocation">地图选点</button>
+    <text class="fb-pos">{{fbPosText || '未选择位置'}}</text>
+  </view>
+  <button class="btn-primary" bindtap="submitFeedback" disabled="{{fbBusy}}" loading="{{fbBusy}}">提交纠正</button>
+  <view class="note ok" wx:if="{{fbDone}}">✓ 已写入词典，下次识别同区域生效</view>
+  <view class="warn-text" wx:if="{{fbError}}">{{fbError}}</view>
+</view>
+
+<view class="footer">
+  <button class="btn-plain" bindtap="goBack">再识别一次</button>
+</view>

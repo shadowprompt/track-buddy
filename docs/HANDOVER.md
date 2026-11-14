@@ -6522,3 +6522,47 @@ GPX 规则是「开始时间+时长齐全才写逐点 <time>」，于是整条�
 新增注册表分发/TCX 结构与时间/TCX 缺时间轴/距离与卡路里退化/
 payload 双格式/源标题注入/前端链接契约）；全量 579 passed。
 未重启服务。
+
+### §22.63 微信小程序前端（ridewx/，2026-11-14 17:40）
+
+用户决定：小米扩展暂缓，先做小程序前端对接本项目后端（全流程 v1，
+开发者工具联调）。
+
+**工程**（`ridewx/`，原生微信小程序，16 文件）：
+
+* 结构：`pages/index`（上传页：①概览图必填 ②细节图≤9 ③订单详情
+  截图 + 城市/路名）→ `pages/result`（指标卡 + map 轨迹预览 + 导出 +
+  纠正）；结果经 `getApp().globalData.lastResult` 传递（payload 含
+  GPX/TCX 大文本，不走页面参数）。
+* **multipart 手工构造**（`utils/multipart.js`）：`wx.uploadFile`
+  一次只能带一个文件，而 `/api/recognize` 契约是单请求同时传
+  `file + details(n) + summary`。方案：`wx.getFileSystemManager()
+  .readFile` 读 ArrayBuffer → 手拼 multipart（自实现 UTF-8 编码器，
+  城市名/路名含中文）→ `wx.request` 发 ArrayBuffer。文件名统一
+  ASCII（overview.jpg/detail_N.jpg/summary.jpg）规避转义问题。
+* 地图：`map` 组件用 `geojson_gcj02`（组件坐标系就是 GCJ-02）画
+  polyline + 起终点 circle 标记；中心/缩放按 bbox 估算。里程用
+  WGS-84 geojson 客户端 haversine 计算，与订单里程并列展示。
+* 精修轮询：`refine_pending` 时每 3s 轮询 `/api/refine/{id}`，
+  running 显示 elapsed_s，done 用 `job.payload` 整体替换并重渲染。
+* 导出：GeoJSON/GPX/TCX 写入 `USER_DATA_PATH` 后
+  `wx.shareFileMessage` 转发（分享面板取消时文件其实已写好，toast
+  兜底）；与网页版一致统一 WGS-84。
+* 纠正：`wx.chooseLocation`（返回 GCJ-02，直接传 `crs=GCJ-02`）
+  + 地名输入 → `/api/feedback`，对应后端「越用越准」数据入口。
+* `config.js` 单点配置 `BASE_URL`（默认 `http://127.0.0.1:8848`，
+  `project.config.json` 已设 `urlCheck: false`）；真机预览需手机开
+  调试模式并改成局域网 IP；正式发布需 https 域名。
+* appid 占位 `touristappid`——IDE 打开工程需替换为真实 appid。
+
+**校验**：JSON 严格性 + `node --check` 全部 JS 语法 + WXML 无
+`?.`/`??`/箭头函数 + multipart 构造功能级验证（UTF-8 中文回读、
+边界计数、闭合检查）全部通过。脚手架工具两次 `template_unavailable`
+（模板哈希不匹配），降级为按原生工程约束手工建工程。
+
+**IDE 联调状态**（截至本文档写入）：本机已装开发者工具
+（`D:/soft/微信web开发者工具`）但 NW 运行时低于兼容门槛
+（`MIN_COMPATIBLE_VERSION=2.02.2607152`，诊断
+`nw_runtime_incompatible`），Nightly `2.02.2611132`（2026-11-13）
+安装包已下载到用户 Downloads，待覆盖安装后用
+`check_wechatide_status` 完成门禁再编译预览。
