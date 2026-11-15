@@ -11,7 +11,7 @@
     assets/ride_core/requirements.txt   依赖清单
 
 技能脚本 `scripts/recognize.py` 优先使用打包进来的核心，找不到才回退到
-`D:\\Dev\\meituan-ride`。这样技能包复制到任何机器都能直接用。
+`D:\\Dev\\track-buddy`。这样技能包复制到任何机器都能直接用。
 
 维护约定：**代码只在本仓库改**，改完跑一次本脚本同步到各技能目录。
 """

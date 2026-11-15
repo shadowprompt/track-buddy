@@ -64,7 +64,7 @@ def test_record_save_moved_to_background_tasks() -> None:
 
 
 def test_miniprogram_explains_gateway_timeout() -> None:
-    src = _read("ridewx/utils/api.js")
+    src = _read("wxmin/utils/api.js")
     assert "code === 504 || code === 502" in src
     assert "proxy_read_timeout" in src
     assert "/timeout/i.test(msg)" in src

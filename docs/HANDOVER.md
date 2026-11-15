@@ -5,7 +5,7 @@
 > 再用真实路网约束校正。理解这一点，其余所有设计选择都是它的推论。
 
 本文档面向**接手继续开发的 AI / 工程师**。事实核对日期：2026-11-02，
-对应 commit `369afd8`。代码唯一真源仓库：`D:\Dev\meituan-ride`
+对应 commit `369afd8`。代码唯一真源仓库：`D:\Dev\track-buddy`
 （GitHub: `https://github.com/shadowprompt/track-buddy`，public，MIT）。
 
 ---
@@ -1289,7 +1289,7 @@ python tools/sync_skill.py \
 ```
 
 `dist/ride-screenshot-georeference.zip` 是**自包含**的——
-解压到任意装了 Python 依赖的机器即可运行，不依赖 `D:\Dev\meituan-ride` 存在。
+解压到任意装了 Python 依赖的机器即可运行，不依赖 `D:\Dev\track-buddy` 存在。
 
 ### ⚠️ 技能包不包含 web 前端与 tools
 
@@ -4298,7 +4298,7 @@ vendor 布局下 `app/` 直接在 `ROOT` 下。
 
 **3. 顺带修掉一批硬编码绝对路径。**
 `tests/test_endpointfit.py` / `test_routebuild.py` / `test_valhalla.py` /
-`test_waterguard.py` 曾把 `r"D:/Dev/meituan-ride"` 写死在 `sys.path`，
+`test_waterguard.py` 曾把仓库根绝对路径（现为 `r"D:/Dev/track-buddy"`）写死在 `sys.path`，
 `test_waterguard.py` 还有两处硬编码的数据/缓存路径——换台机器就崩。
 全部改成从 `__file__` 推导。`src/tools/probe_basemap_match.py` 里的
 `sys.path.insert(0, ".")` 也一样：它依赖当前工作目录，从别处调用就找不到包。
@@ -6523,12 +6523,12 @@ GPX 规则是「开始时间+时长齐全才写逐点 <time>」，于是整条�
 payload 双格式/源标题注入/前端链接契约）；全量 579 passed。
 未重启服务。
 
-### §22.63 微信小程序前端（ridewx/，2026-11-14 17:40）
+### §22.63 微信小程序前端（现 `wxmin/`，原 `ridewx/`，2026-11-14 17:40）
 
 用户决定：小米扩展暂缓，先做小程序前端对接本项目后端（全流程 v1，
 开发者工具联调）。
 
-**工程**（`ridewx/`，原生微信小程序，16 文件）：
+**工程**（现 `wxmin/`，原 `ridewx/`，原生微信小程序，16 文件）：
 
 * 结构：`pages/index`（上传页：①概览图必填 ②细节图≤9 ③订单详情
   截图 + 城市/路名）→ `pages/result`（指标卡 + map 轨迹预览 + 导出 +

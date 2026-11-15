@@ -13,7 +13,7 @@
 ``sys.path.insert``——那种写法容易漏，也容易在目录调整时全网改一遍。
 
 同时修掉了一个历史坏味道：``tests/test_endpointfit.py`` 等文件曾把
-``r"D:\\Dev\\meituan-ride"`` 硬编码进 ``sys.path``，换台机器就崩。
+``r"D:\\Dev\\track-buddy"`` 硬编码进 ``sys.path``，换台机器就崩。
 """
 from __future__ import annotations
 

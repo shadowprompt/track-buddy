@@ -6,7 +6,7 @@
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const RIDEWX = path.join(ROOT, 'ridewx');
+const RIDEWX = path.join(ROOT, 'wxmin');
 const MODULES = [
   'app.js', 'config.js', 'utils/api.js', 'utils/multipart.js',
   'utils/records.js', 'pages/index/index.js', 'pages/records/records.js',

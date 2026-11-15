@@ -54,7 +54,7 @@ module.exports = {
         env: { PYTHONUNBUFFERED: '1' },   // 密钥别放这里，见文件头说明
         merge_logs: true,
         time: true
-        // 日志走 pm2 默认 ~/.pm2/logs/ridewx-api-{out,error}.log，
+        // 日志走 pm2 默认 ~/.pm2/logs/track-buddy-{out,error}.log，
         // 避免 /var/log 的写权限问题，也不污染仓库目录
     }]
 };

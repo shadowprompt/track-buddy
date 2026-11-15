@@ -1,9 +1,8 @@
 """小程序记录链路（JS 侧）契约：语法、静态接线、Node 桩件行为。
 
-后端运动记录云存储的契约在 tests/test_records_cos.py；本文件只管 ridewx 的
+后端运动记录云存储的契约在 tests/test_records_cos.py；本文件只管 wxmin 的
 JS 逻辑：登录态、Bearer 注入、云列表 + 本机兜底、历史详情与删除。
-所有断言只读 .js 源码（这些文件是本轮随代码一起提交的），不依赖用户本地
-未提交的布局 WIP。
+所有断言只读仓库内已提交的 .js 源码（布局 WIP 已于 2026-11-15 定稿入库）。
 """
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-RIDEWX = ROOT / "ridewx"
+RIDEWX = ROOT / "wxmin"
 JS_FILES = sorted(RIDEWX.rglob("*.js"))
 
 

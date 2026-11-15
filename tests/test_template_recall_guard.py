@@ -367,7 +367,7 @@ def test_web_template_mode_select_and_display() -> None:
 
 
 def test_miniprogram_template_mode_wired() -> None:
-    root = (Path(__file__).resolve().parents[1] / "ridewx")
+    root = (Path(__file__).resolve().parents[1] / "wxmin")
     api = (root / "utils" / "api.js").read_text(encoding="utf-8")
     assert "opts.templateMode" in api
     assert "'template'" in api
@@ -398,7 +398,7 @@ def test_web_template_mode_select_and_display() -> None:
 
 
 def test_miniprogram_template_mode_wired() -> None:
-    root = (Path(__file__).resolve().parents[1] / "ridewx")
+    root = (Path(__file__).resolve().parents[1] / "wxmin")
     api = (root / "utils" / "api.js").read_text(encoding="utf-8")
     assert "opts.templateMode" in api
     assert "'template'" in api
