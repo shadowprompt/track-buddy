@@ -86,7 +86,7 @@ function cardToView(card) {
     dateText: card.started_at ? startedText(card.started_at)
       : dateText(Number(card.created_at || 0) * 1000),
     city: card.city || '',
-    routeLabel: card.city || '骑行路线',
+    routeLabel: card.city || '运动路线',
     hasTrack: !!card.has_track,
     distanceKm: km,
     trackPoints: Number(card.track_points || 0),
@@ -109,7 +109,7 @@ function upsert(payload, meta) {
     timestamp: now,
     dateText: rs.started_at ? startedText(rs.started_at) : dateText(now),
     city: (meta && meta.city) || '',
-    routeLabel: (meta && (meta.roadNames || meta.city)) || '骑行路线',
+    routeLabel: (meta && (meta.roadNames || meta.city)) || '运动路线',
     hasTrack: coords.length >= 2,
     distanceKm: coords.length >= 2 ? distanceKm(coords)
       : (rs.distance_km != null ? Number(rs.distance_km) : 0),
@@ -175,7 +175,7 @@ function extendView(item) {
   var v = {};
   Object.keys(item || {}).forEach(function (k) { v[k] = item[k]; });
   if (!v.dateText) v.dateText = dateText(v.timestamp || Date.now());
-  if (!v.routeLabel) v.routeLabel = v.city || '骑行路线';
+  if (!v.routeLabel) v.routeLabel = v.city || '运动路线';
   if (!v.exports) v.exports = [];
   return v;
 }

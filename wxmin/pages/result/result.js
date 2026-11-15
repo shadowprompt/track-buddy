@@ -136,7 +136,7 @@ Page({
         summaryCards.push({ k: '开始时间', v: st });
       }
       if (rs.duration_s != null) {
-        summaryCards.push({ k: '骑行耗时', v: fmtDuration(rs.duration_s) });
+        summaryCards.push({ k: '运动耗时', v: fmtDuration(rs.duration_s) });
       }
       if (rs.distance_km != null) {
         summaryCards.push({ k: '概要里程', v: rs.distance_km + ' km' });

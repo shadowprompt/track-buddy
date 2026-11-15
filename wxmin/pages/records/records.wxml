@@ -18,7 +18,7 @@
         <view class="route-symbol">↗</view>
         <view class="record-heading">
           <text class="record-date">{{item.dateText}}</text>
-          <text class="record-name">{{item.routeLabel || item.city || '骑行路线'}} · {{item.hasTrack ? '轨迹已生成' : '未生成有效轨迹'}}</text>
+          <text class="record-name">{{item.routeLabel || item.city || '运动路线'}} · {{item.hasTrack ? '轨迹已生成' : '未生成有效轨迹'}}</text>
         </view>
         <text class="confidence-badge" wx:if="{{item.confidenceText}}">{{item.confidenceText}}</text>
       </view>
@@ -35,8 +35,8 @@
   <view wx:else class="records-empty">
     <view class="empty-route-art"><view class="empty-route-line"></view><view class="empty-route-pin"></view></view>
     <text class="empty-title">你的运动仓库还空着</text>
-    <text class="empty-description">先从一条骑行路线开始收录。以后，这里会整理你留下的运动轨迹与记录。</text>
-    <button class="empty-action" bindtap="goImport">收录第一条骑行 <text>→</text></button>
+    <text class="empty-description">先从一条运动路线开始收录。以后，这里会整理你留下的运动轨迹与记录。</text>
+    <button class="empty-action" bindtap="goImport">收录第一条轨迹 <text>→</text></button>
     <text class="empty-footnote">更多运动类型将随产品能力逐步开放</text>
   </view>
 

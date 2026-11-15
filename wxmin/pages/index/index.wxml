@@ -1,11 +1,11 @@
 <view class="import-page">
   <view class="import-intro">
     <view class="intro-copy">
-      <text class="intro-kicker">运动记忆库 · 骑行</text>
-      <text class="intro-title">收录一条骑行</text>
+      <text class="intro-kicker">运动记忆库 · 轨迹</text>
+      <text class="intro-title">收录一条路线</text>
       <text class="intro-subtitle">把经过的路，存进你的运动记忆库。</text>
     </view>
-    <view class="ride-tag">骑行记录</view>
+    <view class="source-tag">运动记录</view>
   </view>
 
   <view class="route-upload-card summary-card">
@@ -92,7 +92,7 @@
 
 <!-- 放在 .import-page 外面、与它平级：fixed 相对页面视口定位，不受父容器 padding 影响 -->
 <view class="submit-dock">
-  <text class="dock-note">截图来自骑行路线概览页，识别效果更好</text>
+  <text class="dock-note">截图来自路线概览页，识别效果更好</text>
   <button class="submit-button" bindtap="start" disabled="{{busy}}" loading="{{busy}}">{{busy ? '正在识别，请稍候…' : '＋  选择路线截图并开始识别'}}</button>
   <text class="submit-error" wx:if="{{error}}">{{error}}</text>
 </view>

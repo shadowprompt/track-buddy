@@ -1,4 +1,4 @@
-// meituan-ride 后端 API 封装。
+// 运动轨迹识别后端 API 封装。
 // 契约见 src/app/server.py：
 //   GET  /api/health                         能力清单 + records.enabled
 //   POST /api/auth/wxlogin                  wx.login code → 记录 token
@@ -117,7 +117,7 @@ function imgType(path) {
 }
 
 /**
- * 识别骑行轨迹截图。
+ * 识别运动轨迹截图。
  * 带合法 token 时服务端会自动把本次结果写入云端记录；无 token 时行为不变。
  * @param {Object} opts
  *   overview    {string} 轨迹概览图临时路径（必填）
