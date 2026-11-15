@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>美团骑行截图轨迹识别</title>
+<title>运动轨迹截图识别</title>
 <style>
   :root {
     --bg: #f7f7f8;
@@ -153,8 +153,8 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>美团骑行截图轨迹识别</h1>
-    <div class="sub">上传骑行截图 → 提取轨迹线 → 地理配准 → 输出 GeoJSON 轨迹</div>
+    <h1>运动轨迹截图识别</h1>
+    <div class="sub">上传路线截图 → 提取轨迹线 → 地理配准 → 输出 GeoJSON 轨迹</div>
   </header>
 
   <div class="grid">
@@ -278,7 +278,7 @@
           <input id="roadNames" type="text" placeholder="例如：打浦路隧道, 世博大道, 古北路"
                  style="width:100%;">
           <div class="note" style="margin-top:6px;">
-            骑行距离越长、地图缩放越低，图上能读出的地名就越粗（只有区名和地铁线号），
+            路线距离越长、地图缩放越低，图上能读出的地名就越粗（只有区名和地铁线号），
             单靠它们很难定位到具体街区。<b>填上你记得的路名</b>能把这个位置钉死——
             实测轨迹到真实路网的偏差可从 191 米降到 98 米。
             路名越具体越好（写「打浦路隧道」比写「世纪大道」有用得多）。
@@ -980,7 +980,7 @@ __WB_AMAP_SDK__
       summaryStats.push(['开始时间', String(rsm.started_at).replace('T', ' ')]);
     }
     if (rsm.duration_s != null) {
-      summaryStats.push(['骑行耗时', fmtDur(rsm.duration_s)]);
+      summaryStats.push(['运动耗时', fmtDur(rsm.duration_s)]);
     }
     if (rsm.distance_km != null) {
       summaryStats.push(['概要里程', rsm.distance_km + ' km']);

@@ -43,8 +43,10 @@ def test_result_card_renders_ride_summary() -> None:
     # 概要字段以独立 stat 卡片展示（与置信度/里程并列），不埋在诊断信息里
     for needle in ("rsm.started_at", "rsm.duration_s", "rsm.distance_km",
                    "rsm.calories_kcal", "rsm.carbon_g",
-                   "['开始时间'", "['骑行耗时'", "['概要里程'", "['卡路里'"):
+                   "['开始时间'", "['运动耗时'", "['概要里程'", "['卡路里'"):
         assert needle in HTML
+    # 文案通用化：不回退到「骑行耗时」这类来源专用话术
+    assert "骑行耗时" not in HTML
     # 交叉校验结论留在诊断区，一致性/不一致各有明确文案
     assert "rsm.cross_check" in HTML
     assert "✓ 概要里程与轨迹里程一致" in HTML
