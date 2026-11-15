@@ -1,36 +1,36 @@
-page { background:#111820; color:#f5f8fa; font-size:28rpx; }
+page { background:#111820; color:#f5f8fa; font-size:32rpx; }
 .records-page { min-height:100vh; padding:30rpx; }
 .records-heading { padding:12rpx 0 22rpx; }
-.records-kicker { display:block; color:#a7c8d8; font-size:20rpx; letter-spacing:1rpx; }
+.records-kicker { display:block; color:#a7c8d8; font-size:24rpx; letter-spacing:1rpx; }
 .records-title { display:block; margin-top:10rpx; color:#f5f8fa; font-size:46rpx; line-height:1.2; font-weight:700; }
-.records-subtitle { display:block; margin-top:8rpx; color:#c6d2d9; font-size:22rpx; }
+.records-subtitle { display:block; margin-top:8rpx; color:#c6d2d9; font-size:26rpx; }
 .records-summary { display:flex; align-items:center; justify-content:space-between; padding:15rpx 4rpx 18rpx; }
 .summary-number { color:#79c8ed; font-size:35rpx; font-weight:700; }
-.summary-label { color:#c6d2d9; font-size:20rpx; }
-.local-badge { padding:8rpx 13rpx; border:1rpx solid #3b5967; border-radius:24rpx; background:#1e3744; color:#b9e6fa; font-size:18rpx; }
+.summary-label { color:#c6d2d9; font-size:24rpx; }
+.local-badge { padding:8rpx 13rpx; border:1rpx solid #3b5967; border-radius:24rpx; background:#1e3744; color:#b9e6fa; font-size:22rpx; }
 .records-list { display:flex; flex-direction:column; gap:16rpx; }
 .record-card { padding:22rpx; border:1rpx solid #33424d; border-radius:20rpx; background:#1b2630; box-shadow:0 8rpx 24rpx rgba(0,0,0,.16); }
 .record-topline { display:flex; align-items:center; gap:13rpx; }
 .route-symbol { width:54rpx; height:54rpx; flex:none; display:flex; align-items:center; justify-content:center; border-radius:17rpx; background:#1e3744; color:#79c8ed; font-size:33rpx; }
 .record-heading { flex:1; min-width:0; }
-.record-date { display:block; color:#f5f8fa; font-size:23rpx; font-weight:650; }
-.record-name { display:block; margin-top:6rpx; color:#c6d2d9; font-size:18rpx; }
-.confidence-badge { padding:7rpx 10rpx; border-radius:18rpx; background:#402836; color:#ffb4c8; font-size:17rpx; }
+.record-date { display:block; color:#f5f8fa; font-size:27rpx; font-weight:650; }
+.record-name { display:block; margin-top:6rpx; color:#c6d2d9; font-size:22rpx; }
+.confidence-badge { padding:7rpx 10rpx; border-radius:18rpx; background:#402836; color:#ffb4c8; font-size:21rpx; }
 .record-metrics { display:flex; margin-top:20rpx; padding:16rpx 0; border-top:1rpx solid #33424d; border-bottom:1rpx solid #33424d; }
 .metric { flex:1; min-width:0; }
-.metric-value { display:block; color:#f5f8fa; font-size:23rpx; font-weight:650; }
-.metric-label { display:block; margin-top:6rpx; color:#b7c5cd; font-size:17rpx; }
-.record-summary { display:block; padding-top:12rpx; color:#c6d2d9; font-size:18rpx; }
-.record-open { margin-top:14rpx; padding:0; background:transparent; color:#f39ab2; text-align:left; font-size:20rpx; }
+.metric-value { display:block; color:#f5f8fa; font-size:27rpx; font-weight:650; }
+.metric-label { display:block; margin-top:6rpx; color:#b7c5cd; font-size:21rpx; }
+.record-summary { display:block; padding-top:12rpx; color:#c6d2d9; font-size:22rpx; }
+.record-open { margin-top:14rpx; padding:0; background:transparent; color:#f39ab2; text-align:left; font-size:24rpx; }
 .record-open::after { border:0; }
 .record-open text { float:right; }
 .records-empty { margin-top:48rpx; padding:46rpx 34rpx 34rpx; border:1rpx solid #33424d; border-radius:23rpx; background:linear-gradient(150deg,#1a2630,#18212a); text-align:center; }
 .empty-route-art { position:relative; width:150rpx; height:110rpx; margin:0 auto 25rpx; border-radius:50%; background:#1e3744; overflow:hidden; }
 .empty-route-line { position:absolute; left:66rpx; top:-16rpx; width:29rpx; height:145rpx; border-left:4rpx solid #79c8ed; border-right:4rpx solid #ed86a4; border-radius:50%; transform:rotate(35deg); opacity:.85; }
 .empty-route-pin { position:absolute; left:90rpx; top:26rpx; width:17rpx; height:17rpx; border:4rpx solid #1e3744; border-radius:50%; background:#ed86a4; box-shadow:0 0 0 7rpx rgba(237,134,164,.18); }
-.empty-title { display:block; color:#f5f8fa; font-size:28rpx; font-weight:700; }
-.empty-description { display:block; max-width:500rpx; margin:13rpx auto 22rpx; color:#c6d2d9; font-size:21rpx; line-height:1.65; }
-.empty-action { display:inline-flex; align-items:center; gap:10rpx; height:72rpx; padding:0 27rpx; border:0; border-radius:14rpx; background:linear-gradient(100deg,#b95779,#8f4f8a); color:#fff; font-size:21rpx; font-weight:650; }
+.empty-title { display:block; color:#f5f8fa; font-size:32rpx; font-weight:700; }
+.empty-description { display:block; max-width:500rpx; margin:13rpx auto 22rpx; color:#c6d2d9; font-size:25rpx; line-height:1.65; }
+.empty-action { display:inline-flex; align-items:center; gap:10rpx; height:72rpx; padding:0 27rpx; border:0; border-radius:14rpx; background:linear-gradient(100deg,#b95779,#8f4f8a); color:#fff; font-size:25rpx; font-weight:650; }
 .empty-action::after { border:0; }
-.empty-footnote { display:block; margin-top:19rpx; color:#a5b4bd; font-size:18rpx; }
-.records-footnote { display:block; margin:22rpx 5rpx; color:#a5b4bd; font-size:18rpx; line-height:1.6; }
+.empty-footnote { display:block; margin-top:19rpx; color:#a5b4bd; font-size:22rpx; }
+.records-footnote { display:block; margin:22rpx 5rpx; color:#a5b4bd; font-size:22rpx; line-height:1.6; }

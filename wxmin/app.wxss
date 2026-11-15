@@ -1,6 +1,6 @@
 page {
   background: #f6f7fb;
-  font-size: 28rpx;
+  font-size: 32rpx;
   color: #333;
 }
 
@@ -36,17 +36,17 @@ page {
   color: #1a73e8;
   border: 1rpx solid #1a73e8;
   border-radius: 12rpx;
-  font-size: 28rpx;
+  font-size: 32rpx;
 }
 
 .note {
-  font-size: 24rpx;
+  font-size: 28rpx;
   color: #999;
   line-height: 1.6;
 }
 
 .warn-text {
-  font-size: 24rpx;
+  font-size: 28rpx;
   color: #c05600;
   line-height: 1.6;
 }
