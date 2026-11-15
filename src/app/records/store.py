@@ -40,6 +40,10 @@ class RecordStore(Protocol):
 
     def rebuild_index(self, uid: str) -> int: ...
 
+    def register_alias(self, union_uid: str, uid: str) -> None: ...
+
+    def linked_uids(self, union_uid: str) -> list[str]: ...
+
 
 def cos_sdk_available() -> bool:
     """惰性探测 SDK；未装包也必须保证 ``import app.server`` 正常。"""
@@ -258,6 +262,35 @@ class CosRecordStore:
         cards.sort(key=_sort_key, reverse=True)
         self._put_json(self._k(keys.index_key, uid), cards)
         return len(cards)
+
+    def register_alias(self, union_uid: str, uid: str) -> None:
+        """登记 union_uid -> uid 关联（同一 union 可对应多个 AppID 的 uid）。
+
+        别名索引是派生缓存：丢失后，各端用户下次识别保存时会重新登记。
+        """
+        if not (keys.safe_component(union_uid) and keys.safe_component(uid)):
+            raise ValueError("unsafe union uid or uid")
+        alias = self._k(keys.alias_key, union_uid)
+        with _uid_lock("alias:" + union_uid):
+            for _ in range(3):
+                items = self._get_json(alias)
+                if not isinstance(items, list):
+                    items = []
+                items = [x for x in items if isinstance(x, str) and x != uid]
+                items.append(uid)
+                items.sort()
+                wrote = self._put_json(alias, items)
+                if wrote and self._etag(alias) not in (None, wrote):
+                    continue
+                return
+
+    def linked_uids(self, union_uid: str) -> list[str]:
+        if not keys.safe_component(union_uid):
+            return []
+        items = self._get_json(self._k(keys.alias_key, union_uid))
+        if not isinstance(items, list):
+            return []
+        return [x for x in items if isinstance(x, str)]
 
     def get_record(self, uid: str, rec_id: str) -> dict | None:
         if not (keys.safe_component(uid) and keys.safe_component(rec_id)):

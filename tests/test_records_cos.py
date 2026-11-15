@@ -130,9 +130,18 @@ def wired(monkeypatch, tmp_path):
 
     def fake_code2session(code, *, http_get=None):
         if code == "codeA":
-            return {"openid": "openid-A", "session_key": "SECRET-KEY-A"}
+            return {"openid": "openid-A", "session_key": "SECRET-KEY-A",
+                    "unionid": "union-A"}
         if code == "codeB":
-            return {"openid": "openid-B", "session_key": "SECRET-KEY-B"}
+            return {"openid": "openid-B", "session_key": "SECRET-KEY-B",
+                    "unionid": "union-B"}
+        if code == "codeA2":
+            # 同一微信人在另一个 AppID 下：unionid 相同、openid 不同
+            return {"openid": "openid-A2", "session_key": "SECRET-KEY-A2",
+                    "unionid": "union-A"}
+        if code == "codeNoUnion":
+            # 未绑定开放平台 / 老版本：拿不到 unionid，必须优雅降级
+            return {"openid": "openid-legacy", "session_key": "SECRET-LEGACY"}
         raise records.TokenError("bad code")
 
     monkeypatch.setattr(records.auth, "code2session", fake_code2session)
@@ -203,9 +212,11 @@ def test_wxlogin_does_not_leak_identity(wired):
     r = wired.client.post("/api/auth/wxlogin", json={"code": "codeA"})
     assert r.status_code == 200
     body = r.text
-    for secret in ("openid-A", "SECRET-KEY-A", "session_key", "errcode"):
+    for secret in ("openid-A", "SECRET-KEY-A", "session_key", "errcode",
+                   "union-A"):
         assert secret not in body
-    assert set(r.json()) == {"token", "expires_in"}
+    assert set(r.json()) == {"token", "expires_in", "union_uid"}
+    assert r.json()["union_uid"].startswith("u_")
 
 
 def test_wxlogin_bad_code_and_no_code(wired):
@@ -417,3 +428,106 @@ def test_config_properties_exist():
     assert CONFIG.cos_prefix.endswith("/")
     assert CONFIG.records_token_ttl >= 60
     assert isinstance(CONFIG.records_config_ready, bool)
+# --- N. 跨端身份对齐（unionId，2026-11-15） -------------------------------
+
+def test_union_uid_derivation_is_stable_and_disjoint():
+    a = records.union_uid_from_unionid("union-A", SECRET)
+    assert a.startswith("u_") and len(a) == 34
+    assert a == records.union_uid_from_unionid("union-A", SECRET)
+    assert a != records.union_uid_from_unionid("union-A", "other-secret")
+    assert a != records.union_uid_from_unionid("union-B", SECRET)
+    # 与 uid 的输入域和输出前缀都不同，绝不会被当成同一种标识
+    assert a != records.uid_from_openid("union-A", SECRET)
+    assert "union-A" not in a
+
+
+def test_token_union_claim_is_optional_and_backward_compatible():
+    uid = records.uid_from_openid("openid-A", SECRET)
+    un = records.union_uid_from_unionid("union-A", SECRET)
+    old = records.issue_token(uid, secret=SECRET, ttl=3600, now=1000)
+    new = records.issue_token(uid, secret=SECRET, ttl=3600, now=1000,
+                              union_uid=un)
+    assert "un" not in records.verify_token(old, secret=SECRET, now=1001)
+    assert records.verify_token(new, secret=SECRET, now=1001)["un"] == un
+    assert records.verify_token(old, secret=SECRET, now=1001)["uid"] == uid
+
+
+def test_wxlogin_returns_masked_union_uid(wired):
+    body = wired.client.post("/api/auth/wxlogin",
+                             json={"code": "codeA"}).json()
+    assert body["union_uid"] == records.union_uid_from_unionid("union-A", SECRET)
+    assert "union-A" not in json.dumps(body)
+    claims = records.verify_token(body["token"], secret=SECRET)
+    assert claims["un"] == body["union_uid"]
+    assert claims["uid"] == records.uid_from_openid("openid-A", SECRET)
+
+
+def test_no_unionid_degrades_to_legacy_behavior(wired):
+    body = wired.client.post("/api/auth/wxlogin",
+                             json={"code": "codeNoUnion"}).json()
+    assert body["union_uid"] == ""
+    claims = records.verify_token(body["token"], secret=SECRET)
+    assert "un" not in claims
+    assert claims["uid"] == records.uid_from_openid("openid-legacy", SECRET)
+    r = wired.client.get("/api/records/identity",
+                         headers=_auth(body["token"]))
+    assert r.status_code == 200
+    assert r.json() == {"uid": claims["uid"], "union_uid": "",
+                        "linked_uids": [claims["uid"]]}
+
+
+def test_identity_links_uids_of_same_union_across_appids(wired):
+    a = wired.client.post("/api/auth/wxlogin",
+                          json={"code": "codeA"}).json()
+    b = wired.client.post("/api/auth/wxlogin",
+                          json={"code": "codeA2"}).json()
+    assert a["union_uid"] == b["union_uid"] != ""
+    uid_a = records.uid_from_openid("openid-A", SECRET)
+    uid_b = records.uid_from_openid("openid-A2", SECRET)
+    assert uid_a != uid_b
+    # 两端各识别一次，触发后台保存 + 别名登记
+    _recognize(wired, a["token"])
+    _recognize(wired, b["token"])
+    r = wired.client.get("/api/records/identity", headers=_auth(a["token"]))
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["uid"] == uid_a
+    assert data["union_uid"] == a["union_uid"]
+    assert set(data["linked_uids"]) == {uid_a, uid_b}
+    # 客户端不能靠传参枚举别人的 union
+    r2 = wired.client.get("/api/records/identity?union_uid=u_forged",
+                          headers=_auth(a["token"]))
+    assert r2.json() == data
+
+
+def test_record_meta_carries_masked_union_uid_only(wired):
+    body = wired.client.post("/api/auth/wxlogin",
+                             json={"code": "codeA"}).json()
+    payload = _recognize(wired, body["token"])
+    uid = records.uid_from_openid("openid-A", SECRET)
+    key = records.keys.meta_key(uid, payload["shot_id"],
+                                prefix="ride-records/")
+    meta = json.loads(wired.cos.objects[key])
+    assert meta["union_uid"] == body["union_uid"]
+    assert "union-A" not in json.dumps(meta)
+    assert "openid-A" not in json.dumps(meta)
+
+
+def test_alias_failure_does_not_break_record(wired, monkeypatch, caplog):
+    body = wired.client.post("/api/auth/wxlogin",
+                             json={"code": "codeA"}).json()
+
+    def boom(*a, **k):
+        raise RuntimeError("alias down")
+
+    monkeypatch.setattr(wired.store, "register_alias", boom)
+    with caplog.at_level("WARNING"):
+        payload = _recognize(wired, body["token"])
+    assert payload["ok"] is True
+    assert "跨端身份别名写入失败" in caplog.text
+
+
+def test_identity_requires_token(wired):
+    assert wired.client.get("/api/records/identity").status_code == 401
+    assert wired.client.get("/api/records/identity",
+                            headers=_auth("bad.token.x")).status_code == 401

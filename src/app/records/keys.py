@@ -26,6 +26,24 @@ def uid_from_openid(openid: str, secret: str) -> str:
     ).hexdigest()[:32]
 
 
+def union_uid_from_unionid(unionid: str, secret: str) -> str:
+    """unionid -> 稳定的脱敏跨端锚点。
+
+    与 ``uid`` 用不同的输入域（``union:`` 前缀）和 ``u_`` 输出前缀隔开，
+    避免两种标识被混用；明文 unionid 绝不出现在对象键 / meta / token 里。
+    """
+    digest = hmac.new(
+        secret.encode("utf-8"), ("union:" + unionid).encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()[:32]
+    return "u_" + digest
+
+
+def alias_key(union_uid: str, prefix: str = DEFAULT_PREFIX) -> str:
+    """跨端反查索引：一个 union 下可能有多个 AppID 派生出的 uid。"""
+    return f"{prefix}aliases/{union_uid}.json"
+
+
 def safe_component(value: str) -> bool:
     """记录 id / 图片名必须是最简单的安全文件名（防路径穿越）。"""
     return bool(_SAFE_COMPONENT.match(value or "")) and ".." not in value

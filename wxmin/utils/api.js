@@ -194,6 +194,11 @@ function wxlogin(code) {
   });
 }
 
+/** 当前 token 的跨端身份：{uid, union_uid, linked_uids}（仅本人可见）。 */
+function identity() {
+  return authedRequest('GET', '/api/records/identity', { timeout: 15000 });
+}
+
 /** 我的记录列表；返回 {items, next_cursor, total}。 */
 function listRecords(opts) {
   opts = opts || {};
@@ -266,6 +271,7 @@ module.exports = {
   BASE_URL: BASE_URL,
   recognize: recognize,
   wxlogin: wxlogin,
+  identity: identity,
   listRecords: listRecords,
   getRecord: getRecord,
   deleteRecord: deleteRecord,

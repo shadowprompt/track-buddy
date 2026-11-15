@@ -672,14 +672,14 @@ def _maybe_save_record(*, uid: str | None, rec_id: str,
                        payload: dict[str, Any],
                        extra_images: list[Path] | None = None,
                        summary_bytes: bytes = b"",
-                       city: str = "") -> None:
+                       city: str = "", union_uid: str = "") -> None:
     """识别返回前的钩子；任何云存储异常都由 service 层吞掉。"""
     if not uid:
         return
     records.service.try_save_record(
         uid=uid, rec_id=rec_id, payload=payload,
         image_paths=_record_image_paths(payload, extra_images),
-        summary_bytes=summary_bytes, city=city,
+        summary_bytes=summary_bytes, city=city, union_uid=union_uid,
         store=records.store.get_record_store(),
     )
 
@@ -699,6 +699,7 @@ async def recognize_multi(
     summary: UploadFile | None = File(None),
     profile: SourceProfile = Depends(_active_source),
     record_uid: str | None = Depends(records.optional_record_uid),
+    union_uid: str | None = Depends(records.optional_union_uid),
 ) -> JSONResponse:
     """上传**多张**街道级截图，拼成一张大图后识别。
 
@@ -923,6 +924,7 @@ async def recognize_multi(
         + ([overview_path] if overview_path is not None else []),
         summary_bytes=summary_sink[0] if summary_sink else b"",
         city=city.strip(),
+        union_uid=union_uid or "",
     )
     return JSONResponse(payload)
 
@@ -942,6 +944,7 @@ async def recognize(
     summary: UploadFile | None = File(None),
     profile: SourceProfile = Depends(_active_source),
     record_uid: str | None = Depends(records.optional_record_uid),
+    union_uid: str | None = Depends(records.optional_union_uid),
 ) -> JSONResponse:
     """上传**一张概览单图**识别；缩放过高时可补传多张街道级细节图。
 
@@ -1179,6 +1182,7 @@ async def recognize(
         extra_images=detail_paths,
         summary_bytes=summary_sink[0] if summary_sink else b"",
         city=city.strip(),
+        union_uid=union_uid or "",
     )
     return JSONResponse(payload)
 
@@ -1431,9 +1435,18 @@ async def wxlogin(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="微信登录失败，请重试") from exc
     secret = CONFIG.records_token_secret or ""
     uid = records.uid_from_openid(str(data["openid"]), secret)
-    token = records.issue_token(uid, secret=secret, ttl=CONFIG.records_token_ttl)
-    # session_key 到此为止：不落库、不落 COS、不进响应。
-    return {"token": token, "expires_in": CONFIG.records_token_ttl}
+    # 只有绑定到同一微信开放平台账号的小程序才会返回 unionid；没有时
+    # 优雅降级，uid 仍由 openid 派生，现有 COS 数据一行都不用迁移。
+    unionid = str(data.get("unionid") or "").strip()
+    union_uid = (records.union_uid_from_unionid(unionid, secret)
+                 if unionid else "")
+    token = records.issue_token(
+        uid, secret=secret, ttl=CONFIG.records_token_ttl,
+        union_uid=union_uid or None)
+    # session_key / 明文 unionid 到此为止：不落库、不落 COS、不进响应。
+    # 响应里只给脱敏锚点，小程序可据此对齐跨端身份。
+    return {"token": token, "expires_in": CONFIG.records_token_ttl,
+            "union_uid": union_uid}
 
 
 @app.get("/api/records")
@@ -1452,6 +1465,26 @@ def list_records(
     except Exception as exc:  # noqa: BLE001 — 云故障统一 502
         raise HTTPException(status_code=502, detail="运动记录读取失败") from exc
     return {"items": items, "next_cursor": next_cursor, "total": total}
+
+
+@app.get("/api/records/identity")
+def record_identity(
+    ident: dict[str, Any] = Depends(records.require_record_identity),
+) -> dict[str, Any]:
+    """当前 token 的跨端身份：只返回本人 token 里的 union 关联，不接受
+    客户端指定 union_uid，避免借此枚举其他用户的 uid。"""
+    uid, union_uid = ident["uid"], ident["union_uid"]
+    if not union_uid:
+        return {"uid": uid, "union_uid": "", "linked_uids": [uid]}
+    store = _records_store()
+    try:
+        linked = store.linked_uids(union_uid)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502,
+                            detail="跨端身份读取失败") from exc
+    if uid not in linked:
+        linked = [uid] + linked
+    return {"uid": uid, "union_uid": union_uid, "linked_uids": linked}
 
 
 @app.get("/api/records/{rec_id}")

@@ -10,9 +10,11 @@ from ..config import CONFIG
 from . import auth, keys, service, store
 from .auth import (
     TokenError, WeChatServiceError, code2session, issue_token,
-    optional_record_uid, require_record_uid, verify_token,
+    optional_record_uid, optional_union_uid, require_record_identity,
+    require_record_uid, verify_token,
 )
-from .keys import build_summary_card, uid_from_openid
+from .keys import (alias_key, build_summary_card, uid_from_openid,
+                   union_uid_from_unionid)
 from .service import normalize_payload_for_store, record_to_response, try_save_record
 from .store import (
     CosRecordStore, RecordStore, cos_sdk_available, get_record_store,
@@ -31,8 +33,10 @@ def records_enabled() -> bool:
 __all__ = [
     "auth", "keys", "service", "store", "records_enabled",
     "TokenError", "WeChatServiceError", "code2session", "issue_token",
-    "verify_token", "optional_record_uid", "require_record_uid",
-    "uid_from_openid", "build_summary_card",
+    "verify_token", "optional_record_uid", "optional_union_uid",
+    "require_record_identity", "require_record_uid",
+    "uid_from_openid", "union_uid_from_unionid", "alias_key",
+    "build_summary_card",
     "normalize_payload_for_store", "try_save_record", "record_to_response",
     "RecordStore", "CosRecordStore", "get_record_store", "cos_sdk_available",
 ]

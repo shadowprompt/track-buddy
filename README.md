@@ -826,7 +826,7 @@ WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-
 | `COS_SECRET_ID` / `COS_SECRET_KEY` | ✅ | 建议用**最小权限子账号密钥**，只授权该 Bucket |
 | `COS_BUCKET` / `COS_REGION` | ✅ | 形如 `ride-records-1250000000` / `ap-shanghai` |
 | `WX_APPID` / `WX_APP_SECRET` | ✅ | `wx.login` code → jscode2session 用 |
-| `RECORDS_TOKEN_SECRET` | ✅ | HMAC 签名 + openid→uid 派生，**写入后不要轮换**（轮换=数据迁移） |
+| `RECORDS_TOKEN_SECRET` | ✅ | HMAC 签名 + openid→uid / unionid→union_uid 派生，**写入后不要轮换**（轮换=数据迁移） |
 | `COS_PREFIX` | ❌ | 对象根前缀，默认 `ride-records/` |
 | `RECORDS_TOKEN_TTL` | ❌ | token 有效期秒数，默认 2592000（30 天） |
 | `COS_HTTP_TIMEOUT` | ❌ | COS SDK 单次请求超时秒数，默认 15（钳制在 3–120）。防止云存储抖动拖住识别 |
@@ -837,9 +837,10 @@ WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-
 
 ### 鉴权与自动保存
 
-1. `POST /api/auth/wxlogin` 收 `wx.login` 的 `code`，服务端换 openid 后
-   只返回 `{token, expires_in}`；`openid` / `session_key` / 微信 errcode
-   一律不进响应、不落 COS。
+1. `POST /api/auth/wxlogin` 收 `wx.login` 的 `code`，服务端换 openid（以及
+   绑定开放平台后的 unionid）后返回 `{token, expires_in, union_uid}`；
+   `openid` / `session_key` / 明文 `unionid` / 微信 errcode 一律不进响应、
+   不落 COS。`union_uid` 是脱敏的跨端锚点，见下节。
 2. 记录按 `uid = HMAC(RECORDS_TOKEN_SECRET, openid)[:32]` 分目录，
    对象键形如 `{prefix}users/{uid}/records/{shot_id}/{meta,summary}.json`
    与 `images/...`；每条记录对象不可变，`index.json` 只是可重建的列表缓存。
@@ -851,12 +852,42 @@ WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-
 4. 正式发布需 https 域名。小程序侧已接线（见下节）；未配齐 `.env` 七项时
    小程序自动降级为「本机摘要」，识别行为与旧版一致。
 
+
+### 跨端身份对齐（unionId，2026-11-15）
+
+🔴 **前提**：小程序必须绑定微信开放平台账号，且与要打通的其它应用挂在
+**同一个开放平台账号**下，`jscode2session` 才会返回一致的 `unionid`。
+「同一主体」不等于「同一开放平台」；未绑定时接口不返回该字段，全链路
+自动降级为纯 openid 行为。
+
+设计要点：**uid 仍由 openid 派生，不换主键、不迁移任何 COS 数据**。
+这与 `gateway.daozhao.com.cn` 里 `miniProgramIdentity()` 的做法一致——
+应用内主键继续用 openid，unionId 只作跨端关联，避免「拿到 unionId 后
+老用户被当成新用户」。
+
+| 项 | 说明 |
+|---|---|
+| `uid` | `HMAC(secret, openid)[:32]`，保持不变；现有对象键、token、隔离逻辑零改动 |
+| `union_uid` | `u_` + `HMAC(secret, "union:" + unionid)[:32]`，**脱敏**；输入域与 uid 隔开，不会被混用 |
+| token claims | 新增可选字段 `un`，`v` 仍为 1 → 已签发的旧 token 继续验签通过 |
+| 记录 meta | 带合法 token 保存时写入 `union_uid`，不含明文 unionid / openid |
+| 别名索引 | `{prefix}aliases/{union_uid}.json` → 该 union 下所有 uid；在「响应后后台保存」时登记，是可重建的派生缓存，写失败只记 warning |
+
+`GET /api/records/identity` 返回 `{uid, union_uid, linked_uids}`：**只认 token
+里的 `un`**，不接受客户端传 `union_uid` 参数，避免枚举他人身份；无 unionid
+时 `union_uid=""` 且 `linked_uids=[uid]`，行为与旧版等价。小程序侧把
+`wxlogin` 返回的 `union_uid` 存进 `globalData.unionUid`，并可用
+`api.identity()` 查询关联的两端 uid。
+
+⚠️ `RECORDS_TOKEN_SECRET` 依旧**不可轮换**：它同时决定 uid 与 union_uid，
+轮换会让既有记录和跨端关联一起失效。
+
 ### 小程序侧接线（`wxmin/`）
 
 | 文件 | 职责 |
 |---|---|
-| `app.js` | 冷启动先探 `health.records.enabled` → `wx.login` → `/api/auth/wxlogin`；token 缓存到 Storage（提前 1 分钟判过期），提供 `ensureToken(force)` / `invalidateToken()` |
-| `utils/api.js` | 统一注入 `Authorization: Bearer`；401 时强制重登并重试一次；新增 `wxlogin/listRecords/getRecord/deleteRecord/downloadRecordImage` |
+| `app.js` | 冷启动先探 `health.records.enabled` → `wx.login` → `/api/auth/wxlogin`；token 缓存到 Storage（提前 1 分钟判过期），同时把脱敏 `unionUid` 放进 `globalData`；提供 `ensureToken(force)` / `invalidateToken()` |
+| `utils/api.js` | 统一注入 `Authorization: Bearer`；401 时强制重登并重试一次；提供 `wxlogin/identity/listRecords/getRecord/deleteRecord/downloadRecordImage` |
 | `utils/records.js` | 云端摘要卡片与本机摘要统一成列表视图模型，按 `shot_id` 去重（云为准）、`statsOf` 统计 |
 | `pages/index/index.js` | 识别成功后写一份本机摘要兜底（云端由服务端自动保存） |
 | `pages/records/records.js` | 云列表 + keyset 分页 + 本机兜底；点卡片看历史详情、长按删除 |
@@ -870,8 +901,9 @@ WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/auth/wxlogin` | `{"code": "..."}` → `{token, expires_in}` |
+| POST | `/api/auth/wxlogin` | `{"code": "..."}` → `{token, expires_in, union_uid}` |
 | GET | `/api/records` | `?limit=20&cursor=` → `{items, next_cursor, total}`，keyset 分页 |
+| GET | `/api/records/identity` | 当前 token 的 `{uid, union_uid, linked_uids}`，只认 token 里的 union |
 | GET | `/api/records/{id}` | 完整记录（payload 含 geojson/gpx/tcx/diagnostics） |
 | GET | `/api/records/{id}/images/{name}` | 图片后端代理流，不签发公网预签名 URL |
 | DELETE | `/api/records/{id}` | 删除我的整条记录（对象 + 列表卡片） |
@@ -1769,6 +1801,7 @@ TIANDITU_API_KEY=
 | GET | `/api/shots/{name}` | 回传原图，供前端叠加显示 |
 | POST | `/api/auth/wxlogin` | `wx.login` code 换运动记录 token |
 | GET | `/api/records` | 我的运动记录列表（分页） |
+| GET | `/api/records/identity` | 当前 token 的跨端身份与关联 uid |
 | GET | `/api/records/{id}` | 单条完整运动记录 |
 | GET | `/api/records/{id}/images/{name}` | 记录里的截图（代理流） |
 | DELETE | `/api/records/{id}` | 删除我的运动记录 |

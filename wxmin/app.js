@@ -2,7 +2,7 @@
 //
 // 后端契约（src/app/records/auth.py、server.py）：
 //   GET  /api/health           → {records:{enabled}}  零网络开关
-//   POST /api/auth/wxlogin     → {token, expires_in}  用 wx.login 的 code 换
+//   POST /api/auth/wxlogin     → {token, expires_in, union_uid}（脱敏跨端锚点）
 //   /api/recognize            带 Bearer 才自动把识别结果写入 COS；不带则零回归
 //   /api/records*             必须带 Bearer，按 openid 派生的 uid 隔离
 //
@@ -46,6 +46,8 @@ App({
     // index 写入、result 读取——含 GPX/TCX 文本，不适合走页面参数传递。
     lastResult: null,
     token: '',
+    // 跨端身份锚点：服务端脱敏后的 union_uid，不是明文 unionId
+    unionUid: '',
     // 云端记录是否可用；false 时页面显示本机摘要兜底
     recordsReady: false,
     recordsReason: '',
@@ -107,6 +109,7 @@ App({
             if (!token) { that._loginFailed(resolve); return; }
             writeCache(token, d.expires_in);
             that.globalData.token = token;
+            that.globalData.unionUid = d.union_uid || '';
             that.globalData.recordsReady = true;
             that.globalData.recordsReason = '';
             that.globalData.recordSource = 'cloud';
@@ -143,6 +146,7 @@ App({
   invalidateToken: function () {
     clearCache();
     this.globalData.token = '';
+    this.globalData.unionUid = '';
     this.globalData.recordsReady = false;
     this.globalData.recordsReason = '登录状态已失效';
     this.globalData.recordSource = 'local';

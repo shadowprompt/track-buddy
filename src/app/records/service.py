@@ -40,7 +40,8 @@ def try_save_record(*, uid: str, rec_id: str, payload: dict[str, Any],
                     image_paths: list[Path] | None = None,
                     summary_bytes: bytes = b"",
                     summary_name: str | None = None,
-                    city: str = "", store: RecordStore | None) -> bool:
+                    city: str = "", union_uid: str = "",
+                    store: RecordStore | None) -> bool:
     """带合法 token 时才调用；失败一律返回 False，不抛给识别端点。"""
     if store is None:
         return False
@@ -55,8 +56,17 @@ def try_save_record(*, uid: str, rec_id: str, payload: dict[str, Any],
         if summary_bytes:
             images[summary_name or f"{rec_id}_summary.jpg"] = summary_bytes
         meta = normalize_payload_for_store(payload, rec_id)
+        if union_uid:
+            # 只写脱敏锚点，不写明文 unionid / openid
+            meta["union_uid"] = union_uid
         card = build_summary_card(payload, city, rec_id, images=images)
         store.put_record(uid, rec_id, meta=meta, summary=card, images=images)
+        if union_uid:
+            # 别名索引是派生缓存：写失败只记 warning，记录本身已经保存成功。
+            try:
+                store.register_alias(union_uid, uid)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("跨端身份别名写入失败（不影响记录）：%s", exc)
         return True
     except Exception as exc:  # noqa: BLE001 — 云存储失败不能影响识别结果
         log.warning("运动记录保存 COS 失败（不影响本次识别）：%s", exc)

@@ -41,11 +41,18 @@ def _unb64u(value: str) -> bytes:
 
 
 def issue_token(uid: str, *, secret: str, ttl: int,
-                now: int | None = None) -> str:
-    """签发 ``head.body.sig`` 三段式 token（算法固定 HS256，不解析 alg）。"""
+                now: int | None = None,
+                union_uid: str | None = None) -> str:
+    """签发 ``head.body.sig`` 三段式 token（算法固定 HS256，不解析 alg）。
+
+    ``union_uid`` 是可选的跨端锚点；旧 token 没有这个字段，验签逻辑保持
+    ``v=1`` 不变，因此增加字段不破坏任何已签发的 token。
+    """
     ts = int(now if now is not None else time.time())
     head = _b64u(b'{"alg":"HS256","typ":"RIDE"}')
     claims = {"uid": uid, "iat": ts, "exp": ts + int(ttl), "v": 1}
+    if union_uid:
+        claims["un"] = union_uid
     body = _b64u(json.dumps(claims, separators=(",", ":"),
                             ensure_ascii=False).encode("utf-8"))
     signing = f"{head}.{body}"
@@ -113,7 +120,7 @@ def _records_enabled() -> bool:
     return bool(records_enabled())
 
 
-def _bearer_uid(request: Request) -> str | None:
+def _bearer_claims(request: Request) -> dict[str, Any] | None:
     raw = request.headers.get("authorization", "")
     if not raw.startswith("Bearer "):
         return None
@@ -121,9 +128,15 @@ def _bearer_uid(request: Request) -> str | None:
     if not secret:
         return None
     try:
-        return str(verify_token(raw[7:].strip(), secret=secret)["uid"])
+        claims = verify_token(raw[7:].strip(), secret=secret)
     except TokenError:
         return None
+    return claims if isinstance(claims, dict) else None
+
+
+def _bearer_uid(request: Request) -> str | None:
+    claims = _bearer_claims(request)
+    return str(claims["uid"]) if claims else None
 
 
 async def optional_record_uid(request: Request) -> str | None:
@@ -141,3 +154,25 @@ async def require_record_uid(request: Request) -> str:
     if uid is None:
         raise HTTPException(status_code=401, detail="缺少有效 Bearer token")
     return uid
+
+
+async def optional_union_uid(request: Request) -> str | None:
+    """识别端点用：取 token 里的跨端锚点；无 unionid / 无 token -> None。"""
+    if not _records_enabled():
+        return None
+    claims = _bearer_claims(request)
+    if not claims:
+        return None
+    value = claims.get("un")
+    return str(value) if isinstance(value, str) and value else None
+
+
+async def require_record_identity(request: Request) -> dict[str, Any]:
+    """跨端身份端点用：403=功能未启用，401=缺 token 或 token 无效。"""
+    if not _records_enabled():
+        raise HTTPException(status_code=403, detail="运动记录功能未启用")
+    claims = _bearer_claims(request)
+    if not claims:
+        raise HTTPException(status_code=401, detail="缺少有效 Bearer token")
+    return {"uid": str(claims["uid"]),
+            "union_uid": str(claims.get("un") or "")}
