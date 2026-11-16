@@ -4,9 +4,16 @@
 > GPS 坐标不在图片里。必须用图上印着的 POI 标注当锚点，把像素坐标映射到经纬度，
 > 再用真实路网约束校正。理解这一点，其余所有设计选择都是它的推论。
 
-本文档面向**接手继续开发的 AI / 工程师**。事实核对日期：2026-11-02，
-对应 commit `369afd8`。代码唯一真源仓库：`D:\Dev\track-buddy`
+本文档面向**接手继续开发的 AI / 工程师**。事实核对日期：2026-11-16，
+对应 commit `24d8d61`（工作区另有未提交改动，以实际仓库为准）。
+代码唯一真源仓库：`D:\Dev\track-buddy`
 （GitHub: `https://github.com/shadowprompt/track-buddy`，public，MIT）。
+
+> **项目现状（2026-11-16）**：已从「美团骑行截图识别」通用化为
+> **track-buddy 运动截图识别**（文案淡化骑行，来源 App 由「输入源画像」
+> 参数化，见 §23）；配套微信小程序已上线（登录走 gateway，记录存
+> 腾讯 COS），网页版与 CLI 同步可用。**下一个开发目标：接入其它运动
+> App 的截图来源（小米 / Keep / Garmin / Coros 等），路径见 §23。**
 
 ---
 
@@ -35,6 +42,7 @@
 21. [低缩放的本质边界](#21-低缩放的本质边界大模型用户补充底图匹配各自能做什么2026-11)
 22. [「轨迹跑到浦东」的根因与修复](#22-轨迹跑到浦东的根因与修复2026-11-03-新增)
     - [22.21 多图拼接：从「猜形状」到「量形状」](#2221-多图拼接从猜形状到量形状2026-11-05)
+23. [新增截图识别来源：Source Profile 扩展手册（给下一个 AI）](#23-新增截图识别来源source-profile-扩展手册给下一个-ai2026-11-16新增)
 
 ---
 
@@ -6693,3 +6701,310 @@ locate 一次都不调用）；全量 603 passed。未重启服务。
 覆盖 paired skip / off 强制跳过 / auto 默认 / 非法值 400 / multi
 prefer / prefer 命中不宣称真值 / 网页与小程序静态契约）；全量
 611 passed。未重启服务。
+
+### §22.67 COS 云记录、部署、unionId 对齐、gateway 统一登录、小程序上线（2026-11-15）
+
+§22.63 之后至小程序上线之间的整批改动（提交号以实际仓库为准，
+截至本节写入 HEAD 为 `24d8d61`）：
+
+**云存储与后端**（`5590615`、`2ae980e`）：
+
+* 运动记录存腾讯 COS（`src/app/records/`：keys/auth/store/service），
+  `uid = HMAC(RECORDS_TOKEN_SECRET, openid)[:32]` 分目录；带合法
+  Bearer 识别后**响应后的后台任务**自动保存，不带 token 一次 COS
+  调用都不发。7 项 `.env` 配置齐全才启用，未启用零回归。
+* 部署 `https://track.daozhao.com`（pm2 + Nginx）。**504 根因是
+  Nginx `proxy_read_timeout` 默认 60s**，与慢识别路径冲突；已按
+  README「反代超时与冷启动」对齐 600s。OCR 预热进 `run.py`
+  daemon 线程，COS 保存改 BackgroundTasks 并显式 Timeout。
+
+**unionId 跨端身份对齐**（`24d8d61`，参考 gateway 项目）：
+
+* uid 不换主键、零 COS 迁移；新增脱敏
+  `union_uid = "u_" + HMAC(secret, "union:" + unionid)[:32]`，
+  token claims 加可选 `un`（v 仍 1，旧 token 继续有效），meta 写
+  `union_uid`，别名索引 `{prefix}aliases/{union_uid}.json` 可重建。
+* `GET /api/records/identity` 只认 token 内 `un`，不接受客户端传参。
+* 🔴 `RECORDS_TOKEN_SECRET` 同时决定 uid 与 union_uid，**不可轮换**。
+
+**目录与文案**：仓库 `meituan-ride` → `track-buddy`、小程序目录
+`ridewx/` → `wxmin/`、布局 WIP 定稿入库（`7110c24`/`e6c381f`）；
+小程序字号全面上调（`7df1e6c`）、文案淡化「骑行」（`b444e87`）、
+网页版同步（`7325f45`）。
+
+**gateway 统一登录**（`gateway.daozhao.com.cn`，main 提交
+`004ec6d`）：
+
+* `wxService.js` 新增参数化 code2session + `TRACKBUDDY_WXMIN_*`
+  独立凭据组 + `getTrackBuddyWxminOpenId`；`POST /wxminTrackBuddy/login`
+  用镜像签发器 `trackBuddyRecordToken.js` 直发与 Python 侧**逐字节
+  兼容**的三段式 HMAC 记录 token（Python↔JS 交叉向量回归锁定）。
+* 小程序 `config.js` 加独立 `LOGIN_BASE_URL`（不动全局 BASE_URL），
+  `wxlogin()` 优先 gateway、网络故障/5xx/404 降级回
+  `/api/auth/wxlogin`，400/401 不降级。
+* 🔴 两侧 secret 必须逐字节相同；gateway 自 2026-11-15 起**统一加载
+  仓库根 `.env`**（不再按 NODE_ENV 区分 `.env.dev`/`.env.prod`）。
+
+**小程序上线（2026-11-15 已发布）**前后的三处功能调整：
+
+* 导出文件名以运动开始时间命名：`result.js` 新增 `exportBaseName`，
+  产出 `fitmemo-YYYYMMDD-HHMMSS.<ext>`；概要缺失回退
+  `trajectory*` 旧名（网页版/CLI 下载名不变）。
+* 导出分享面板加固：`doExport` 改 `fs.writeFileSync` 同步写保住
+  点击手势上下文（异步回调里调 `wx.shareFileMessage` 部分机型拒弹）；
+  低版本基础库升级提示；fail 区分「用户取消」与真错误。导出到手机
+  的唯一通道是分享面板发「文件传输助手」；文件实际存于
+  `wx.env.USER_DATA_PATH` 沙箱，工具里不支持该 API 属正常。
+* **轨迹纠正暂时下线**：`wx.chooseLocation` 需在微信公众平台额外
+  申请——`result.wxml` 纠正卡片、`result.js` 三个处理函数、
+  `app.json` 的 `requiredPrivateInfos`/`scope.userLocation` 全部
+  移除（恢复步骤写在 result.js 注释里）；后端 `/api/feedback` 与
+  词典逻辑、网页版纠正不受影响。
+
+**上线验证**：登录（gateway 签发）、识别、云端记录列表/详情/删除、
+GPX/TCX/GeoJSON 导出全链路真机可用。
+
+
+---
+
+## 23. 新增截图识别来源：Source Profile 扩展手册（给下一个 AI，2026-11-16 新增）
+
+> 本章是**下一个开发目标的操作手册**：给小米 / Keep / Garmin / Coros
+> 等运动 App 接入截图识别。读完本章 + §3（架构）+ §4（坐标系） +
+> §11（排障）即可开工，不必通读全文。
+
+### 23.1 核心判断：下游复用，上游每 App 一套
+
+识别链路天然分两层（决策依据见 `src/app/source_profile.py` 模块
+docstring 与 §22.64）：
+
+| 层 | 内容 | 新来源要改吗 |
+|---|---|---|
+| **下游（与来源无关）** | 多图拼接（SIFT / llm / llm_guided）、轨迹模板飞轮、地名 OCR、地理编码、路网精修、GeoJSON/GPX/TCX 导出、COS 云记录 | **零改动复用** |
+| **上游（与来源绑定）** | 轨迹线掩膜阈值、起/终徽章 HSV、形态学核、RANSAC 内点容差、里程/概要 OCR 词表 | **每个 App 一套参数**，互斥不能混用 |
+
+例：美团轨迹是浅荧光绿（`V>200 且 S<90` 可提取），高德是亮蓝色系，
+参数完全互斥——这正是 Source Profile 这一层存在的原因。
+
+### 23.2 改动清单（以「新增 amap」为例，共一个文件 + 若干测试）
+
+**唯一必须改的代码文件：`src/app/source_profile.py`**
+
+1. 在 `PROFILES` 注册表加条目（⚠️ **只允许已标定的画像**，不放未
+   标定占位——切到盲参数等于全链路瞎跑）：
+
+```python
+AMAP = SourceProfile(
+    id="amap",                      # source 入参 / SOURCE_PROFILE 环境变量取值
+    title="高德运动",                # 前端与诊断展示名
+    vision=VisionConfig(...),       # 按真实截图标定，不要抄美团默认值
+    distance_positive=(...),        # 里程正面词（命中则块内数字优先）
+    distance_negative=(...),        # 里程干扰词（命中整块排除）
+    ride_labels=(...),              # 运动概要页的「本次」字段标签
+)
+PROFILES["amap"] = AMAP
+```
+
+2. `resolve_source_profile` / `/api/health` 的
+   `source_profile.available` / 网页版与小程序的来源选择器**自动
+   生效，无需改动**（它们都读注册表）。
+
+**`VisionConfig` 字段标定指南**（定义在 `config.py:99`，默认值是
+美团标定结果，新画像在 `VisionConfig(...)` 里覆盖）：
+
+| 参数 | 标定方法 | 美团参考值 |
+|---|---|---|
+| `track_max_value` / `track_max_saturation` | 对样本截图统计轨迹像素 HSV 分布，目标是「只提轨迹线，避开彩色虚线/文字/底图」 | V≤200 且 S≤90（浅荧光绿） |
+| `start_hsv_range` / `end_hsv_range(+2)` | 起/终徽章图标色相区间，用真实徽章像素采样 | 起绿(35-85) / 终红(0-12, 170-179) |
+| `badge_min_area` / `badge_max_area` | 徽章实际像素面积 × 安全系数（虚线碎片 150-230，徽章 4000+） | 1500–20000 |
+| `track_close_kernel` / `track_open_kernel` | 闭运算跨断点、开运算滤细笔画；按轨迹线宽（美团 8-10px）调 | 11 / 5 |
+| `ransac_inlier_m` | 底图 POI 文字标注中心与真实点位的固有偏移决定 | 200 米（偏移 7-28px ≈ 35-150 米） |
+| `ocr_min_score` | OCR 置信度下限，按目标 App 字体清晰度 | 0.55 |
+
+**OCR 词表**（`distance_positive/negative`、`ride_labels`）：
+收集目标 App 的里程文案与**运营干扰文案**（累计值、广告、会员）。
+`ride_summary` 的语义映射是通用的——含「骑行/里程」→ 本次距离、
+「消耗/卡」→ 卡路里、「碳」→ 减碳克数；只有标签**文案**需要按
+App 填（美团：「本次骑行/本次消耗/本次减碳」）。
+
+### 23.3 标定样本要求（瓶颈所在，先收集再动代码）
+
+- **5-10 张真实截图**：概览单图 + 沿路线滑动的细节图（多图模式）、
+  不同缩放级别、至少一条**有对照真值**的路线（在真实地图上手动
+  描一遍真轨迹，或用同路线 GPX）。
+- **运动概要页截图**若干（测 `ride_labels` 与时间正则）。
+- 评测命令：`python -m app.eval`（合成基准）+ CLI 单图跑真实样本，
+  看 `overlay_result.png`（轨迹叠回截图）与 `road_verify.png`
+  （路网校验）人工核对——这两个产出是标定是否成功的直接判据。
+
+### 23.4 生效机制（不用改，但要懂）
+
+- **优先级**：请求级入参 `source`（表单字段，server.py 的
+  `_active_source` 依赖）> 环境变量 `SOURCE_PROFILE`（默认
+  `meituan`）。未知 id 直接报错列出可用值，**绝不静默回退**。
+- 画像通过 **ContextVar**（`active_source_profile`）在请求处理期间
+  生效，`CONFIG.source` / `CONFIG.vision` 自动跟随——识别链路读取点
+  零改动。单进程可同时服务多来源请求。
+- ⚠️ **后台线程不继承 ContextVar**：路网精修线程（`server._run_refine`）
+  已在入口显式重建画像上下文；新加后台线程时必须照做
+  （`activate_profile_globally`）。
+- **模板库按画像隔离**（`route_template.py` 的 `profile` 字段）：
+  美团模板永远不会命中其它 App 截图；模板召回另有三道门
+  （residual/coverage/方向签名，见 §22.65 事故与
+  `test_template_recall_guard.py`），`skip_template_recall` 与
+  `template=auto/prefer/off` 入参对所有画像统一生效。
+
+### 23.5 验收清单（全部绿灯才算接入完成）
+
+1. `tests/test_source_profile.py` / `test_source_param.py` 扩展：
+   新画像解析、入参切换、未知 id 报错文案。
+2. 真实样本单图识别：轨迹形状正确、`road_verify` 重合、置信度合理。
+3. 多图模式（带细节图）+ 运动概要截图：`ride_summary` 各字段解析
+   正确、里程交叉校验（0.6–1.7 区间）通过。
+4. 模板隔离测试：新画像截图不命中美团模板（反之亦然）。
+5. `/api/health` 的 `source_profile.available` 出现新 id；网页版
+   与小程序来源选择器直接可选（零改动）。
+6. 全量 `pytest -q` 无回归（当前基线 **654 passed / 5 warnings**，
+   2026-11-15；沙箱拦 Temp 时用 `--basetemp=/tmp/wb_xxx_$(date +%s)`）。
+7. 文档同步：本节加一行接入记录 + README「输入源画像」更新注册状态。
+
+### 23.6 硬约束（违反即返工，详图见对应章节）
+
+- **坐标系**（§4）：内部全程 GCJ-02，**交付文件（GeoJSON/GPX/TCX）
+  必须 WGS-84**；底图同源地理编码才可收紧 RANSAC 容差。
+- **地理编码单源天地图**（`MAP_GEOCODING_ORDER`、`TIANDITU_API_KEY`）：
+  🔴 高德配额已尽，**不要**建议或尝试接入高德在线编码。
+- **合规**（§14）：只用截图上印着的公开 POI 文案，不逆向地图瓦片。
+- 概要时间解析：东八区固定 +8h 转 UTC（中国无夏令时），导出层契约
+  不动；OCR 正则已兼容粘连文本（`2026-11-1120:20:26` 类）。
+
+### 23.7 协作约定（与用户已确认的工作方式）
+
+- **一次一项**：按清单逐步推进，完成一步提交一次；先完整分析再实施。
+- 🔴 **服务器由用户自己重启**：不要 kill/start 8848、不要起临时端口
+  做 health 验证；本地验证只用 pytest / 纯函数调用。
+- 统一解释器 `D:/soft/Python311/python.exe`（3.11.4，已装
+  rapidocr-onnxruntime 1.4.4 + opencv-python 4.13；**不要**在该环境
+  `pip install -r requirements.txt`，cv2 会混装冲突）。
+- `.env` 与运行期数据不提交；新增脚本一律放 `src/tools/`
+  （`test_project_layout.py` 禁止仓库根出现 `tools/`）。
+- 每日日志追加两处：`D:\Users\hxiong\Dropbox\memoHub\track-buddy\YYYY-MM-DD.md`
+  与工作区 `.workbuddy/memory/YYYY-MM-DD.md`。
+- 输出偏好：中文、结构清晰、标优先级（🔴🔴🟡）、要可直接部署的代码。
+
+### 23.8 接入记录：amap（高德运动）初版（2026-11-16）
+
+**状态：代码侧已接入，参数为初版估计值，待真实样本精标。**
+本章 23.3 的「先收集样本再动代码」流程被用户决策调整为
+「先注册初版画像 → 用户网页实测 → 样本回传精标」迭代模式，
+故 amap 是注册表里第一个**非全标定**画像（代码注释与测试均已
+显式标注，防止误当已精标）。
+
+改动清单：
+
+| 文件 | 内容 |
+|---|---|
+| `src/app/source_profile.py` | 注册 `AMAP`：区间式轨迹掩膜 `(95,120,150,120,255,255)`（高饱和亮蓝 #1677FF 系），徽章沿用起绿/终红假设，里程词表按高德文案估计 |
+| `src/app/config.py` | `VisionConfig` 新增可选字段 `track_hsv_range`（None=美团上限式，区间式优先；默认值行为零变化） |
+| `src/app/track.py` | `build_track_mask` 支持双模式：`cv2.inRange` 区间式 / 上限式 |
+| `src/tools/calibrate_profile.py` | **新增**标定 CLI：全景 HSV 统计（`--hue` 色相带细分 / `--badges` 徽章候选 / `--profile` 掩膜覆盖率复核） |
+| `tests/test_source_profile.py` | 锁定 amap 初版参数锚点 + 双掩膜模式行为测试；反例 id 从 amap 换成 keep |
+| `tests/test_source_param.py` | 同上：400 反例换成 keep |
+
+验收状态（§23.5）：①⑤⑥ 已过（pytest 全量无回归）；②③④（真实样本
+识别 / 多图+概要 / 模板隔离实测）**待用户网页测试回传样本后执行**。
+
+精标流程（拿到高德真实截图后）：
+
+```bash
+python src/tools/calibrate_profile.py samples/amap_1.jpg --hue 100 115
+python src/tools/calibrate_profile.py samples/amap_1.jpg --badges
+python src/tools/calibrate_profile.py samples/amap_1.jpg --profile amap
+```
+
+读 S/V 分位数（p5 留 10-20 余量做下限）回改 `AMAP` 的
+`track_hsv_range` / 徽章 HSV / 面积阈值，再更新
+`test_amap_profile_initial_params_locked` 锚点。
+
+### 23.9 amap 真实样本精标 + 多图链路修复（2026-11-16 当日）
+
+用户用网页版试了高德 8 图多图识别（上海 3.68km 骑行），失败现场
+`data/last_result.json`（「轨迹提取失败：掩膜为空」）。逐层排查出
+**三个根因**，全部修复：
+
+1. **轨迹不是蓝色，是速度渐变线**。高德轨迹按速度着色：
+   红（最慢）→橙→黄→绿（最快），详情页底部图例条就是同款渐变。
+   初版假设的亮蓝（#1677FF）完全错误。实测标定（工具
+   `tools/calibrate_profile.py` + 掩膜可视化人工核对）：
+   - 主体橙红黄带 `H[8,30] S≥150`（S p25≈191；H[80-89] 的 15.5 万
+     高饱和像素全是 UI 按钮，不是轨迹）；
+   - 快速段绿带 `H[35,70] S≥180`（薄荷绿公园 S≈50-90 被排除）；
+   - **终点红标 #E94340 在 H[0,7]**，与轨迹红段 H[8,30] 天然错开，
+     徽章范围上界压到 7 即不串扰；洋红端 end_hsv_range2 必须关闭
+     （H[170,179] 命中详情页红心装饰）。
+   - `track_hsv_range` 因此扩展为**多色带并集**（6 元组的元组），
+     `build_track_mask` 对各带分别 `inRange` 后取并。
+
+2. **整屏截图的 UI 卡片与轨迹同色系**。高德截图地图区只占上部
+   ≈40%，下方卡片里的速度图例条（同款渐变）、红心装饰、内嵌地图的
+   视频缩略图全部污染掩膜/徽章/SIFT。修复：`VisionConfig` 新增
+   `map_crop_v=(top,bottom)` 比例裁剪，`server` 在**拼接前逐图**裁出
+   地图区（高德实测 `y∈[6.5%,44%]`）；概要页走独立通道不受影响；
+   None=不裁（美团零变化）。
+
+3. **里程牌 + 接缝把轨迹切成多段，旧「单一连通域」假设失效**。
+   3KM/2KM/1KM 白底胶囊与拼接接缝把轨迹切成 3-5 段，旧逻辑只取
+   最大段丢 30-40% 路线。修复：`track.py` 新增
+   `_merge_track_fragments`（端点邻近串接：从徽章碎片/最大段出发，
+   反复并入「距链端点 ≤ bridge_gap」的线状碎片，宁缺勿错接）；
+   单徽章画布（细节图无起终点圆点）新增拓扑豁免——像素级贴住现有
+   徽章且长宽比 ≥2.5 时跳过「宽≈图宽」误杀。
+   ⚠️ 两个防回归闸门（腾讯截图实测教训，`test_user_tencent_shots_rejected`
+   锁定）：双徽章时 `_select_with_markers` 的拒绝不能被串接翻案，
+   除非串接链像素级贴住**两端**；单徽章豁免必须同时要求形状像线。
+
+修复后离线复现（同 8 图）：裁剪 → SIFT 拼接 7.5s → 轨迹 5055 点
+全程贴合（含红色终点标到 1KM 后的对角段）。待用户网页端验证完整
+识别（OCR 锚点 → 配准 → 路网精修）。
+
+**✅ 2026-11-16 14:37 网页复测通过**：8/8 图拼接，north_up 5 内点
+RMSE 95.4m，路网精修平移 东+115m/北+20m 贴路中位 31m→4m，几何里程
+3652.6m ≈ App 显示 3.68km，落点长宁区（新渔路/天山西路等）与路名
+归属吻合，用户确认轨迹正确。amap 首次端到端成功。
+
+排查时两个小插曲（记录给后来者）：
+- 13:39 前一次失败（10:14）是**页面旧 + 画像没切**：请求 source 走了
+  meituan 默认。诊断方法：`last_result.json` 的
+  `diagnostics.source.id`（读请求级 ContextVar，准确）+ 拼接画布是否
+  残留 UI 卡片（amap 画像会裁掉）。
+- **里程牌污染里程 OCR**（已修）：拼接画布上带 km 的 OCR 文本只有
+  轨迹里程牌「3KM/2KM/1KM」，`extract_distance_km` 取中位 = 2.0，
+  与几何 3.65km 比值 1.826 误报、置信度被压到 0.2（结果本身是对的）。
+  修复：`input_quality.py` 排除纯整数+KM 的无上下文标签
+  （`_MILESTONE_RE`，真实里程总带小数或文案上下文），回归测试
+  `test_extract_distance_ignores_track_milestone_labels`。另：
+  `anchors_used` 在 payload **顶层**（不在 diagnostics 里），前端读的
+  就是顶层字段——排查时别看错位置。
+
+**⚠️ 配对注册画像漏传（2026-11-16 16:12 修复，重要经验）**：多图成功
+后补传概览「下次单图复用」的飞轮第一次实测就断了——单图上传没命中
+模板，走了完整识别还给出错误定位（north_up_2pt 2 内点 RMSE 455m，
+落点偏到人民广场）。根因：`_capture_paired_template` 收了
+`profile_id` 参数但调 `register_pair` 时**漏传** `profile`，空串被
+`_norm_profile` 回落成默认 meituan——amap 真值注册的模板盖上美团
+的章，召回时被画像隔离过滤（`find_similar` 的 profile 过滤）。
+修复三层：① server.py 补传 `profile=profile_id`；② 数据修复：把
+`tpl_1794799987_36aa98b9`（shot_id 1794799494_c36f39d3，amap 真值）
+的 profile 改回 amap（备份
+`route_templates.json.bak-20261116-profilefix`）；③ 回归测试
+`test_paired_template_stamps_request_profile`（端到端：source=amap
+注册 → 模板 profile=amap）+ `test_paired_template_recall_is_profile_
+isolated`（召回侧隔离）。修复后离线验证：同张概览图召回命中
+residual 0.0022 / coverage 1.0。
+**教训**：新增「请求级参数 → 后台/旁路任务」的透传链时，链上每一跳
+都要核对——ContextVar 只活在请求 task 里，显式传参的函数内部还要
+继续传下去才算到位。
+
+**经验**：接入新来源前先拿 1 张真实截图跑 `calibrate_profile.py`
+统计 + 掩膜可视化人工核对，比按公开视觉特征估计靠谱得多——
+「高德轨迹是蓝色」就是想当然的产物。

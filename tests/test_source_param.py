@@ -63,7 +63,7 @@ def test_active_profile_none_clears_override() -> None:
 
 def test_unknown_profile_id_raises_with_available_list() -> None:
     with pytest.raises(ValueError) as ei:
-        resolve_source_profile("amap")
+        resolve_source_profile("keep")
     assert "meituan" in str(ei.value)
 
 
@@ -222,9 +222,9 @@ def test_recognize_rejects_unknown_source(server_stub) -> None:
     r = client.post(
         "/api/recognize",
         files=[("file", ("overview.jpg", _jpg(), "image/jpeg"))],
-        data={"source": "amap"})
+        data={"source": "keep"})
     assert r.status_code == 400
-    assert "amap" in r.json()["detail"] and "meituan" in r.json()["detail"]
+    assert "keep" in r.json()["detail"] and "meituan" in r.json()["detail"]
 
 
 def test_recognize_without_source_uses_env_default(server_stub) -> None:

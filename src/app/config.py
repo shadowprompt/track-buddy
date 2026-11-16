@@ -116,6 +116,20 @@ class VisionConfig:
     # 轨迹线掩膜：低饱和 + 中等亮度，避免选中彩色虚线与文字
     track_max_value: int = 200
     track_max_saturation: int = 90
+    # 可选的**区间式**轨迹掩膜。两种形态：
+    #   单色带 (h_lo, s_lo, v_lo, h_hi, s_hi, v_hi)；
+    #   多色带（6 元组的元组，各带取并集）——服务于「速度渐变线」
+    #   （高德运动：红→橙→黄→绿，一条轨迹横跨多个色相带）。
+    # OpenCV HSV 取值域（H 0-179 / S 0-255 / V 0-255）。为 None 时走上面的
+    # 上限式掩膜（美团浅荧光绿：低饱和高亮）。两种模式互斥：区间式优先。
+    # 字段归属画像参数，新增来源在 SourceProfile 里覆盖。
+    track_hsv_range: tuple | None = None
+
+    # 可选的**地图区垂直裁剪** (top_frac, bottom_frac)：保留整图高度的
+    # 该行区间。高德等 App 的地图截图是整屏截图，下方 UI 卡片与轨迹
+    # 同色系（速度图例条/红心/内嵌地图缩略图），会在拼接前逐图裁掉，
+    # 见 ``cv_utils.crop_map_region``。None = 不裁（美团默认，零变化）。
+    map_crop_v: tuple | None = None
     # 闭运算核：跨过道路描边造成的断点
     track_close_kernel: int = 11
     # 开运算核：细长笔画（文字笔画宽约 2-3px）被滤掉，轨迹线宽约 8-10px

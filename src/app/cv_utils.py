@@ -43,6 +43,30 @@ def disk_kernel(size: int) -> np.ndarray:
     return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
 
 
+def crop_map_region(img: np.ndarray, cfg) -> np.ndarray:
+    """按画像的 ``map_crop_v`` 裁出地图区，去掉截图下方的 App UI 卡片。
+
+    **为什么需要**：高德等 App 的地图截图是整屏截图，地图只占上部约
+    40%，下方是概要卡片 / 运营横幅 / 按钮——这些 UI 元素与轨迹**同色系**
+    （速度图例条就是同款红→橙→绿渐变、红心装饰、内嵌地图的视频缩略图），
+    会污染轨迹掩膜、徽章检测，还会用相同的卡片特征把 SIFT 拼接带偏。
+    美团截图无此冲突，``map_crop_v`` 为 ``None`` 时原样返回（零变化）。
+
+    ``map_crop_v = (top_frac, bottom_frac)``：保留行区间
+    ``[top_frac*H, bottom_frac*H)``（比例相对整图高度，越界自动钳制）。
+    只用于**地图截图**；概要页 OCR 走独立通道，不经过本函数。
+    """
+    frac = getattr(cfg, "map_crop_v", None)
+    if not frac:
+        return img
+    h = img.shape[0]
+    y0 = max(0, int(round(float(frac[0]) * h)))
+    y1 = min(h, int(round(float(frac[1]) * h)))
+    if y1 - y0 < 16:  # 防御：比例配错时宁可放弃裁剪也不返回空图
+        return img
+    return img[y0:y1].copy()
+
+
 def find_marker(
     hsv: np.ndarray,
     ranges: list[tuple[int, int, int, int, int, int]],

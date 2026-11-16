@@ -20,6 +20,13 @@ import statistics
 from typing import Any, Iterable
 
 _DISTANCE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(公里|千米|km|KM|Km)")
+# 轨迹里程牌（高德轨迹自带的「3KM / 2KM / 1KM」剩余里程标记）：纯整数
+# + km 的**无上下文**短标签。真实里程读数总带小数精度或文案上下文
+# （「3.68千米」「里程 4.2 公里」「本次 10.5公里」）；把里程牌当总里程
+# 读进来，多个标记取中位数会被拖偏——实测 1/2/3 取中位 = 2.0，触发
+# 比值 1.826 误报、置信度被无谓压到 0.2。纯标签一律排除，任何来源
+# 通用（美团等底图若有同款标记同样受益）。
+_MILESTONE_RE = re.compile(r"^\d+\s*(?:km|KM|Km)$")
 # 里程上下文词表跟随输入源画像（``CONFIG.source``，唯一来源见
 # ``app/source_profile.py``）：美团文案是「骑行 / 已骑 / 封顶」，高德等
 # 来源的页面文案不同，各画像自备一套。
@@ -63,6 +70,8 @@ def extract_distance_km(texts: Iterable[Any]) -> float | None:
     found: list[tuple[int, float]] = []
     for item in texts or []:
         s = item if isinstance(item, str) else str(getattr(item, "text", "") or "")
+        if _MILESTONE_RE.match(s.strip()):
+            continue  # 里程牌（3KM/2KM/1KM），不是骑行总里程
         if neg_re.search(s):
             continue
         priority = 1 if pos_re.search(s) else 0

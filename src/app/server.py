@@ -32,7 +32,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import records
 from .config import CONFIG, DATA_DIR, ROOT, SRC_ROOT, load_dotenv
-from .cv_utils import imread_unicode
+from .cv_utils import crop_map_region, imread_unicode
 # 保留这个模块级别名：既有回归测试通过 monkeypatch `server.stitch_images`
 # 注入假拼接结果，默认 SIFT 路径必须继续走它。
 from .multishot import stitch as stitch_images
@@ -589,6 +589,10 @@ def _capture_paired_template(
             # input_quality 是画布 OCR 的属性，与「概览↔真值」配对的可信
             # 度无关，配对路径恒按通过处理（死锁 C 的解除）。
             input_ok=True,
+            # ⚠️ 画像必须透传：漏传会让空串被 _norm_profile 回落成默认
+            # meituan——amap 真值注册的模板盖上美团的章，召回时被画像
+            # 隔离过滤掉，「概览单图复用模板」永远打不中（2026-11-16 实测）。
+            profile=profile_id,
         )
     except Exception as exc:  # noqa: BLE001 — 配对注册是附加能力
         return {"written": False, "reason": f"error:{type(exc).__name__}"}
@@ -756,6 +760,10 @@ async def recognize_multi(
             img = imread_unicode(shot_path)
         except (ValueError, FileNotFoundError) as exc:
             raise HTTPException(status_code=400, detail=f"图片解析失败: {exc}") from exc
+        # 画像带 map_crop_v 时逐图裁出地图区再拼接：App UI 卡片与轨迹
+        # 同色系（高德速度图例条/红心/缩略图），留着会污染掩膜并让
+        # SIFT 拿相同的卡片特征乱配（实测 8 图画布徽章全部误检）。
+        img = crop_map_region(img, profile.vision)
         saved.append((shot_id, shot_path))
         imgs.append(img)
 
@@ -996,6 +1004,8 @@ async def recognize(
         img = imread_unicode(shot_path)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=f"图片解析失败: {exc}") from exc
+    # 画像带 map_crop_v 时裁出地图区（概要页走独立通道，不经过这里）
+    img = crop_map_region(img, profile.vision)
 
     # 城市级低缩放截图的路网精修要联网拉路网（实测 40-80 秒），
     # 放在主流程里会让识别请求长时间挂起。这里改成：
@@ -1036,10 +1046,11 @@ async def recognize(
             _, sp = _save_upload(d, f.filename)
             detail_paths.append(sp)
             try:
-                imgs.append(imread_unicode(sp))
+                dimg = imread_unicode(sp)
             except (ValueError, FileNotFoundError) as exc:
                 raise HTTPException(
                     status_code=400, detail=f"细节图解析失败: {exc}") from exc
+            imgs.append(crop_map_region(dimg, profile.vision))
         if imgs:
             paired_mode = True
             n_details = len(imgs)

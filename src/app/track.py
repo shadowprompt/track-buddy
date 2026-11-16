@@ -102,13 +102,44 @@ def detect_markers(
 def build_track_mask(
     img: np.ndarray, cfg: VisionConfig, scale: Scale | None = None
 ) -> np.ndarray:
-    """构造轨迹线候选掩膜；形态学核按轨迹线宽自适应。"""
+    """构造轨迹线候选掩膜；形态学核按轨迹线宽自适应。
+
+    两种掩膜模式（互斥，区间式优先）：
+
+    * **区间式** ``cfg.track_hsv_range``：``cv2.inRange`` 按完整 HSV
+      区间圈定，适合高德等彩色渐变轨迹。支持两种形态——单个 6 元组
+      ``(h_lo, s_lo, v_lo, h_hi, s_hi, v_hi)``，或**多色带**（6 元组的
+      元组，各带取并集）；后者服务于「速度渐变线」这类一条轨迹横跨
+      多个色相带的来源（高德：红→橙→黄→绿）。
+    * **上限式**（美团默认）：``V < track_max_value 且 S <
+      track_max_saturation``，提浅荧光绿这类低饱和高亮线。
+    """
     if scale is None:
         scale = Scale.from_image(img)
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    v = hsv[:, :, 2]
-    s = hsv[:, :, 1]
-    mask = ((v < cfg.track_max_value) & (s < cfg.track_max_saturation)).astype(np.uint8)
+    rng = getattr(cfg, "track_hsv_range", None)
+    if rng is not None:
+        bands = rng if rng and isinstance(rng[0], (tuple, list)) else (rng,)
+        if len(bands) == 1:
+            mask = cv2.inRange(
+                hsv,
+                np.array(bands[0][:3], np.uint8),
+                np.array(bands[0][3:6], np.uint8),
+            )
+        else:
+            parts = [
+                cv2.inRange(hsv, np.array(b[:3], np.uint8), np.array(b[3:6], np.uint8))
+                for b in bands
+            ]
+            mask = parts[0]
+            for part in parts[1:]:
+                mask = cv2.bitwise_or(mask, part)
+    else:
+        v = hsv[:, :, 2]
+        s = hsv[:, :, 1]
+        mask = ((v < cfg.track_max_value) & (s < cfg.track_max_saturation)).astype(
+            np.uint8
+        )
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, disk_kernel(scale.close_kernel))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, disk_kernel(scale.open_kernel))
     return mask
@@ -209,6 +240,123 @@ def _select_with_markers(
     return comp, (x0, y0, x1 - x0, y1 - y0)
 
 
+def _merge_track_fragments(
+    labels: np.ndarray,
+    stats: np.ndarray,
+    count: int,
+    scale: Scale,
+    badge_pts: list[tuple[int, int]],
+) -> tuple[np.ndarray | None, tuple[int, int, int, int] | None]:
+    """把被里程牌 / 拼接接缝切断的轨迹碎片按「端点邻近」串成一条链。
+
+    ## 为什么需要（2026-11-16 高德实测）
+
+    高德轨迹上盖着 3KM/2KM/1KM 白底胶囊里程牌，加上拼接接缝，会把
+    轨迹线切成 3-5 段互不连通的碎片。美团的「单一连通域 + 两端补线」
+    假设在这里失效——只取最大段会丢掉 30-40% 的路线。
+
+    ## 策略
+
+    1. 候选碎片：面积 ≥ ``min_area`` 且（线状 或 贴住某个徽章）；
+    2. 种子：有徽章时取徽章像素级最近的碎片，否则取面积最大的线状碎片；
+    3. 迭代：反复把「距当前链任一端点 ≤ ``bridge_gap``」的最近碎片
+       并入，并按轨迹线宽画连接线；没有可并的即停（宁缺勿错接）。
+
+    候选池被画像掩膜先行净化（高德橙/绿色带基本只剩轨迹与徽章），
+    端点邻近 + 距离上限双保险防止把平行道路碎片错接进来。
+    """
+    cands: dict[int, tuple[int, int, int, int]] = {}
+    for i in range(1, count):
+        area = int(stats[i][4])
+        if area < scale.min_area:
+            continue
+        x, y, w, h = (int(stats[i][0]), int(stats[i][1]),
+                      int(stats[i][2]), int(stats[i][3]))
+        fill = area / float(max(w * h, 1))
+        near_badge = any(
+            bbox_distance((x, y, w, h), bp) <= scale.coarse_dist for bp in badge_pts
+        )
+        # 面状团块（绿地/色块/图例条）不当碎片：既不细长也不贴徽章
+        if fill > 0.42 and (w / max(h, 1)) < 2.0 and not near_badge:
+            continue
+        cands[i] = (x, y, w, h)
+    if not cands:
+        return None, None
+
+    def pixels(i: int) -> np.ndarray:
+        x, y, w, h = cands[i]
+        ys, xs = np.where(labels[y:y + h, x:x + w] == i)
+        return np.column_stack([xs + x, ys + y]).astype(float)
+
+    trees = {i: cKDTree(pixels(i)) for i in cands}
+
+    # --- 种子选择 ---
+    if badge_pts:
+        best_i, best_d = None, float("inf")
+        for i, tree in trees.items():
+            for bp in badge_pts:
+                d = float(tree.query([list(bp)])[0][0])
+                if d < best_d:
+                    best_i, best_d = i, d
+        if best_i is None or best_d > scale.touch_dist * 3.0:
+            seed = max(cands, key=lambda i: int(stats[i][4]))
+        else:
+            seed = best_i
+    else:
+        seed = max(cands, key=lambda i: int(stats[i][4]))
+
+    chain_ids = {seed}
+    chain_pts = pixels(seed)
+    bridges: list[tuple[np.ndarray, np.ndarray]] = []  # (链端点, 碎片点)
+
+    def tips_of(pts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """链的两端：主轴投影的极值点。"""
+        ctr = pts.mean(axis=0)
+        q = pts - ctr
+        _, _, vt = np.linalg.svd(q, full_matrices=False)
+        axis = vt[0]
+        proj = q @ axis
+        return pts[int(np.argmin(proj))], pts[int(np.argmax(proj))]
+
+    for _ in range(12):  # 碎片数有限，防意外死循环
+        remaining = [i for i in cands if i not in chain_ids]
+        if not remaining:
+            break
+        tip_a, tip_b = tips_of(chain_pts)
+        tree_tips = cKDTree(np.vstack([tip_a, tip_b]))
+        best = None  # (dist, cand_id, 链端点, 碎片最近点)
+        for i in remaining:
+            dist, idx = trees[i].query(tree_tips.data)
+            k = int(np.argmin(dist))
+            if best is None or dist[k] < best[0]:
+                best = (float(dist[k]), i,
+                        tree_tips.data[k], trees[i].data[int(idx[k])])
+        if best is None:
+            break
+        dist, i, tip_pt, cand_pt = best
+        # 允许空隙以「当前链两端跨度」为尺度自适应（两个方向等价，取一次）
+        gap = scale.bridge_gap(
+            (int(tip_a[0]), int(tip_a[1])), (int(tip_b[0]), int(tip_b[1]))
+        )
+        if dist > gap:
+            break  # 剩余碎片都太远：宁缺勿错接
+        bridges.append((tip_pt, cand_pt))
+        chain_ids.add(i)
+        chain_pts = np.vstack([chain_pts, pixels(i)])
+
+    comp = np.zeros(labels.shape, np.uint8)
+    for i in chain_ids:
+        comp[labels == i] = 1
+    for pa, pb in bridges:
+        cv2.line(comp, (int(pa[0]), int(pa[1])),
+                 (int(pb[0]), int(pb[1])), 1, scale.bridge_width)
+    x0 = min(cands[i][0] for i in chain_ids)
+    y0 = min(cands[i][1] for i in chain_ids)
+    x1 = max(cands[i][0] + cands[i][2] for i in chain_ids)
+    y1 = max(cands[i][1] + cands[i][3] for i in chain_ids)
+    return comp, (x0, y0, x1 - x0, y1 - y0)
+
+
 def _select_component(
     mask: np.ndarray,
     start_pt: tuple[int, int] | None,
@@ -217,9 +365,10 @@ def _select_component(
 ) -> tuple[np.ndarray | None, tuple[int, int, int, int] | None]:
     """挑选轨迹连通域。
 
-    有徽章时走 `_select_with_markers`（拓扑 + 接缝补线）；
-    无徽章时退化为「取面积最大的细长连通域」。
-    `scale` 为空时按掩膜尺寸自建（供独立调用 / 实验脚本使用）。
+    有双徽章时先走 `_select_with_markers`（拓扑 + 接缝补线）；失败或
+    徽章不全时走 ``_merge_track_fragments``（碎片串接，应对里程牌/接缝
+    把轨迹切成多段的高德式截图）。`scale` 为空时按掩膜尺寸自建
+    （供独立调用 / 实验脚本使用）。
     """
     if scale is None:
         scale = Scale.from_image(mask)
@@ -227,28 +376,29 @@ def _select_component(
     if count < 2:
         return None, None
     if start_pt and end_pt:
-        return _select_with_markers(
+        res = _select_with_markers(
             mask, labels, stats, count, start_pt, end_pt, scale
         )
-
-    cands: list[tuple[float, int]] = []
-    for i in range(1, count):
-        area = int(stats[i][4])
-        if area < scale.min_area:
-            continue
-        x, y, w, h = (int(stats[i][0]), int(stats[i][1]), int(stats[i][2]), int(stats[i][3]))
-        bbox = (x, y, w, h)
-        # 无徽章时用「细长程度」粗筛：线状连通域的填充率很低
-        fill = area / float(max(w * h, 1))
-        if fill > 0.42 and (w / max(h, 1)) < 2.0:
-            continue
-        cands.append((-float(area), i))
-    if not cands:
+        if res[0] is not None:
+            return res
+        # 双徽章场景：_select_with_markers 拒绝是有像素级测量依据的。
+        # 串接可以再试，但结果必须像素级贴住**两端**才算翻案成功，
+        # 否则维持拒绝语义（实测腾讯截图：误检徽章 + 底图色块正是
+        # 靠「只贴一端的串接链」混进来）。
+        merged = _merge_track_fragments(
+            labels, stats, count, scale, [start_pt, end_pt])
+        if merged[0] is not None:
+            ys, xs = np.where(merged[0] > 0)
+            tree = cKDTree(np.column_stack([xs, ys]).astype(float))
+            touches_both = all(
+                float(tree.query([list(bp)])[0][0]) < scale.touch_dist
+                for bp in (start_pt, end_pt)
+            )
+            if touches_both:
+                return merged
         return None, None
-    cands.sort(key=lambda t: t[0])
-    best = cands[0][1]
-    x, y, w, h = (int(stats[best][0]), int(stats[best][1]), int(stats[best][2]), int(stats[best][3]))
-    return (labels == best).astype(np.uint8), (x, y, w, h)
+    badges = [p for p in (start_pt, end_pt) if p]
+    return _merge_track_fragments(labels, stats, count, scale, badges)
 
 
 def extract_track(
@@ -336,6 +486,21 @@ def extract_track(
         if has_both:
             d_bb = bbox_distance(bbox, start_pt) + bbox_distance(bbox, end_pt)
             topo_ok = d_bb < scale.topo_dist
+        elif start_pt or end_pt:
+            # 单徽章（高德细节画布常见——细节图里没有起终点圆点，只有
+            # 概览才有）：像素级贴住现有徽章即视为拓扑通过。真实轨迹
+            # 一定从其终点徽章长出来，底图色块不会；否则横跨整幅拼接
+            # 画布的真实轨迹会被下面的 wide 判据必然误杀。
+            # ⚠️ 豁免必须同时要求形状像线（长宽比 ≥2.5）：误检徽章 +
+            # 底图团块的组合（实测腾讯截图）就是靠贴住徽章混进来的。
+            pts_xy = pts[:, ::-1] if len(pts) else np.zeros((0, 2))
+            if len(pts_xy):
+                tree_pts = cKDTree(pts_xy)
+                touches = all(
+                    float(tree_pts.query([list(bp)])[0][0]) < scale.touch_dist
+                    for bp in (start_pt, end_pt) if bp
+                )
+                topo_ok = touches and ratio >= 2.5
 
         # 形状判据（仅在缺徽章时生效）：
         #   wide：横跨整幅图 —— 单图里的骑行轨迹不该这么宽

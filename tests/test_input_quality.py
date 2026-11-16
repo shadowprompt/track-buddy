@@ -36,6 +36,22 @@ def test_extract_distance_uses_median_and_filters_unreasonable():
     assert extract_distance_km([_Text("0.01公里"), _Text("9999 km")]) is None
 
 
+def test_extract_distance_ignores_track_milestone_labels():
+    """轨迹里程牌（纯整数+KM 的无上下文标签）不是骑行总里程。
+
+    回归：2026-11-16 高德 8 图实测，「3KM/2KM/1KM」三个里程牌取中位
+    = 2.0，与几何里程 3.65km 比值 1.826 触发误报、置信度被压到 0.2。
+    """
+    # 只有里程牌 → 视为「截图未识别到里程」，跳过尺度校验而不是误报
+    assert extract_distance_km(["3KM", "2KM", "1KM"]) is None
+    assert extract_distance_km([_Text("3KM"), _Text("2 KM")]) is None
+    # 带上下文或小数的读数不受影响
+    assert extract_distance_km(["骑行 3.68千米"]) == 3.68
+    assert extract_distance_km([_Text("2.0km")]) == pytest.approx(2.0)
+    # 里程牌混在有上下文的真值里：真值仍被读出
+    assert extract_distance_km(["3KM", "2KM", _Text("里程 4.2公里")]) == 4.2
+
+
 def test_scale_consistency():
     ok = scale_consistency(10_500.0, 10.5)
     assert ok["available"] and ok["consistent"]

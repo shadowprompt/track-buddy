@@ -540,6 +540,38 @@ def test_capture_paired_requires_recognition_and_evidence(server_stub):
     assert store.stats()["overview"] == 1
 
 
+def test_paired_template_stamps_request_profile(server_stub):
+    """配对注册必须把请求画像盖到模板上（2026-11-16 回归）。
+
+    `_capture_paired_template` 曾漏传 ``profile``：空串被
+    ``_norm_profile`` 回落成默认 meituan——amap 多图真值注册的模板
+    盖上美团的章，之后 amap 单图召回被画像隔离过滤，「概览单图复用
+    模板」永远打不中，实测症状是单图上传走完整识别并给出错误定位。
+    """
+    store, _ = server_stub
+    client = TestClient(S.app)
+    r = client.post("/api/recognize", files=_single_files(True),
+                    data={"city": "上海", "refine": "off", "source": "amap"})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["paired_registration"]["written"] is True, d["paired_registration"]
+    assert store.templates[0].get("profile") == "amap"
+
+
+def test_paired_template_recall_is_profile_isolated(tmp_path):
+    """召回侧画像隔离：amap 模板不得被 meituan 画像召回，反之亦然。"""
+    px = _bent()
+    store = _store(tmp_path)
+    out = store.register_pair(
+        overview_px=px, detail_px=_render_detail(px),
+        geo_polyline=_geo(_render_detail(px)),
+        confidence=0.8, city="上海", shot_id="probe", profile="amap")
+    assert out["written"] is True, out
+    assert not store.find_similar(px, profile="meituan"), \
+        "amap 模板不得被 meituan 画像召回"
+    assert store.find_similar(px, profile="amap"), "同画像应当命中"
+
+
 def test_multi_only_endpoint_still_works(server_stub):
     client = TestClient(S.app)
     r = client.post("/api/recognize_multi",

@@ -708,8 +708,12 @@ curl -X POST http://127.0.0.1:8848/api/recognize_multi \
 HSV、形态学核、RANSAC 内点容差、里程 OCR 词表，每个 App 一套参数，
 互斥不能混用。
 
-- 当前注册 `meituan`（美团骑行）一个画像，参数值与模块化之前完全
-  一致（`VisionConfig` 默认值就是美团标定结果），行为零变化。
+- 当前注册两个画像：`meituan`（美团骑行，参数值与模块化之前完全
+  一致，`VisionConfig` 默认值就是美团标定结果）与 `amap`（高德运动，
+  **2026-11-16 初版接入**：高饱和亮蓝轨迹走 `track_hsv_range` 区间式
+  掩膜；初版参数按公开视觉特征估计，**待真实样本精标**，用
+  `src/tools/calibrate_profile.py` 对截图统计后收紧）。默认仍为
+  `meituan`，不传 `source` 时行为不变。
 - **来源选择两条路径**（2026-11-14 起请求级入参优先）：
   1. **接口入参**：`POST /api/recognize` / `recognize_multi` 的
      `source` 表单字段（可用值见 `/api/health` 的
@@ -722,10 +726,11 @@ HSV、形态学核、RANSAC 内点容差、里程 OCR 词表，每个 App 一套
 - 画像定义与注册表在 `src/app/source_profile.py`，`GET /api/health`
   的 `source_profile` 字段与识别结果 `diagnostics.source` 随时可见
   当前生效的画像（请求级 > 环境级）。
-- **扩展路径**（以高德为例）：① 收集 5-10 张真实截图（概览单图 +
-  沿路线滑动的细节图、不同缩放）；② 按模块 docstring 的标定指南测
-  HSV 分布、注册新 profile——识别链路零改动，接入即用入参切换。
-  预估 2-3 个工作日，瓶颈在标定样本不在代码。
+- **扩展路径**（以小米 / Keep / Garmin / Coros 为例）：① 收集 5-10
+  张真实截图（概览单图 + 沿路线滑动的细节图、不同缩放）；② 用
+  `src/tools/calibrate_profile.py` 统计 HSV 分布、注册新 profile——
+  识别链路零改动，接入即用入参切换。瓶颈在标定样本不在代码。
+  （高德已于 2026-11-16 走完这条路径的代码侧，参数精标随真实样本迭代。）
 - 注册表里**只允许已标定的画像**——不放未标定占位条目，防止切换
   到盲参数全链路瞎跑。
 
@@ -791,6 +796,10 @@ server、前端、测试契约全部自动生效。FIT 是二进制格式（需 
   UTC；固定 +8h 换算（中国无夏令时），不引入 zoneinfo 依赖。
 - GPX 概要缺失仍输出纯轨迹；TCX 的 `DistanceMeters` 概要里程优先、
   退化用几何里程，`Calories` 缺失填 0（schema 必填，0 合法且诚实）。
+- **小程序端导出文件名**：以运动开始时间命名为
+  `fitmemo-YYYYMMDD-HHMMSS.<ext>`（如 `fitmemo-20261010-125859.gpx`，
+  `result.js` 的 `exportBaseName`）；概要缺失回退 `trajectory*` 旧名。
+  网页版与 CLI 下载名不变（仍 `trajectory_wgs84.*`）。
 
 ### 交付坐标系统一为 WGS-84
 
@@ -837,8 +846,13 @@ WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-
 
 ### 鉴权与自动保存
 
-1. `POST /api/auth/wxlogin` 收 `wx.login` 的 `code`，服务端换 openid（以及
-   绑定开放平台后的 unionid）后返回 `{token, expires_in, union_uid}`；
+1. 登录端点收 `wx.login` 的 `code`，换 openid（以及绑定开放平台后的
+   unionid）后返回 `{token, expires_in, union_uid}`。**签发已收敛到
+   gateway**：小程序 `wxlogin()` 优先调 `POST {LOGIN_BASE_URL}/wxminTrackBuddy/login`
+   （`wxmin/config.js` 的 `LOGIN_BASE_URL`，默认 `https://gateway.daozhao.com`）；
+   gateway 网络不可达 / 5xx / 404 时自动降级回本服务自带的
+   `POST /api/auth/wxlogin`（两端签发的 token 逐字节兼容，验签方零感知）。
+   400/401 属于 code 被微信拒绝，不降级直接报错。
    `openid` / `session_key` / 明文 `unionid` / 微信 errcode 一律不进响应、
    不落 COS。`union_uid` 是脱敏的跨端锚点，见下节。
 2. 记录按 `uid = HMAC(RECORDS_TOKEN_SECRET, openid)[:32]` 分目录，
@@ -849,8 +863,9 @@ WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-
    时间）；**不带 token 时一次 COS 调用都不发**。保存失败只记 warning，
    绝不影响识别响应。存的是「识别完成时刻的快照」——后台路网精修仍只
    更新本地缓存与 `/api/refine/{shot_id}`，不回写 COS。
-4. 正式发布需 https 域名。小程序侧已接线（见下节）；未配齐 `.env` 七项时
-   小程序自动降级为「本机摘要」，识别行为与旧版一致。
+4. **上线状态（2026-11-15）：小程序已发布上线**，登录（gateway 签发）、
+   识别、云端记录、导出全链路已验证可用。正式环境域名均为 https。
+   未配齐 `.env` 七项时小程序自动降级为「本机摘要」，识别行为与旧版一致。
 
 
 ### 跨端身份对齐（unionId，2026-11-15）
@@ -886,7 +901,7 @@ WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-
 
 | 文件 | 职责 |
 |---|---|
-| `app.js` | 冷启动先探 `health.records.enabled` → `wx.login` → `/api/auth/wxlogin`；token 缓存到 Storage（提前 1 分钟判过期），同时把脱敏 `unionUid` 放进 `globalData`；提供 `ensureToken(force)` / `invalidateToken()` |
+| `app.js` | 冷启动先探 `health.records.enabled` → `wx.login` → gateway `/wxminTrackBuddy/login`（故障降级 `/api/auth/wxlogin`）；token 缓存到 Storage（提前 1 分钟判过期），同时把脱敏 `unionUid` 放进 `globalData`；提供 `ensureToken(force)` / `invalidateToken()` |
 | `utils/api.js` | 统一注入 `Authorization: Bearer`；401 时强制重登并重试一次；提供 `wxlogin/identity/listRecords/getRecord/deleteRecord/downloadRecordImage` |
 | `utils/records.js` | 云端摘要卡片与本机摘要统一成列表视图模型，按 `shot_id` 去重（云为准）、`statsOf` 统计 |
 | `pages/index/index.js` | 识别成功后写一份本机摘要兜底（云端由服务端自动保存） |
@@ -896,6 +911,15 @@ WGS-84 版 GeoJSON」两个下载链接容易选错，现已收敛为一个 WGS-
 
 🔴 图片端点是**鉴权代理流**，不能把 `/api/records/{id}/images/{name}` 直接
 塞给 `<image src>`；必须走 `downloadRecordImage()` 换成本地临时文件。
+
+#### 小程序上线后的功能变化（2026-11-15）
+
+| 变化 | 说明 |
+|---|---|
+| 登录收敛到 gateway | `config.js` 加 `LOGIN_BASE_URL`（默认 `https://gateway.daozhao.com`），`wxlogin()` 优先 gateway、故障降级回本服务（见「鉴权与自动保存」） |
+| 导出文件名 | 以运动开始时间命名：`fitmemo-20261010-125859.gpx/tcx/geojson`（`result.js` 的 `exportBaseName`）；概要缺失时回退 `trajectory*` 旧名 |
+| 分享面板加固 | `doExport` 改 `writeFileSync` 同步写，保住点击手势上下文（异步回调里调 `wx.shareFileMessage` 部分机型拒弹面板）；低版本基础库给升级提示；fail 区分「用户取消」与真错误，不再误报「已保存」。文件实际写在 `wx.env.USER_DATA_PATH` 沙箱，导出到手机的唯一通道是分享面板发「文件传输助手」；开发者工具不支持该 API、弹不出面板属正常 |
+| 轨迹纠正暂时下线 | `wx.chooseLocation` 需在微信公众平台额外申请，纠正卡片（wxml）、三个处理函数（result.js）、app.json 的 `requiredPrivateInfos`/`scope.userLocation` 均已移除；恢复步骤写在 result.js 注释里。后端 `/api/feedback` 与词典逻辑未动，网页版纠正不受影响 |
 
 ### 记录 API（除 wxlogin 外都要 `Authorization: Bearer <token>`）
 
@@ -1429,6 +1453,11 @@ wgs = gcj02_to_wgs84(lon, lat)   # GCJ-02 → WGS-84（不动点迭代，精确�
       ↑                                        ↓
       └────── 本地词典（地名词 → 精确坐标）←──┘
 ```
+
+> 🔴 **小程序端的纠正入口暂时下线（2026-11-15）**：`wx.chooseLocation`
+> 现需在微信公众平台额外申请，纠正卡片与处理函数已从 `wxmin/` 移除
+> （恢复步骤写在 `result.js` 注释里）。网页版纠正与后端 `/api/feedback`、
+> 词典逻辑不受影响，数据飞轮仍在网页侧运转。
 
 每次纠正都会强化 `data/lexicon.json` 中对应地名的坐标权重。这类「随使用量
 积累」的资产现在有两种：地名词典（**地名 → 点**）与轨迹模板
