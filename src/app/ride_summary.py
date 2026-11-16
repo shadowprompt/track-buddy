@@ -37,12 +37,25 @@ from .config import CONFIG
 # 「2026-11-1120:20:26」（2026-11-14 实测，duration_text 里可见）。
 # 分隔符必须可选，日期/时/分秒用位数切分；解析后还要做范围校验，
 # 防粘连错位读出 92 小时之类的胡值（见 test）。
+# 分隔符族谱：美团用横杠，高德用点分且日期与时间粘连更狠
+# 「2026.11.1608:13:27」（2026-11-16 实测）——正则靠回溯切位，
+# 日期吃 2 位后时间才能对上冒号，无需专门处理粘连。
 _RE_TIMESTAMP = re.compile(
-    r"(\d{4})-(\d{1,2})-(\d{1,2})[ T]?(\d{1,2}):(\d{2})(?::(\d{2}))?")
+    r"(\d{4})[.\-/年](\d{1,2})[.\-/月](\d{1,2})日?[ T]?(\d{1,2}):(\d{2})(?::(\d{2}))?")
 _RE_DURATION = re.compile(r"(?:(\d+)\s*小时)?\s*(\d+)\s*分(?:\s*(\d+)\s*秒)?")
-_RE_KCAL = re.compile(r"(\d+(?:\.\d+)?)\s*k?cal", re.IGNORECASE)
-# km 需词边界防「3.5kmX」误读；单独的 g 需排除 kg
-_RE_KM = re.compile(r"(\d+(?:\.\d+)?)\s*km\b", re.IGNORECASE)
+# 高德的时长是冒号三段式「00:14:14」（HH:MM:SS）。两段式 MM:SS 不采——
+# 概要页顶部状态栏时钟「08:34」会被读成 8 分 34 秒。
+_RE_DURATION_COLON = re.compile(r"(\d{1,2}):(\d{2}):(\d{2})")
+_RE_KCAL = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(?:k?cal|千卡|大卡)", re.IGNORECASE)
+# km 需词边界防「3.5kmX」误读；单位族谱含中文（高德「3.68千米」）；
+# 单位后紧跟 / 或 每 的是配速（「15千米/时」），必须排除
+_RE_KM = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(?:千米|公里|km)\b(?![每/])", re.IGNORECASE)
+# 数字与单位被 OCR 切成两个文本块（高德「骑行 3.68 干米」）：数字块
+# 的相邻块是纯单位块时也算候选。「干米」是 OCR 对「千米」的常见误读。
+_RE_UNIT_TOKEN = re.compile(r"^(?:千米|公里|km)$", re.IGNORECASE)
+_RE_PURE_NUMBER = re.compile(r"^\d+(?:\.\d+)?$")
 _RE_GRAMS = re.compile(r"(\d+(?:\.\d+)?)\s*g\b", re.IGNORECASE)
 
 # 标签文本块与数值文本块允许的最大索引距离（OCR 按阅读顺序输出，
@@ -60,22 +73,81 @@ def _text_of(item: Any) -> str:
     return str(s or "").strip()
 
 
+def _norm_token(s: str) -> str:
+    """单位层面的 OCR 误读归一（只影响单位判定，不动原文本）。"""
+    return s.replace("干米", "千米")
+
+
+def _box_of(item: Any) -> tuple | None:
+    """取文本块的几何框 (x0, y0, x1, y1)；无几何信息时返回 None。"""
+    try:
+        return (float(item.x0), float(item.y0),
+                float(item.x1), float(item.y1))
+    except AttributeError:
+        return None
+
+
+def _row_gap(a: tuple, b: tuple) -> float | None:
+    """两个文本块的同行水平间距；非同行或相距过远返回 None。
+
+    「同一行」= 纵向区间重叠超过较矮块高度的一半（概要卡片的标签与
+    数值横排共线）；水平间距上限按字高相对化，防跨卡误配。
+    """
+    ha, hb = a[3] - a[1], b[3] - b[1]
+    overlap = min(a[3], b[3]) - max(a[1], b[1])
+    if overlap <= 0.5 * min(ha, hb):
+        return None
+    gap = max(a[0], b[0]) - min(a[2], b[2])
+    if gap > 8 * max(ha, hb):
+        return None
+    return max(gap, 0.0)
+
+
 def _bind_labeled(
     tokens: list[str],
     candidates: list[tuple[int, float]],
     label_patterns: Iterable[re.Pattern[str]],
+    boxes: list[tuple | None] | None = None,
 ) -> tuple[float | None, str | None]:
-    """从数值候选里按标签近邻挑出「本次」值。
+    """从数值候选里按标签挑出「本次」值。
 
-    返回 ``(值, 标签文本)``：优先取窗口内有标签命中的候选（多者取小，
-    防同一横排出现两个带标签数值）；无标签命中且候选多个时取最小值
-    （订单页累计值恒大于本次值）；单候选直接采信。
+    返回 ``(值, 标签文本)``。两档绑定策略：
+
+    * **行感知**（有几何框时）：候选与标签在同一文本行内水平最近者
+      胜出。索引距离在高德这类「地图区自带数字」的页面上没有区分度
+      （比例尺「1公里」与里程牌「3KM」和概要卡片标签的块索引可能
+      一样近），几何同行是唯一可靠的信号；
+    * **索引窗口**（无几何框，纯字符串测试/旧调用方）：±2 块内找
+      标签，多者取小，防同一横排出现两个带标签数值。
+
+    无任何标签命中且候选多个时取最小值（累计恒大于本次）；单候选
+    直接采信。
     """
     if not candidates:
         return None, None
     if len(candidates) == 1:
         idx, val = candidates[0]
         return val, None
+    if (boxes is not None and len(boxes) == len(tokens)
+            and all(b is not None for b in boxes)):
+        best: tuple[float, float, str] | None = None  # (gap, val, label)
+        for idx, val in candidates:
+            cb = boxes[idx]
+            for j, tok in enumerate(tokens):
+                if j == idx:
+                    continue
+                for pat in label_patterns:
+                    m = pat.search(tok)
+                    if not m:
+                        continue
+                    gap = _row_gap(cb, boxes[j])
+                    if gap is None:
+                        continue
+                    if best is None or gap < best[0]:
+                        best = (gap, val, m.group(0))
+        if best is not None:
+            return best[1], best[2]
+        # 同行无标签命中：回落索引窗口（页面排版怪异时的兜底）
     labeled: list[tuple[int, float, str]] = []
     for idx, val in candidates:
         for j in range(max(0, idx - _LABEL_WINDOW),
@@ -109,6 +181,9 @@ def parse_ride_summary(
         ride_labels = tuple(CONFIG.source.ride_labels)
 
     tokens = [_text_of(t) for t in (texts or []) if _text_of(t)]
+    # 几何框与 tokens 对齐（纯字符串输入时全是 None → 走索引窗口回退）
+    _raw = [t for t in (texts or []) if _text_of(t)]
+    boxes = [_box_of(t) for t in _raw]
 
     # 标签按语义分三组（标签文案随画像，语义映射通用）
     _dist_pat = [re.compile(re.escape(l)) for l in ride_labels if "骑行" in l or "里程" in l]
@@ -144,6 +219,19 @@ def parse_ride_summary(
                                  + int(sec or 0))
             out["duration_text"] = s
             break
+    # 高德族：冒号三段式「00:14:14」。必须跳过含时间戳的块
+    #（时间戳尾段的「:13:27」不是时长）。
+    if out["duration_s"] is None:
+        for s in tokens:
+            if _RE_TIMESTAMP.search(s):
+                continue
+            m = _RE_DURATION_COLON.search(s)
+            if m:
+                h, mi, sec = (int(g) for g in m.groups())
+                if h <= 23 and mi <= 59 and sec <= 59:
+                    out["duration_s"] = h * 3600 + mi * 60 + sec
+                    out["duration_text"] = s
+                    break
 
     # --- 卡路里（kcal 单位唯一，直接取） ---
     kcal_vals = []
@@ -157,13 +245,23 @@ def parse_ride_summary(
     # --- 本次骑行距离（km 多候选需标签绑定） ---
     km_cands: list[tuple[int, float]] = []
     for idx, s in enumerate(tokens):
-        for m in _RE_KM.finditer(s):
+        norm = _norm_token(s)
+        for m in _RE_KM.finditer(norm):
             try:
                 km_cands.append((idx, float(m.group(1))))
             except ValueError:
                 continue
+        # 数字与单位被 OCR 切成两块（高德「3.68」+「干米」）：数字块的
+        # 下一块是纯单位块时也构成候选（标签绑定逻辑不变，仍按数字块
+        # 的近邻找标签）。
+        if (_RE_PURE_NUMBER.match(norm) and idx + 1 < len(tokens)
+                and _RE_UNIT_TOKEN.match(_norm_token(tokens[idx + 1]))):
+            try:
+                km_cands.append((idx, float(norm)))
+            except ValueError:
+                continue
     if km_cands and _dist_pat:
-        val, label = _bind_labeled(tokens, km_cands, _dist_pat)
+        val, label = _bind_labeled(tokens, km_cands, _dist_pat, boxes)
         out["distance_km"] = val
         if label:
             out["distance_label"] = label
@@ -208,8 +306,8 @@ def parse_ride_summary(
     out["fields_found"] = found
     out["available"] = bool(found)
     if not found:
-        notes.append("订单详情页未识别到任何概要字段——确认传的是订单"
-                     "详情页截图（含里程/时长/卡路里卡片）")
+        notes.append("运动概要页未识别到任何概要字段——请确认上传的是运动"
+                     "概要/详情页截图（含里程/时长/卡路里卡片）")
 
     # --- 与轨迹几何里程交叉校验 ---
     cc: dict[str, Any] = {"available": False, "consistent": True,

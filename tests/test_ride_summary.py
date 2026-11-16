@@ -231,3 +231,81 @@ def test_recognize_endpoints_accept_summary_form() -> None:
         assert "byte_sink=summary_sink if record_uid else None" in src
         # 概要必须在落盘之前并入（否则对照页看不到）
         assert src.index("_attach_ride_summary") < src.index("_persist_last_result")
+
+
+# --- 高德运动详情页（2026-11-16 真实截图 OCR 实测） ---
+# 页面特征：上半幅地图（含 3KM/2KM/1KM 里程牌、比例尺「1公里」、
+# 状态栏时钟「08:34」），下半幅概要卡片：骑行 3.68 干米（OCR 把
+# 「千」误读成「干」，且数字与单位是两个文本块）、00:14:14、79大卡、
+# 运动用时/平均速度/消耗热量标签，日期点分且与时间粘连。
+def _boxed(*rows: list[str]) -> list[SimpleNamespace]:
+    """按行构造带几何框的 OCR 块（还原真实 TextItem 布局）。
+
+    每行内块从左到右排，行间留出足够间距（不同行绝不共线）。
+    """
+    items: list[SimpleNamespace] = []
+    for r, row in enumerate(rows):
+        x = 40.0
+        y = 100.0 + r * 90.0
+        for tok in row:
+            w = 30.0 + 18.0 * len(tok)
+            items.append(SimpleNamespace(
+                text=tok, score=0.9,
+                x0=x, y0=y, x1=x + w, y1=y + 44.0,
+                cx=x + w / 2, cy=y + 22.0, width=w, height=44.0))
+            x += w + 24.0
+    return items
+
+
+def _amap_page() -> list[SimpleNamespace]:
+    """高德运动详情页真实布局（2026-11-16 截图 OCR 实测）。
+
+    地图区（上）：状态栏、里程牌、比例尺；概要卡片区（下）：
+    「骑行 3.68 干米 | 00:14:14 | 79大卡」一行，标签行在其下。
+    """
+    return _boxed(
+        ["08:34", "骑行结束"],
+        ["2026.11.1608:13:27"],
+        ["3KM"],
+        ["2KM"],
+        ["1KM"],
+        ["1公里"],
+        ["骑行", "3.68", "干米"],
+        ["最慢", "最快"],
+        ["00:14:14", "15千米/时", "79大卡"],
+        ["运动用时", "平均速度", "消耗热量"],
+        ["分享运动记录"],
+    )
+
+
+AMAP_LABELS = ("骑行", "消耗热量")
+
+
+def test_parse_amap_detail_page_full_fields() -> None:
+    out = parse_ride_summary(_amap_page(), ride_labels=AMAP_LABELS)
+    assert out["available"] is True
+    assert out["started_at"] == "2026-11-16T08:13:27"
+    assert out["duration_s"] == 14 * 60 + 14
+    assert out["duration_text"] == "00:14:14"
+    assert out["calories_kcal"] == pytest.approx(79)
+    # 里程必须绑定「骑行」标签的 3.68，而不是里程牌/比例尺的 3/2/1
+    assert out["distance_km"] == pytest.approx(3.68)
+    assert out["distance_label"] == "骑行"
+    # 高德骑行页没有减碳字段，宁缺勿错
+    assert out["carbon_g"] is None
+
+
+def test_amap_distance_ignores_milestones_and_speed() -> None:
+    """干扰隔离：里程牌 3/2/1 KM、比例尺 1公里、配速 15千米/时 都
+    不能成为距离候选的选中值；状态栏时钟不能成为时长。"""
+    out = parse_ride_summary(_amap_page(), ride_labels=AMAP_LABELS)
+    assert out["distance_km"] != 3.0 and out["distance_km"] != 1.0
+    assert out["duration_s"] == 14 * 60 + 14  # 不是 08:34 → 514s
+
+
+def test_timestamp_separators_dot_and_slash() -> None:
+    """时间戳分隔符族谱：点分（高德）与横杠（美团）都要吃。"""
+    out = parse_ride_summary(_items("2026.11.1608:13:27"))
+    assert out["started_at"] == "2026-11-16T08:13:27"
+    out2 = parse_ride_summary(_items("2026/11/16 08:13:27"))
+    assert out2["started_at"] == "2026-11-16T08:13:27"
