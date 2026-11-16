@@ -37,12 +37,6 @@
       }
     ]
   },
-  "permission": {
-    "scope.userLocation": {
-      "desc": "用于在地图上选点，纠正地名对应的坐标"
-    }
-  },
-  "requiredPrivateInfos": ["chooseLocation"],
   "lazyCodeLoading": "requiredComponents",
   "sitemapLocation": "sitemap.json"
 }

@@ -58,6 +58,8 @@
   <view class="note">文件已统一 WGS-84 坐标；GPX/TCX 含时间轴（需运动概要截图提供开始时间与时长），可直接导入 Strava / Garmin</view>
 </view>
 
+<!-- 🔴 暂时下线：wx.chooseLocation 需在微信公众平台额外申请（2026-11-15）。
+     申请通过后取消本注释即可恢复「轨迹纠正」卡片。
 <view class="card" wx:if="{{ready && hasTrack}}">
   <view class="card-title">轨迹纠正（越用越准）</view>
   <view class="note" style="margin-bottom: 16rpx;">如果某个地名识别偏了：填写正确地名 → 在地图上选真实位置 → 提交，下次识别同区域直接命中</view>
@@ -73,6 +75,7 @@
   <view class="note ok" wx:if="{{fbDone}}">✓ 已写入词典，下次识别同区域生效</view>
   <view class="warn-text" wx:if="{{fbError}}">{{fbError}}</view>
 </view>
+-->
 
 <view class="footer">
   <button class="btn-plain" bindtap="goBack">再识别一次</button>

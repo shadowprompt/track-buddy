@@ -1,7 +1,8 @@
 // 运动轨迹识别后端 API 封装。
 // 契约见 src/app/server.py：
 //   GET  /api/health                         能力清单 + records.enabled
-//   POST /api/auth/wxlogin                  wx.login code → 记录 token
+//   POST /wxminTrackBuddy/login             wx.login code → 记录 token（gateway 签发，
+//                                           降级端点 /api/auth/wxlogin 在 track-buddy）
 //   POST /api/recognize                     multipart：file + details + summary
 //   GET  /api/refine/{id}                   后台精修进度轮询
 //   POST /api/feedback                      JSON：{name, lon, lat, crs, city}
@@ -58,7 +59,7 @@ function rawRequest(method, path, opts) {
   opts = opts || {};
   return new Promise(function (resolve, reject) {
     wx.request({
-      url: BASE_URL + path,
+      url: (opts.baseUrl || BASE_URL) + path,
       method: method,
       header: opts.header || {},
       data: opts.data,
@@ -185,12 +186,28 @@ function recognize(opts) {
   });
 }
 
-/** 用 wx.login 的 code 换记录 token（不要求鉴权）。 */
+/**
+ * 用 wx.login 的 code 换记录 token（不要求鉴权）。
+ * 签发收敛到 gateway（LOGIN_BASE_URL + /wxminTrackBuddy/login），响应契约与
+ * track-buddy 的 /api/auth/wxlogin 逐字段一致。gateway 网络不可达 / 5xx / 404
+ * 时降级回 track-buddy 自带端点；400/401 是 code 本身被微信拒绝，换端点结果
+ * 相同，直接抛出不兜底。
+ */
 function wxlogin(code) {
-  return rawRequest('POST', '/api/auth/wxlogin', {
+  var loginOpts = {
     header: { 'content-type': 'application/json' },
     data: { code: code },
     timeout: 15000
+  };
+  if (!config.LOGIN_BASE_URL) {
+    return rawRequest('POST', '/api/auth/wxlogin', loginOpts);
+  }
+  return rawRequest('POST', '/wxminTrackBuddy/login',
+    extend(extend({}, loginOpts), { baseUrl: config.LOGIN_BASE_URL })
+  ).catch(function (err) {
+    var st = err && err.statusCode;
+    if (st && st < 500 && st !== 404) throw err;
+    return rawRequest('POST', '/api/auth/wxlogin', loginOpts);
   });
 }
 

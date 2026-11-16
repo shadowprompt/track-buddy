@@ -114,6 +114,13 @@ function route(o) {
     }
     return reply(o, 200, { token: state.token, expires_in: 3600 });
   }
+  if (url.indexOf('/wxminTrackBuddy/login') >= 0) {
+    state.gatewayCalls++;
+    if (state.gatewayStatus && state.gatewayStatus !== 200) {
+      return reply(o, state.gatewayStatus, { detail: 'gateway 登录暂不可用' });
+    }
+    return reply(o, 200, { token: state.token, expires_in: 3600, union_uid: 'u_abc' });
+  }
   if (url.indexOf('/api/recognize') >= 0) {
     state.recognizeAuth.push(header.Authorization || '');
     return reply(o, 200, samplePayload());
@@ -146,9 +153,10 @@ function route(o) {
 function boot(overrides) {
   state = Object.assign({
     healthEnabled: true, token: 'TOKEN_A', wxloginStatus: 200,
+    gatewayStatus: 200,
     items: [], nextCursor: null, listStatuses: [], detail: null,
     confirmDelete: true,
-    loginCalls: 0, wxloginCalls: 0, refineCalls: 0,
+    loginCalls: 0, wxloginCalls: 0, gatewayCalls: 0, refineCalls: 0,
     recognizeAuth: [], listAuth: [], deleted: []
   }, overrides || {});
   storage = {};
@@ -215,22 +223,42 @@ async function main() {
     String(state.recognizeAuth[0]));
   check(b.app.globalData.recordsReady === false, 'recordsReady=false');
 
-  // --- 2. 云端启用：登录换 token + 识别带 Bearer ----------------------
-  console.log('\n【2】records.enabled=true：登录与自动保存接线');
+  // --- 2. 云端启用：登录换 token（gateway 优先） + 识别带 Bearer -------
+  console.log('\n【2】records.enabled=true：gateway 登录与自动保存接线');
   b = boot({ healthEnabled: true });
   t = await b.app.ensureToken();
   check(t === 'TOKEN_A', '拿到 token', String(t));
-  check(state.loginCalls === 1 && state.wxloginCalls === 1,
-    'wx.login → /api/auth/wxlogin 各一次');
-  var wxloginReq = requests.filter(function (r) {
-    return r.url.indexOf('/api/auth/wxlogin') >= 0;
+  check(state.loginCalls === 1 && state.gatewayCalls === 1 && state.wxloginCalls === 0,
+    'wx.login → gateway /wxminTrackBuddy/login 各一次，未走兜底',
+    'login=' + state.loginCalls + ' gw=' + state.gatewayCalls + ' fb=' + state.wxloginCalls);
+  var gwReq = requests.filter(function (r) {
+    return r.url.indexOf('https://gateway.daozhao.com/wxminTrackBuddy/login') >= 0;
   })[0];
-  check(wxloginReq && wxloginReq.data && wxloginReq.data.code === 'CODE_A',
-    'wxlogin 只传 code（不含任何密钥/openid）');
+  check(gwReq && gwReq.data && gwReq.data.code === 'CODE_A',
+    'gateway 登录只传 code（不含任何密钥/openid）');
+  check(b.app.globalData.unionUid === 'u_abc', 'gateway 返回的 union_uid 已入 globalData',
+    String(b.app.globalData.unionUid));
   check(!!storage.ride_records_token_v1, 'token 已写入 Storage 缓存');
   await b.api.recognize({ overview: 'a.jpg' });
   check(state.recognizeAuth[0] === 'Bearer TOKEN_A',
     '识别请求带 Bearer（服务端据此自动存 COS）', String(state.recognizeAuth[0]));
+
+  // --- 2b. gateway 5xx：降级回 track-buddy 原登录端点 ------------------
+  console.log('\n【2b】gateway 故障降级');
+  b = boot({ healthEnabled: true, gatewayStatus: 503 });
+  t = await b.app.ensureToken();
+  check(t === 'TOKEN_A', 'gateway 503 后经兜底仍拿到 token', String(t));
+  check(state.gatewayCalls === 1 && state.wxloginCalls === 1,
+    'gateway 一次 + 兜底 /api/auth/wxlogin 一次',
+    'gw=' + state.gatewayCalls + ' fb=' + state.wxloginCalls);
+
+  // --- 2c. gateway 4xx（code 被拒）：不降级，直接失败 ------------------
+  console.log('\n【2c】gateway 4xx 不兜底');
+  b = boot({ healthEnabled: true, gatewayStatus: 400 });
+  t = await b.app.ensureToken();
+  check(t === '', '400 时不降级、登录失败返回空 token', String(t));
+  check(state.gatewayCalls === 1 && state.wxloginCalls === 0,
+    '未调用兜底端点', 'gw=' + state.gatewayCalls + ' fb=' + state.wxloginCalls);
 
   // --- 3. 有有效缓存：冷启动不再登录 ----------------------------------
   console.log('\n【3】token 缓存');
@@ -260,7 +288,9 @@ async function main() {
   d = await b.api.listRecords({ limit: 20 });
   check(d.items.length === 1, '重试后拿到列表');
   check(countRecordsGet() === 2, 'GET /api/records 共两次', String(countRecordsGet()));
-  check(state.wxloginCalls === 2, '401 后重新登录一次', String(state.wxloginCalls));
+  check(state.gatewayCalls === 2 && state.wxloginCalls === 0,
+    '401 后经 gateway 重新登录一次（仍成功，无需兜底）',
+    'gw=' + state.gatewayCalls + ' fb=' + state.wxloginCalls);
   var gets = requests.filter(function (r) { return r.method === 'GET' && r.url.indexOf('/api/records?') >= 0; });
   check(gets[1].header.Authorization === 'Bearer TOKEN_A', '重试请求带新 Bearer');
 

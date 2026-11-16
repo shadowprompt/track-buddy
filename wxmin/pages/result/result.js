@@ -28,6 +28,17 @@ function fmtDuration(sec) {
   return m + '分' + (s > 0 ? s + '秒' : '');
 }
 
+// 导出文件基础名：以运动开始时间生成，如 fitmemo-20261010-125859。
+// started_at 解析失败或缺失时返回 ''，由调用方回退旧文件名。
+function exportBaseName(startedAt) {
+  if (!startedAt) return '';
+  var m = String(startedAt).match(
+    /(\d{4})-?(\d{2})-?(\d{2})[T\s](\d{2}):?(\d{2})(?::(\d{2}))?/
+  );
+  if (!m) return '';
+  return 'fitmemo-' + m[1] + m[2] + m[3] + '-' + m[4] + m[5] + (m[6] || '00');
+}
+
 Page({
   data: {
     ready: false,
@@ -214,12 +225,15 @@ Page({
     }
 
     // --- 导出（统一 WGS-84）------------------------------------------
+    // 文件名以运动开始时间为准：fitmemo-20261010-125859.<ext>；
+    // 概要缺失（started_at 不可用）时回退旧名。
+    var baseName = exportBaseName(rs && rs.started_at);
     var exports = [];
     if (payload.geojson) {
       exports.push({
         key: 'geojson',
         label: 'GeoJSON（GPS / GIS 工具）',
-        file: 'trajectory_wgs84.geojson',
+        file: (baseName || 'trajectory_wgs84') + '.geojson',
         content: JSON.stringify(payload.geojson, null, 2)
       });
     }
@@ -227,7 +241,7 @@ Page({
       exports.push({
         key: 'gpx',
         label: 'GPX（含时间轴，Strava/Garmin）',
-        file: 'trajectory.gpx',
+        file: (baseName || 'trajectory') + '.gpx',
         content: payload.gpx
       });
     }
@@ -235,7 +249,7 @@ Page({
       exports.push({
         key: 'tcx',
         label: 'TCX（Garmin Connect）',
-        file: 'trajectory.tcx',
+        file: (baseName || 'trajectory') + '.tcx',
         content: payload.tcx
       });
     }
@@ -334,30 +348,45 @@ Page({
     if (!item) return;
     var fs = wx.getFileSystemManager();
     var filePath = wx.env.USER_DATA_PATH + '/' + item.file;
-    fs.writeFile({
+    // 同步写入 + 在点击手势的同步调用链里调 shareFileMessage：
+    // 异步回调会丢失手势上下文，部分机型会拒弹分享面板。
+    try {
+      fs.writeFileSync(filePath, item.content, 'utf8');
+    } catch (err) {
+      wx.showToast({
+        title: '写文件失败: ' + (err.errMsg || ''),
+        icon: 'none'
+      });
+      return;
+    }
+    if (!wx.shareFileMessage) {
+      wx.showToast({ title: '微信版本过低，请升级后再导出', icon: 'none' });
+      return;
+    }
+    wx.shareFileMessage({
       filePath: filePath,
-      data: item.content,
-      encoding: 'utf8',
-      success: function () {
-        wx.shareFileMessage({
-          filePath: filePath,
-          fileName: item.file,
-          fail: function () {
-            // 分享面板取消或环境不支持时，文件其实已写好
-            wx.showToast({ title: '已保存: ' + item.file, icon: 'none' });
-          }
-        });
-      },
+      fileName: item.file,
       fail: function (err) {
-        wx.showToast({
-          title: '写文件失败: ' + (err.errMsg || ''),
-          icon: 'none'
-        });
+        var msg = err.errMsg || '';
+        if (msg.indexOf('cancel') >= 0) {
+          // 用户取消分享面板：文件已写好，指路导出通道
+          wx.showToast({
+            title: '文件已生成，再次点击可分享到文件传输助手',
+            icon: 'none'
+          });
+        } else {
+          wx.showToast({ title: '调起分享失败: ' + msg, icon: 'none' });
+        }
       }
     });
   },
 
   // --- 纠正 ------------------------------------------------------------
+  // 🔴 暂时下线（2026-11-15）：wx.chooseLocation 需在微信公众平台额外申请，
+  //    app.json 的 requiredPrivateInfos / scope.userLocation 一并移除。
+  //    申请通过后：恢复本段三个函数 + result.wxml 里被注释的卡片 +
+  //    app.json 的两处声明，即可完整恢复纠正功能。
+  /*
   onFbName: function (e) {
     this.setData({ fbName: e.detail.value, fbDone: false });
   },
@@ -403,6 +432,7 @@ Page({
         });
       });
   },
+  */
 
   goBack: function () {
     wx.navigateBack();
