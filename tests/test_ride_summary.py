@@ -357,6 +357,58 @@ def test_attach_ride_summary_soft_band_keeps_result(monkeypatch) -> None:
     assert any("量级不符" in w for w in payload["warnings"])
 
 
+def test_physical_speed_gate_rejects_impossible_distance() -> None:
+    """时长-里程物理一致性闸门：概要里程缺失时的最后防线。
+
+    实测（2026-11-17）：用户没传概要页，ride_summary.distance_km=None
+    → 里程交叉校验 available=False → 89 秒的骑行被放大成 29.7 公里
+    （平均时速 1202 km/h）照常 ok:true 交付。时长只要解析得到就能拦。
+    """
+    from app import server as S
+
+    payload = _gj_payload()
+    payload["distance_m"] = 29729.4
+    payload["gpx"] = "<gpx/>"
+    S._maybe_reject_by_physical_speed(payload, {"duration_s": 89})
+    assert payload["ok"] is False
+    assert payload["confidence"] == 0.0
+    assert payload["distance_m"] == 0
+    assert "gpx" not in payload
+    assert payload["geojson_gcj02"]["features"] == []
+    assert any("物理一致性" in w for w in payload["warnings"])
+
+
+def test_physical_speed_gate_passes_normal_ride() -> None:
+    """正常骑行（352m / 89s = 4 m/s）不能被物理闸门误伤。"""
+    from app import server as S
+
+    payload = _gj_payload()
+    payload["ok"] = True
+    payload["distance_m"] = 352.0
+    S._maybe_reject_by_physical_speed(payload, {"duration_s": 89})
+    assert payload["ok"] is True
+    assert payload["distance_m"] == 352.0
+    # 边界：无时长 / 无里程 / 零值一律放行（交给其他闸门）
+    for summary in ({}, {"duration_s": None}, {"duration_s": 0}):
+        p2 = _gj_payload()
+        p2["ok"] = True
+        p2["distance_m"] = 99000.0
+        S._maybe_reject_by_physical_speed(p2, summary)
+        assert p2["ok"] is True
+
+
+def test_physical_speed_gate_is_wired_into_summary_flow() -> None:
+    """物理闸门必须挂进主流程与精修继承两处。"""
+    import inspect
+
+    from app import server as S
+
+    assert "_maybe_reject_by_physical_speed(payload, summary)" in \
+        inspect.getsource(S._attach_ride_summary)
+    assert "_maybe_reject_by_physical_speed(payload, rs)" in \
+        inspect.getsource(S._inherit_refine_fields)
+
+
 def test_recognize_endpoints_accept_summary_form() -> None:
     """两个识别端点的 Form 契约：可选 summary 文件 + 落盘前并入。"""
     import inspect

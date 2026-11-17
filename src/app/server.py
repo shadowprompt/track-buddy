@@ -430,6 +430,10 @@ async def _attach_ride_summary(
     if cc.get("available") and not cc.get("consistent"):
         payload.setdefault("warnings", []).append(str(cc["note"]))
         _maybe_reject_by_summary_ratio(payload, summary, cc)
+    # 时长-里程物理一致性闸门：不依赖概要里程，只要概要里有时长就能
+    # 拦住尺度爆炸（概要页没传或没解析出里程时，里程交叉校验失效，
+    # 这是最后一道防线）。
+    _maybe_reject_by_physical_speed(payload, summary)
 
 
 # 里程交叉校验硬闸门阈值。
@@ -440,6 +444,21 @@ async def _attach_ride_summary(
 # 照常 ok:true 交付，2026-11-17）。数量级错误时拒绝输出轨迹，
 # 把「自信的错误」变成「明示的失败」。
 _SUMMARY_GATE_RATIO = (1.0 / 3.0, 3.0)
+
+
+def _reject_bad_track(payload: dict[str, Any], msg: str) -> None:
+    """统一的「拒绝交付错误轨迹」：ok=False + 清空轨迹与导出。"""
+    payload["ok"] = False
+    payload["message"] = msg
+    payload["confidence"] = 0.0
+    payload["geojson"] = {"type": "FeatureCollection", "features": []}
+    payload["geojson_gcj02"] = {"type": "FeatureCollection", "features": []}
+    payload["distance_m"] = 0
+    payload["track_points"] = 0
+    # 导出层读空 GeoJSON 后会自动跳过，这里把可能已挂上的内容摘掉
+    payload.pop("gpx", None)
+    payload.pop("tcx", None)
+    payload.setdefault("warnings", []).append(msg)
 
 
 def _maybe_reject_by_summary_ratio(
@@ -463,17 +482,47 @@ def _maybe_reject_by_summary_ratio(
         "已拒绝输出该轨迹。建议：把地图放大到街道级、补充分段细节图"
         "（相邻截图重叠约 1/3）后重新识别；概要页里程本身可直接采信"
     )
-    payload["ok"] = False
-    payload["message"] = msg
-    payload["confidence"] = 0.0
-    payload["geojson"] = {"type": "FeatureCollection", "features": []}
-    payload["geojson_gcj02"] = {"type": "FeatureCollection", "features": []}
-    payload["distance_m"] = 0
-    payload["track_points"] = 0
-    # 导出层读空 GeoJSON 后会自动跳过，这里把可能已挂上的内容摘掉
-    payload.pop("gpx", None)
-    payload.pop("tcx", None)
-    payload.setdefault("warnings", []).append(msg)
+    _reject_bad_track(payload, msg)
+
+
+# 骑行**平均速度**物理上限（米/秒）。世界级冲刺瞬时能到 ~25 m/s，
+# 但整段运动的平均速度不可能持续超过 ~18 m/s；取 20 m/s（72 km/h）
+# 留足裕量。这个闸门只需要**时长**，不需要概要里程——概要页没传或
+# 「里程没解析出来」时，里程交叉校验失效，而尺度爆炸必然打破
+# 时长-里程物理关系（实测 2026-11-17：用户只传概览图，89 秒的骑行
+# 被放大成 29.7 公里 = 平均时速 1202 km/h，ok:true 照常交付）。
+_PHYSICAL_SPEED_MAX_MPS = 20.0
+
+
+def _maybe_reject_by_physical_speed(
+    payload: dict[str, Any],
+    summary: dict[str, Any],
+) -> None:
+    """识别里程与概要时长违反物理一致性（平均速度超骑行上限）时拒绝。
+
+    注意这是**平均速度**：红灯停车、推行都只会拉低平均值，
+    所以超过上限只能是几何里程错了，不存在合理情形。
+    """
+    dur = summary.get("duration_s")
+    dm = payload.get("distance_m")
+    try:
+        dur_f = float(dur)
+        dm_f = float(dm)
+    except (TypeError, ValueError):
+        return
+    if dur_f <= 0 or dm_f <= 0:
+        return
+    speed = dm_f / dur_f
+    if speed <= _PHYSICAL_SPEED_MAX_MPS:
+        return
+    kmh = speed * 3.6
+    msg = (
+        f"识别里程 {dm_f:.0f}m 与运动时长 {dur_f:.0f}s 违反物理一致性"
+        f"（平均速度 {speed:.1f} m/s = {kmh:.0f} km/h，超出骑行极限）"
+        "——几何里程存在尺度爆炸，已拒绝输出该轨迹。建议补传概要页"
+        "（含「骑行 XXX 千米」大卡）或分段细节图后重新识别"
+    )
+    _reject_bad_track(payload, msg)
 
 
 def _attach_exports(payload: dict[str, Any]) -> None:
@@ -1339,6 +1388,8 @@ def _inherit_refine_fields(payload: dict[str, Any], prev: dict[str, Any]) -> Non
     cc = rs.get("cross_check") or {}
     if cc.get("available") and not cc.get("consistent"):
         _maybe_reject_by_summary_ratio(payload, rs, cc)
+    # 物理一致性闸门同理：精修只平移不改尺度，尺度爆炸不会因精修消失。
+    _maybe_reject_by_physical_speed(payload, rs)
 
 
 def _run_refine(shot_id: str, shot_path: Path) -> None:
