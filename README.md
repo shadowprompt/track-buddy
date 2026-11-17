@@ -24,32 +24,45 @@ GPS 坐标不在图片里，要用图上印的 POI 标注当锚点做像素→�
 
 本项目已封装成用户级技能 **`ride-screenshot-georeference`**
 （`~/.workbuddy/skills/ride-screenshot-georeference/`），在任何会话里发一张
-骑行截图并说「识别这条轨迹」即可自动调用。
+运动截图并说「识别这条轨迹」即可自动调用。技能随项目能力同步演进
+（2026-11-17 重写）：支持多来源画像、运动概要、GPX/TCX 与多图。
+
+技能提供**两条调用路径**：
 
 ```bash
-# 技能脚本（自动定位项目根目录）
-python ~/.workbuddy/skills/ride-screenshot-georeference/scripts/recognize.py <图片> --out <目录>
+# A. 便携单图 CLI（自带内核，离线可跑，只产 GeoJSON + 对照图）
+python ~/.workbuddy/skills/ride-screenshot-georeference/scripts/recognize.py \
+    <图片> --source meituan --out <目录>
 
-# 等价的 CLI
-python -m app.cli <图片> --city 上海 --out <目录>   # 需 PYTHONPATH=src
+# B. 本地服务 API（多图 / 运动概要 / GPX / TCX，需用户先起服务）
+python ~/.workbuddy/skills/ride-screenshot-georeference/scripts/recognize_api.py \
+    <图1> <图2> --summary <概要图> --source amap --out <目录>
 ```
+
+`recognize.py` 始终用运行它的 Python 解释器加载自带内核（避免裸 `python`
+指向无识别依赖的环境）；来源画像通过 `SOURCE_PROFILE` 环境变量传给 CLI。
+`recognize_api.py` 只用标准库调 `/api/recognize` / `recognize_multi`，
+**不会代为启动服务**（服务由用户自己起，见下方部署章节）。
 
 | 路径 | 说明 |
 |---|---|
-| `~/.workbuddy/skills/ride-screenshot-georeference/SKILL.md` | 技能说明与判读规则 |
-| `.../scripts/recognize.py` | 调用封装，输出 JSON 摘要 |
-| `.../assets/ride_core/` | **打包进来的识别内核**（app 包 + 本地词典 + 依赖清单） |
-| `.../references/methodology.md` | 方法论、判据设计、踩坑记录 |
+| `SKILL.md` | 技能说明与判读规则（两路径、来源画像、硬约束） |
+| `scripts/recognize.py` | 便携单图 CLI 封装，输出 JSON 摘要 |
+| `scripts/recognize_api.py` | 本地服务 API 封装（多图/概要/GPX/TCX） |
+| `assets/ride_core/` | **打包进来的识别内核**（app 包 51 模块 + 词典 + 依赖清单） |
+| `references/methodology.md` | 方法论、判据设计、踩坑记录 |
 | `src/app/cli.py` | 无需服务即可调用的命令行入口 |
 | `src/app/visuals.py` | 三种可视化产出（叠加图 / 验证图 / 轨迹图） |
 | `src/tools/sync_skill.py` | 把内核同步进各份技能安装（避免副本漂移） |
-| `dist/ride-screenshot-georeference.zip` | 打包好的技能（77 KB，完全自包含） |
+| `dist/ride-screenshot-georeference.zip` | 打包好的技能（约 427 KB，完全自包含） |
 
 **技能包是完全自包含的**：解压到任意目录即可运行，不依赖本仓库存在。
-已实测：把 zip 解压到全新临时目录，仅靠包内内核跑出的结果与本仓库
-完全一致（conf 0.863 / 180 点 / 4.000 km / 路名一致）。
+已实测：把 zip 解压到全新临时目录，仅靠包内内核即可跑通美团样本
+（`ok:true`、222 点、4.1 km、路名与实际一致、`project` 指向临时目录内核），
+证明不读写本仓库。新增来源扩展手册在 `docs/HANDOVER.md` §23（开发仓库内，
+不进便携技能包）。
 
-三处安装位置（内容一致，由 `src/tools/sync_skill.py` 同步）：
+三处安装位置（内容一致，由 `src/tools/sync_skill.py` 同步内核 + 手工同步文档脚本）：
 
 | 位置 | 作用域 |
 |---|---|
@@ -57,8 +70,9 @@ python -m app.cli <图片> --city 上海 --out <目录>   # 需 PYTHONPATH=src
 | `<本仓库>/.workbuddy/skills/ride-screenshot-georeference/` | 项目级，随仓库分发给同事 |
 | `<工作区>/.workbuddy/skills/ride-screenshot-georeference/` | 项目级，当前工作区生效 |
 
-**维护约定**：代码只在本仓库改，改完执行
-`python src/tools/sync_skill.py <各技能目录>` 同步。
+**维护约定**：代码只在本仓库改，改完先 `python src/tools/sync_skill.py <各技能目录>`
+同步内核，再同步 `SKILL.md` / `scripts` / `references`，最后用
+`package_skill.py` 重打包 dist zip。
 
 ## 快速开始
 

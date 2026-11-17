@@ -332,5 +332,29 @@
    "verified": false,
    "last_confidence": 0.2
   }
+ ],
+ "南天信息大厦": [
+  {
+   "lon": 121.35699335581127,
+   "lat": 31.220332912122924,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "baidu",
+   "address": "上海市长宁区金钟路767弄1号（淞虹路地铁站5号口步行410米）",
+   "verified": false
+  }
+ ],
+ "上海荟聚落客区A": [
+  {
+   "lon": 121.35541575989728,
+   "lat": 31.222421082979277,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "baidu",
+   "address": "上海市长宁区新泾镇文洋大厦东南160米",
+   "verified": false
+  }
  ]
 }

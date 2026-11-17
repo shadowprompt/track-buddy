@@ -1,25 +1,21 @@
-"""骑行截图 → GeoJSON 轨迹：调用封装。
+"""运动截图 → 轨迹 GeoJSON：便携 CLI 调用封装。
 
 用法::
 
     python scripts/recognize.py <图片路径> [--city 上海] [--out 输出目录]
-                                [--online] [--no-chart] [--no-road-verify]
+                                [--source meituan|amap] [--online]
+                                [--no-chart] [--no-road-verify]
 
-脚本会自动定位底层项目并调用其 CLI，把 CLI 输出的 JSON 摘要原样打印到 stdout。
+脚本自动定位识别内核并调用其 CLI，把 JSON 摘要原样打印到 stdout。
+单图路径只产 GeoJSON + 对照图；多图 / 运动概要 / GPX / TCX 走 recognize_api.py。
 
-项目定位顺序：
-  1. 环境变量 MEITUAN_RIDE_HOME（开发时指向代码仓库）
-  2. **技能自带的内核**（assets/ride_core/）—— 技能包自带识别代码，
-     复制到任何机器都能独立运行
-  3. 技能目录上溯三级 —— 技能装在 <仓库>/.workbuddy/skills/ 下时，
-     上溯三级正好是仓库根目录（那里就有 src/app/）
-  4. 常见安装位置 D:\\Dev\\meituan-ride
+内核定位顺序：
+  1. 环境变量 TRACK_BUDDY_HOME（开发时指向代码仓库；旧名 MEITUAN_RIDE_HOME 兼容）
+  2. **技能自带的内核**（assets/ride_core/）—— 默认走这条，复制到任何机器可跑
+  3. 技能目录上溯三级 —— 装在 <仓库>/.workbuddy/skills/ 下时正好是仓库根
+  4. 常见安装位置 D:\\Dev\\track-buddy
 
 也可用 --project 显式指定。
-
-⚠️ **两种内核布局**：
-  * 仓库模式   —— app 包在 ``<root>/src/app/``，需把 ``<root>/src`` 加进 PYTHONPATH；
-  * 技能自带   —— app 包在 ``<root>/app/``（vendor 时被拍平），直接用 ``<root>``。
 """
 from __future__ import annotations
 
@@ -34,49 +30,35 @@ _SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _BUNDLED = os.path.join(_SKILL_DIR, "assets", "ride_core")
 
 _CANDIDATES = [
-    os.environ.get("MEITUAN_RIDE_HOME", ""),
+    os.environ.get("TRACK_BUDDY_HOME", ""),
+    os.environ.get("MEITUAN_RIDE_HOME", ""),   # 旧名兼容
     _BUNDLED,
-    os.path.join(_SKILL_DIR, "..", "..", ".."),      # 仓库根目录
-    r"D:\Dev\meituan-ride",
-    "/d/Dev/meituan-ride",
+    os.path.join(_SKILL_DIR, "..", "..", ".."),  # 仓库根目录
+    r"D:\Dev\track-buddy",
+    "/d/Dev/track-buddy",
 ]
 
 
 def find_project() -> str | None:
-    """返回含 app/cli.py 的目录，找不到返回 None。
-
-    兼容两种布局：仓库模式 ``<root>/src/app/cli.py`` 与
-    技能自带的 vendor 模式 ``<root>/app/cli.py``。
-    """
+    """返回含 app/cli.py 的目录，找不到返回 None。"""
     for cand in _CANDIDATES:
         if not cand:
             continue
         path = os.path.abspath(cand)
         if os.path.isfile(os.path.join(path, "app", "cli.py")):
             return path
-        if os.path.isfile(os.path.join(path, "src", "app", "cli.py")):
-            return path
     return None
-
-
-def _cli_layout(project: str) -> tuple[str, str]:
-    """返回 (app 包所在目录, 需要加进 PYTHONPATH 的目录)。
-
-    仓库模式：app 在 ``<root>/src/app``，PYTHONPATH 加 ``<root>/src``。
-    vendor 模式：app 在 ``<root>/app``，PYTHONPATH 加 ``<root>``。
-    """
-    if os.path.isfile(os.path.join(project, "app", "cli.py")):
-        return project, project
-    return os.path.join(project, "src"), os.path.join(project, "src")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="recognize.py",
-        description="从骑行 App 截图识别轨迹并输出 GeoJSON")
+        description="从运动 App 截图识别轨迹并输出 GeoJSON（WGS-84）")
     ap.add_argument("image", help="截图路径")
     ap.add_argument("--city", default="上海", help="城市提示")
     ap.add_argument("--out", default=None, help="输出目录")
+    ap.add_argument("--source", default=None,
+                    help="来源画像 id（meituan / amap），默认 meituan")
     ap.add_argument("--online", action="store_true", help="允许在线地理编码")
     ap.add_argument("--no-chart", action="store_true", help="不生成轨迹图")
     ap.add_argument("--no-road-verify", action="store_true", help="不生成路网验证图")
@@ -84,14 +66,11 @@ def main() -> int:
     args = ap.parse_args()
 
     project = os.path.abspath(args.project) if args.project else find_project()
-    has_cli = (project and os.path.isfile(os.path.join(project, "app", "cli.py")))
-    if not has_cli and project:
-        has_cli = os.path.isfile(os.path.join(project, "src", "app", "cli.py"))
-    if not project or not has_cli:
+    if not project or not os.path.isfile(os.path.join(project, "app", "cli.py")):
         print(json.dumps({
             "ok": False,
-            "error": "找不到底层项目（meituan-ride）。"
-                     "请用 --project 指定，或设置环境变量 MEITUAN_RIDE_HOME。",
+            "error": "找不到识别内核（track-buddy）。"
+                     "请用 --project 指定，或设置环境变量 TRACK_BUDDY_HOME。",
             "searched": _CANDIDATES,
         }, ensure_ascii=False))
         return 2
@@ -101,8 +80,9 @@ def main() -> int:
                          ensure_ascii=False))
         return 2
 
-    python = shutil.which("python") or sys.executable
-    _, pypath = _cli_layout(project)
+    # 必须用运行本脚本的解释器：裸 `python` 可能指向另一个没装识别依赖
+    # （cv2 / rapidocr）的环境，导致自带内核 import 失败。
+    python = sys.executable
     cmd = [python, "-m", "app.cli", os.path.abspath(args.image),
            "--city", args.city]
     if args.out:
@@ -114,11 +94,11 @@ def main() -> int:
     if args.no_road_verify:
         cmd.append("--no-road-verify")
 
-    # app 包在 src/app/（仓库模式）或 app/（vendor 模式），
-    # 都要把它所在的目录放进 PYTHONPATH 才能 `python -m app.cli`。
-    env = dict(os.environ)
-    env["PYTHONPATH"] = pypath + (
-        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    # CLI 没有 --source 参数：来源画像通过 SOURCE_PROFILE 环境变量选择
+    # （CONFIG.source_profile_id 读取，见 config.py）。
+    env = os.environ.copy()
+    if args.source:
+        env["SOURCE_PROFILE"] = args.source
 
     proc = subprocess.run(cmd, cwd=project, capture_output=True, text=True,
                           encoding="utf-8", errors="replace", env=env)

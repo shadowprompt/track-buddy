@@ -94,7 +94,7 @@ dlat, dlon = _transform_lat(lon - 105.0, lat - 35.0)   # ← dlon 也取了 lat 
 
 **路名文字仍有价值**，但只能用于：
 - 「区域一致性校验」（判断候选是否落在合理街区）
-- 路名归属（`src/app/roadname.py`，用走向匹配筛掉方向不符的标注）
+- 路名归属（`app/roadname.py`，用走向匹配筛掉方向不符的标注）
 
 ---
 
@@ -110,7 +110,7 @@ RANSAC 退化检查：2 点时**不能**要求 `matrix_rank >= 2`（2 点秩恒�
 
 ---
 
-## 6. 路网约束精修（`src/app/roadfit.py`）
+## 6. 路网约束精修（`app/roadfit.py`）
 
 **动机**：锚点来自 POI 文字标注，标注位置由地图排版决定；POI 坐标来自不同
 数据库（美团底图用国内数据，本地词典种子来自 OSM）。同一 POI 在两套数据里可差
@@ -200,31 +200,35 @@ OSM 在那里恰好有个顶点，就被误当成吻合。把整条线投影回�
 - 美团与 OSM 的路名常不一致（上海道路改过名，OSM 保留旧名）
 - OSM 覆盖稀疏：实测长宁新泾一带「枣阳路」「泉口路」「真北路」各只有 1 个节点
 
-更好的来源是**高德路径规划 API**（与美团底图同源，返回国内官方路名），
-需配置 `AMAP_KEY`。
+**地理编码只用天地图单源**（`MAP_GEOCODING_ORDER` / `TIANDITU_API_KEY`）。
+🔴 高德在线配额已用尽，**不要**建议或尝试接入高德在线编码。未配密钥时
+自动降级为纯本地词典模式，识别行为不变。
 
 **词典优先级曾写反**：早期是「词典命中就直接返回，永不调用在线服务」，
-配了 `AMAP_KEY` 也用不上。已改为 **用户确认 > 在线（与底图同源）> 本地词典**。
+配了密钥也用不上。已改为 **用户确认 > 在线（天地图）> 本地词典**。
 
 ---
 
 ## 10. 复现命令
 
 ```bash
-cd /d/Dev/meituan-ride
+cd /d/Dev/track-buddy
 
-# 识别 + 全部产物
-python -m app.cli samples/meituan_ride_shanghai.jpg --out out/   # 需 PYTHONPATH=src
+# 单图识别 + 全部 CLI 产物（WGS-84 GeoJSON + 三张对照图）
+D:/soft/Python311/python.exe -m app.cli samples/meituan_ride_shanghai.jpg --out out/
 
-# 绝对精度校验（渲染路网判据）
-python tools/verify_roads.py samples/meituan_ride_shanghai.jpg
+# 指定来源画像（CLI 走 SOURCE_PROFILE 环境变量）
+SOURCE_PROFILE=amap D:/soft/Python311/python.exe -m app.cli <高德截图> --out out/
 
-# 验收测试（含全部回归项）
-python tests/test_e2e.py
+# 全量验收测试
+D:/soft/Python311/python.exe -m pytest -q
 
-# 起服务（网页界面 http://127.0.0.1:8848）
-python run.py --port 8848
+# 起服务（网页界面 http://127.0.0.1:8848，由用户自己启动）
+D:/soft/Python311/python.exe run.py --host 127.0.0.1 --port 8848
 ```
+
+> 便携技能包里没有 samples / tests / run.py，这些命令在**开发仓库**执行。
+> 技能包内用 `scripts/recognize.py`（CLI）或 `scripts/recognize_api.py`（服务）。
 
 ---
 
