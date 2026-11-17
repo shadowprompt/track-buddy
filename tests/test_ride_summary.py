@@ -309,3 +309,27 @@ def test_timestamp_separators_dot_and_slash() -> None:
     assert out["started_at"] == "2026-11-16T08:13:27"
     out2 = parse_ride_summary(_items("2026/11/16 08:13:27"))
     assert out2["started_at"] == "2026-11-16T08:13:27"
+
+
+def test_amap_duration_prefers_stat_card_over_topbar_cumulative() -> None:
+    """高德详情页顶部栏有「今日累计」徽章（如「23分钟」），分秒式
+    先跑会把它当成单次时长（2026-11-17 实测事故）。冒号三段式
+    （详情统计卡）必须优先。
+    """
+    page = _boxed(
+        ["08:22", "23分钟"],          # 状态栏时钟 + 今日累计徽章（干扰）
+        ["2026.11.1708:19:47"],
+        ["骑行", "352米"],             # 短骑行：单位是「米」
+        ["00:01:29", "14千米/时", "7大卡"],
+        ["运动用时", "平均速度", "消耗热量"],
+        ["18千米/时", "157米", "4米"],  # 最高时速/爬升里程/爬升高度（干扰）
+        ["最高时速", "爬升里程", "爬升高度"],
+    )
+    out = parse_ride_summary(page, ride_labels=AMAP_LABELS)
+    # 必须是详情卡的 1 分 29 秒，而不是顶部栏累计的 23 分钟（1380s）
+    assert out["duration_s"] == 89
+    assert out["duration_text"] == "00:01:29"
+    assert out["calories_kcal"] == pytest.approx(7)
+    assert out["started_at"] == "2026-11-17T08:19:47"
+    # 配速「14千米/时」不能混进里程候选（单位后跟 / 被排除）
+    assert out["distance_km"] is None  # 裸「米」单位暂不支持，宁缺勿错

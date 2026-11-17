@@ -210,28 +210,31 @@ def parse_ride_summary(
         if out["started_at"]:
             break
 
-    # --- 时长（「骑行20分35秒」，可能整块或含「小时」） ---
+    # --- 时长：冒号三段式优先（高德详情卡「00:14:14」），分秒式兜底 ---
+    # 顺序有讲究：高德详情页顶部栏有「今日累计」徽章（如「23分钟」），
+    # 若分秒式先跑会把累计值当成单次时长（2026-11-17 实测事故）；而
+    # 冒号三段式只出现在详情统计卡上。美团页面没有冒号时长，顺序
+    # 对它无影响。
     for s in tokens:
-        m = _RE_DURATION.search(s)
-        if m and ("分" in s or "小时" in s):
-            h, mi, sec = m.groups()
-            out["duration_s"] = (int(h or 0) * 3600 + int(mi) * 60
-                                 + int(sec or 0))
-            out["duration_text"] = s
-            break
-    # 高德族：冒号三段式「00:14:14」。必须跳过含时间戳的块
-    #（时间戳尾段的「:13:27」不是时长）。
+        if _RE_TIMESTAMP.search(s):
+            continue  # 时间戳尾段的「:13:27」不是时长
+        m = _RE_DURATION_COLON.search(s)
+        if m:
+            h, mi, sec = (int(g) for g in m.groups())
+            if h <= 23 and mi <= 59 and sec <= 59:
+                out["duration_s"] = h * 3600 + mi * 60 + sec
+                out["duration_text"] = s
+                break
     if out["duration_s"] is None:
+        # 分秒式兜底（美团「骑行20分35秒」，可能整块或含「小时」）
         for s in tokens:
-            if _RE_TIMESTAMP.search(s):
-                continue
-            m = _RE_DURATION_COLON.search(s)
-            if m:
-                h, mi, sec = (int(g) for g in m.groups())
-                if h <= 23 and mi <= 59 and sec <= 59:
-                    out["duration_s"] = h * 3600 + mi * 60 + sec
-                    out["duration_text"] = s
-                    break
+            m = _RE_DURATION.search(s)
+            if m and ("分" in s or "小时" in s):
+                h, mi, sec = m.groups()
+                out["duration_s"] = (int(h or 0) * 3600 + int(mi) * 60
+                                     + int(sec or 0))
+                out["duration_text"] = s
+                break
 
     # --- 卡路里（kcal 单位唯一，直接取） ---
     kcal_vals = []
