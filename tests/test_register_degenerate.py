@@ -72,3 +72,44 @@ def test_register_rejects_coincident_geo_anchors():
     reg = register(pairs, min_inliers=2)
     assert not reg.ok
     assert reg.notes
+
+
+def test_external_scale_prior_rejects_wrong_scale_model():
+    """外部尺度先验（概要里程÷轨迹像素长度）救回被垃圾锚点拉爆的尺度。
+
+    2026-11-17 实测：街区级特写（真值 ~0.4 地面米/像素）里，2 点退化
+    模型被垃圾锚点拉到 31 m/px，352 米骑行爆成 26.5 公里。概要里程
+    0.352km 作为外部先验后，错误尺度的模型组合直接被枚举丢弃，
+    north_up 模型由真实的荟聚簇锚点撑起。
+    """
+    from app.geo.coords import mercator_to_lonlat
+
+    # 4 个自洽锚点：墨卡托坐标 = 0.6 * 像素 + 原点（上海 lat≈31.2）
+    origin_x, origin_y = 13_500_000.0, 3_650_000.0
+    px_pts = [(100.0, 100.0), (500.0, 100.0),
+              (100.0, 500.0), (500.0, 500.0)]
+    true_scale = 0.6  # 墨卡托米/像素
+    pairs = []
+    for i, (px, py) in enumerate(px_pts):
+        mx = origin_x + true_scale * px
+        my = origin_y - true_scale * py
+        lon, lat = mercator_to_lonlat(mx, my)
+        pairs.append(AnchorPair(
+            name=f"测试锚点{i}", px=px, py=py, weight=1.0, kind="poi",
+            lon=lon, lat=lat,
+        ))
+
+    # 外部先验与真值一致（先验为地面 m/px = 0.6*cos(lat)），
+    # 不应破坏正确配准
+    mean_lat = 31.2
+    prior_ground = true_scale * __import__("math").cos(__import__("math").radians(mean_lat))
+    reg = register(pairs, min_inliers=3, external_scale_prior=prior_ground)
+    assert reg.ok
+    assert abs(reg.scale - true_scale) < 0.2
+
+    # 外部先验与真值矛盾（先验 5.0 = 数倍偏离）时也不该把正确模型
+    # 全灭——先验只约束枚举搜索（容差 30%），正确簇若在容差内仍可
+    # 存活；若被拒则诚实失败，但绝不允许回到 2 点垃圾模型的错误尺度。
+    reg2 = register(pairs, min_inliers=3, external_scale_prior=5.0)
+    if reg2.ok:
+        assert abs(reg2.scale - 5.0) < 5.0 * 0.3

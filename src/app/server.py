@@ -383,11 +383,49 @@ def _build_payload_from(result: Any, shot_id: str, shot_url: str) -> dict[str, A
     }
 
 
+async def _preparse_ride_summary(
+    summary_file: UploadFile | None,
+) -> dict[str, Any] | None:
+    """端点前置解析概要图：在 pipeline 配准**之前**拿到概要里程。
+
+    概要里程是配准的**外部尺度先验**（轨迹像素长度 ÷ 真实里程），
+    必须在 register 之前可用——事后校验只能拦住错误结果，
+    先验才能救回本来会失败的识别（2026-11-17 街区级特写实测）。
+
+    返回 None 表示没有概要图或解析不出字段；诊断落盘在此处做
+    （pipeline 与 _attach_ride_summary 都不再重复读图）。
+    """
+    if summary_file is None or not (summary_file.filename or "").strip():
+        return None
+    try:
+        data = await summary_file.read()
+        await summary_file.seek(0)  # 后续 _attach_ride_summary / byte_sink 还要读
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+    if img is None:
+        return None
+    # 诊断落盘：概要图 OCR 读不到里程时（如 2026-11-17 352米案例），
+    # 没有原图就无从排查「到底传了什么」。失败静默不影响主流程。
+    try:
+        _sum_dir = Path(__file__).resolve().parent.parent.parent / "data" / "uploads"
+        _sum_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(_sum_dir / f"{int(time.time())}_summary.jpg"), img)
+    except Exception:
+        pass
+    from .ocr_anchor import ocr_texts
+    from .ride_summary import parse_ride_summary
+
+    texts = ocr_texts(img, CONFIG.vision)
+    return parse_ride_summary(texts, ride_labels=CONFIG.source.ride_labels)
+
+
 async def _attach_ride_summary(
     payload: dict[str, Any],
     summary_file: UploadFile | None,
     *,
     byte_sink: list[bytes] | None = None,
+    pre_parsed: dict[str, Any] | None = None,
 ) -> None:
     """解析运动概要截图，把本次运动的开始时间/时长等并入识别结果（可选上传）。
 
@@ -395,39 +433,45 @@ async def _attach_ride_summary(
     非空字段同时并入 GeoJSON ``properties["ride_summary"]``——这样一次
     识别的输出就是「轨迹几何 + 运动元数据」的完整运动记录。解析失败
     只加告警，绝不影响轨迹识别本身。
+
+    ``pre_parsed``：``_preparse_ride_summary`` 的结果。端点为了给
+    pipeline 供尺度先验已经解析过一次，这里直接复用，省一次 OCR。
+    注意 cross_check 仍要重算——它依赖 payload 的几何里程，
+    前置解析时还不知道。
     """
     if summary_file is None or not (summary_file.filename or "").strip():
         return
     try:
         data = await summary_file.read()
-        # 运动概要图不落盘；只有调用方要把记录存进 COS 时才收集字节。
-        # byte_sink=None（默认）时行为与旧版逐字节一致。
+        # 运动概要图不落盘（诊断落盘在 _preparse_ride_summary）；只有
+        # 调用方要把记录存进 COS 时才收集字节。
         if byte_sink is not None:
             byte_sink.append(data)
-        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     except Exception:
-        img = None
-    if img is None:
-        payload.setdefault("warnings", []).append(
-            "运动概要截图无法解码，已跳过")
-        return
-    # 诊断落盘：概要图 OCR 读不到里程时（如 2026-11-17 352米案例——
-    # 用户传的概要页只有爬升/海拔行，没有里程大卡），没有原图就无从
-    # 排查「到底传了什么」。存 data/uploads 供事后核对，失败不影响主流程。
-    try:
-        _sum_dir = Path(__file__).resolve().parent.parent.parent / "data" / "uploads"
-        _sum_dir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(
-            str(_sum_dir / f"{int(time.time())}_summary.jpg"), img)
-    except Exception:
-        pass
-    from .ocr_anchor import ocr_texts
-    from .ride_summary import parse_ride_summary, summary_properties
+        data = b""
+    if pre_parsed is not None:
+        summary = dict(pre_parsed)
+        summary.pop("cross_check", None)
+    else:
+        try:
+            img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        except Exception:
+            img = None
+        if img is None:
+            payload.setdefault("warnings", []).append(
+                "运动概要截图无法解码，已跳过")
+            return
+        from .ocr_anchor import ocr_texts
+        from .ride_summary import parse_ride_summary, summary_properties
 
-    texts = ocr_texts(img, CONFIG.vision)
-    summary = parse_ride_summary(
-        texts, geom_distance_m=payload.get("distance_m"),
-        ride_labels=CONFIG.source.ride_labels)
+        texts = ocr_texts(img, CONFIG.vision)
+        summary = parse_ride_summary(
+            texts, geom_distance_m=payload.get("distance_m"),
+            ride_labels=CONFIG.source.ride_labels)
+    from .ride_summary import summary_cross_check, summary_properties
+
+    summary["cross_check"] = summary_cross_check(
+        summary, payload.get("distance_m"))
     payload["ride_summary"] = summary
     props = summary_properties(summary)
     if props:
@@ -883,6 +927,11 @@ async def recognize_multi(
         if ov and len(ov) <= max_bytes:
             overview_id, overview_path = _save_upload(ov, overview.filename)
 
+    # 概要图前置解析：里程是配准的外部尺度先验，必须在 pipeline 之前
+    # 就绪（见 _preparse_ride_summary）。结果同时供 _attach_ride_summary
+    # 复用，整次请求只 OCR 概要图一次。
+    summary_pre = await _preparse_ride_summary(summary)
+
     # --- 拼接 ---
     stitch_info: dict[str, Any] = {}
     canvas = imgs[0]
@@ -925,6 +974,7 @@ async def recognize_multi(
             output_crs=output_crs,
             refine=do_sync_refine,
             road_names=names or None,
+            distance_hint_km=(summary_pre or {}).get("distance_km"),
             # 多图本来就有当次地理配准的真值路径，auto 模式绝不让模板
             # 召回短路它（2026-11-14 事故）；「优先模板」显式选择。
             skip_template_recall=tpl_skip,
@@ -1011,7 +1061,8 @@ async def recognize_multi(
 
     summary_sink: list[bytes] = []
     await _attach_ride_summary(
-        payload, summary, byte_sink=summary_sink if record_uid else None)
+        payload, summary, byte_sink=summary_sink if record_uid else None,
+        pre_parsed=summary_pre)
     _attach_exports(payload)
     _persist_last_result(payload)
     # 多图结果单独存一份——否则之后跑一次单图识别就会把它冲掉，
@@ -1185,6 +1236,8 @@ async def recognize(
     # 模板复用模式必须在重活之前校验：HTTPException 在 _pipeline.run
     # 的参数求值里抛出会被 except Exception 包成 500，语义就错了。
     tpl_skip = _template_mode_skip(template, paired_mode)
+    # 概要图前置解析（尺度先验），与 multi 端点相同（见其注释）。
+    summary_pre = await _preparse_ride_summary(summary)
     try:
         result = _pipeline.run(
             run_img,
@@ -1193,6 +1246,7 @@ async def recognize(
             output_crs=output_crs,
             refine=do_sync_refine,
             road_names=_names or None,
+            distance_hint_km=(summary_pre or {}).get("distance_km"),
             # paired 模式（带细节图）默认走当次地理配准真值；「优先模板」
             # 由 template 入参显式选择（2026-11-14 事故教训）。
             skip_template_recall=tpl_skip,
@@ -1269,7 +1323,8 @@ async def recognize(
             profile_id=profile.id)
     summary_sink: list[bytes] = []
     await _attach_ride_summary(
-        payload, summary, byte_sink=summary_sink if record_uid else None)
+        payload, summary, byte_sink=summary_sink if record_uid else None,
+        pre_parsed=summary_pre)
     _attach_exports(payload)
     _persist_last_result(payload)
 

@@ -374,6 +374,7 @@ class RidePipeline:
         refine: bool = True,
         road_names: list[str] | None = None,
         skip_template_recall: bool = False,
+        distance_hint_km: float | None = None,
     ) -> PipelineResult:
         """识别入口：外层只负责「词典写入会话」的生命周期。
 
@@ -398,6 +399,7 @@ class RidePipeline:
                 img, city=city, allow_online=allow_online,
                 output_crs=output_crs, refine=refine, road_names=road_names,
                 skip_template_recall=skip_template_recall,
+                distance_hint_km=distance_hint_km,
             )
         except BaseException:
             self.lexicon.discard_capture()
@@ -506,6 +508,7 @@ class RidePipeline:
         refine: bool = True,
         road_names: list[str] | None = None,
         skip_template_recall: bool = False,
+        distance_hint_km: float | None = None,
     ) -> PipelineResult:
         t0 = time.time()
         warnings: list[str] = []
@@ -651,10 +654,25 @@ class RidePipeline:
             )
 
         # --- 阶段 4：配准 ---
+        #
+        # 外部尺度先验：概要里程（用户传的概要页解析出的真实里程）
+        # ÷ 轨迹像素长度 = 米/像素。它完全独立于锚点质量——
+        # 锚点尺度投票在「候选全是垃圾/同名异地」时会失效或投错
+        # （2026-11-17 街区级特写实测：6 个自洽锚点在候选里，
+        #  2 点退化模型仍被「支队亲」这类垃圾锚点拉爆到 31 m/px，
+        #  真值约 0.5）。物理里程不会撒谎，投不过它时以它为准。
+        external_prior = None
+        if distance_hint_km and distance_hint_km > 0 and len(track.polyline) >= 2:
+            pl = np.asarray(track.polyline, dtype=float)
+            track_px = float(np.linalg.norm(
+                np.diff(pl, axis=0), axis=1).sum())
+            if track_px >= 20.0:
+                external_prior = distance_hint_km * 1000.0 / track_px
         reg = register(
             pairs,
             inlier_m=cfg.ransac_inlier_m,
             min_inliers=cfg.ransac_min_inliers,
+            external_scale_prior=external_prior,
         )
         warnings.extend(reg.notes)
         if not reg.ok:
@@ -841,9 +859,11 @@ class RidePipeline:
         map_matched = self._map_match_optional(reg, track, road_net, zoom)
 
         # --- 独立校验：与配准自洽指标无关的两条外部证据 ---
-        # 截图里程来自 OCR、外部路由来自 Valhalla/OSRM，二者都不吃
-        # 配准残差，因此能抓到"所有自洽指标一起变好但位置是错的"的情况。
-        scale_check = scale_consistency(distance, extract_distance_km(texts))
+        # 截图里程来自 OCR（地图区内通常有里程牌/大卡）、外部路由来自
+        # Valhalla/OSRM，二者都不吃配准残差。地图区内没有里程文字时
+        # （amap 单图被裁掉下半屏概要卡），退回概要页解析出的里程。
+        scale_check = scale_consistency(
+            distance, extract_distance_km(texts) or distance_hint_km)
         route_check = route_validation_factor(road_name_fit)
         input_quality = assess_input_quality(
             image_size=(int(img.shape[1]), int(img.shape[0])),

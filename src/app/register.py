@@ -31,6 +31,7 @@ RANSAC 能识别并剔除这类离群点。
 from __future__ import annotations
 
 import itertools
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -836,6 +837,7 @@ def register(
     pairs: list[AnchorPair],
     inlier_m: float = 120.0,
     min_inliers: int = 3,
+    external_scale_prior: float | None = None,
 ) -> Registration:
     """像素→墨卡托配准。
 
@@ -850,6 +852,16 @@ def register(
     内点判定用**按锚点类型 + 按模型尺度**的容差（`_KIND_TOLERANCE`）：
     容差以像素为主、米数为下限，因此同一套参数在街道级截图
     （0.5 米/像素）与城市级截图（15 米/像素）上都成立。
+
+    ``external_scale_prior``：**外部尺度先验**（地面米/像素），典型来源
+    是运动概要里程 ÷ 轨迹像素长度。它与锚点质量完全无关——锚点尺度
+    投票（`_estimate_scale_prior`）在候选全是垃圾/同名异地时会失效甚至
+    投错，而物理里程不会撒谎。融合规则：
+
+      * 投票先验不存在，或与外部先验偏离 >35%（投票被垃圾锚点带偏）
+        → 采用外部先验，并把模型搜索的尺度容差放宽到 30%
+        （轨迹提取可能丢失分段，像素长度偏短，先验偏大）；
+      * 两者一致（<35%）→ 用投票先验（更精细），容差保持 12%。
     """
     notes: list[str] = []
     valid_all = [p for p in pairs if p.lon is not None and p.lat is not None]
@@ -913,6 +925,19 @@ def register(
     # 所以先用可靠锚点单独拟合出一个尺度，再把它作为先验
     # 去约束全锚点的模型搜索。
     scale_prior, prior_groups = _estimate_scale_prior(src, dst, groups, kinds)
+
+    # --- 外部尺度先验融合（见 docstring 的融合规则） ---
+    prior_tol = 0.12
+    if external_scale_prior and external_scale_prior > 0:
+        # 地面米/像素 → 墨卡托米/像素（dst 是墨卡托坐标）。
+        mean_lat = float(np.mean([p.lat for p in valid]))
+        ext_merc = external_scale_prior / math.cos(math.radians(mean_lat))
+        if scale_prior is None or abs(
+                scale_prior - ext_merc) / ext_merc > 0.35:
+            # 投票失败或被垃圾锚点带偏：物理里程说了算。
+            scale_prior = ext_merc
+            prior_groups = []  # 投票选出的锚点簇不可信，平移交回可靠种类
+            prior_tol = 0.30
 
     models = [
         # (名称, 拟合器, 采样点数, 自由度档位)
@@ -984,6 +1009,7 @@ def register(
         result = _enumerate_models(
             src, dst, groups, gid, kinds, fitter, min_pts,
             scale_prior=scale_prior, loo_scale=scale_prior,
+            prior_tol=prior_tol,
         )
         if result is None:
             continue

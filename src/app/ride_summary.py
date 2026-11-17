@@ -373,20 +373,7 @@ def parse_ride_summary(
                      "概要/详情页截图（含里程/时长/卡路里卡片）")
 
     # --- 与轨迹几何里程交叉校验 ---
-    cc: dict[str, Any] = {"available": False, "consistent": True,
-                          "ratio": None, "note": ""}
-    if out["distance_km"] and geom_distance_m:
-        ratio = float(geom_distance_m) / (out["distance_km"] * 1000.0)
-        cc.update({"available": True, "ratio": round(ratio, 3)})
-        if not (0.6 <= ratio <= 1.7):
-            cc["consistent"] = False
-            cc["note"] = (
-                f"轨迹几何里程 {geom_distance_m:.0f}m 与订单里程 "
-                f"{out['distance_km']}km 量级不符（比值 {ratio:.2f}）——"
-                "订单值来自平台记账，请检查轨迹截图是否完整覆盖本次行程")
-        else:
-            cc["note"] = "几何里程与订单里程量级一致"
-    out["cross_check"] = cc
+    out["cross_check"] = summary_cross_check(out, geom_distance_m)
 
     # GPX 时间轴需要「开始时间 + 时长」两个端点：只有时长给不出绝对
     # 时刻序列（GPX 要求 UTC 绝对时间），提前说明缺什么。
@@ -394,6 +381,31 @@ def parse_ride_summary(
         notes.append("识别到时长但没有开始时间，GPX 导出将没有时间轴")
     out["notes"] = notes
     return out
+
+
+def summary_cross_check(
+    summary: dict[str, Any], geom_distance_m: float | None
+) -> dict[str, Any]:
+    """概要里程与轨迹几何里程的交叉校验（0.6~1.7 视为一致）。
+
+    独立成函数：概要页在 pipeline 之前先解析（尺度先验）时还不知道
+    几何里程，server 挂接 payload 时用本函数补算。
+    """
+    cc: dict[str, Any] = {"available": False, "consistent": True,
+                          "ratio": None, "note": ""}
+    dkm = summary.get("distance_km")
+    if dkm and geom_distance_m:
+        ratio = float(geom_distance_m) / (dkm * 1000.0)
+        cc.update({"available": True, "ratio": round(ratio, 3)})
+        if not (0.6 <= ratio <= 1.7):
+            cc["consistent"] = False
+            cc["note"] = (
+                f"轨迹几何里程 {geom_distance_m:.0f}m 与订单里程 "
+                f"{dkm}km 量级不符（比值 {ratio:.2f}）——"
+                "订单值来自平台记账，请检查轨迹截图是否完整覆盖本次行程")
+        else:
+            cc["note"] = "几何里程与订单里程量级一致"
+    return cc
 
 
 def summary_properties(summary: dict[str, Any]) -> dict[str, Any]:
