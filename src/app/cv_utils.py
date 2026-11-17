@@ -118,6 +118,41 @@ def find_marker(
     return center, (labels == best_idx).astype(np.uint8)
 
 
+def find_marker_candidates(
+    hsv: np.ndarray,
+    ranges: list[tuple[int, int, int, int, int, int]],
+    min_area: int,
+    max_area: int,
+    min_fill: float = 0.0,
+) -> list[tuple[tuple[int, int], int]]:
+    """按 HSV 区间列出全部合格徽章候选（中心坐标, 面积），面积降序。
+
+    供「闭环赛道终点=距起点最近的团块」这类需要**按位置挑选**的场景使用；
+    ``find_marker`` 是「最大优先」，最大团块被 UI 元素（如导航指北针）
+    截胡时，调用方需要完整的候选列表自行决策。
+    """
+    mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+    for lo_h, lo_s, lo_v, hi_h, hi_s, hi_v in ranges:
+        mask |= cv2.inRange(hsv, (lo_h, lo_s, lo_v), (hi_h, hi_s, hi_v))
+    count, _, stats, centroids = cv2.connectedComponentsWithStats(mask, 8)
+    out: list[tuple[tuple[int, int], int]] = []
+    for i in range(1, count):
+        area = int(stats[i][4])
+        if not (min_area <= area <= max_area):
+            continue
+        if min_fill > 0:
+            bw, bh = int(stats[i][2]), int(stats[i][3])
+            if area / float(max(bw * bh, 1)) < min_fill:
+                continue
+        center = (
+            int(round(centroids[i][0])),
+            int(round(centroids[i][1])),
+        )
+        out.append((center, area))
+    out.sort(key=lambda c: -c[1])
+    return out
+
+
 def bbox_distance(
     bbox: tuple[int, int, int, int], point: tuple[int, int]
 ) -> float:
