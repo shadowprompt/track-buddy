@@ -390,6 +390,8 @@ class RidePipeline:
         }
         # 每次识别重置：早退/异常路径没有内点证据，自动写入应全部拒绝。
         self._last_anchor_keys = set()
+        # 锚点地理编码诊断明细（_resolve_anchors 填充，进 diagnostics）
+        self._last_geocode_report = []
         self.lexicon.begin_capture()
         try:
             result = self._run_impl(
@@ -667,6 +669,8 @@ class RidePipeline:
                     end_marker=list(track.end_marker) if track.end_marker else None,
                     ocr_texts=len(texts),
                     anchor_candidates=len(anchors),
+                    anchor_geocode=list(getattr(
+                        self, "_last_geocode_report", []) or []),
                     online_geocoding=bool(
                         self.cfg.has_online_key and allow_online
                         and not getattr(self.geocoder, "_online_failures", [])),
@@ -924,6 +928,8 @@ class RidePipeline:
                 outliers=len(reg.outliers),
                 ocr_texts=len(texts),
                 anchor_candidates=len(anchors),
+                anchor_geocode=list(getattr(
+                    self, "_last_geocode_report", []) or []),
                 track_points_px=len(track.polyline),
                 bbox_px=list(track.bbox),
                 track_straightness=round(straightness, 3),
@@ -1087,22 +1093,26 @@ class RidePipeline:
         # 再按锚点权重、名称长度排序。
         # 早期实现按权重排序后截断，因 OCR 垃圾文本（如「支工」「丰河」）
         # 与正常 POI 权重相同、且排序稳定，导致真正的 POI 锚点被截掉。
-        targets = [
+        eligible = [
             a for a in anchors
             if a.kind in ("icon", "poi") and len(a.name) >= 2
         ]
-        targets.sort(
+        eligible.sort(
             key=lambda a: (
                 0 if self.lexicon.lookup(a.name, city) else 1,
                 -a.weight,
                 -len(a.name),
             )
         )
+        # 超出名额的候选也记录进诊断明细（status=skipped）——用户排查
+        # 「为什么我的 POI 没参与配准」时需要看到它是被截掉还是没查到。
+        skipped_targets = eligible[20:]
+        #
         # 上限从 14 提到 20：城市级低缩放截图里能用的锚点本来就稀疏
         # （整张图只有十几个标注），截掉一半会直接让配准失去约束。
         # 名额给到 20 是权衡 Nominatim 1 次/秒的限速——命中缓存后
         # 二次识别几乎不耗时间。
-        targets = targets[:20]
+        targets = eligible[:20]
 
         matched = 0
         matched_names: set[str] = set()
@@ -1212,6 +1222,51 @@ class RidePipeline:
                 + "。如需更换服务商，在 .env 设置 MAP_GEOCODING_ORDER"
                 "（如 tianditu 或 amap,tianditu）后无需重启即可生效。"
             )
+
+        # --- 诊断明细：每个候选名的地理编码结局 ------------------------
+        #
+        # 「20 个锚点只有 1 个命中」这类问题光看 warnings 的汇总数字
+        # 无从下手：是哪些名字没命中？是配额耗尽还是 OSM 收录缺失？
+        # 明细进 diagnostics.anchor_geocode，前端 console.table 展示，
+        # 用户自己就能排查（2026-11-17 用户需求）。
+        #
+        # 统计必须在冷启动之后：pending 的名字可能在冷启动里拿到坐标，
+        # 只有最终 pairs 里也没有的才算真 MISS。
+        final_names = {p.name for p in pairs}
+        report: list[dict[str, Any]] = []
+        fail_reason = ""
+        if online_failed:
+            fail_reason = "；".join(list(dict.fromkeys(online_failed)))[:120]
+        for a in targets:
+            if a.name in final_names:
+                cand = [p for p in pairs if p.name == a.name]
+                report.append({
+                    "name": a.name,
+                    "status": "matched",
+                    "source": cand[0].source if cand else "",
+                    "quality": round(max(p.match_quality for p in cand), 2),
+                    "n_candidates": len(cand),
+                })
+            else:
+                report.append({
+                    "name": a.name,
+                    "status": "missed",
+                    "source": "",
+                    "quality": None,
+                    "note": (
+                        f"词典/在线/冷启动均未命中（{fail_reason}）"
+                        if fail_reason else
+                        "词典/在线/冷启动均未命中（OSM 无同名或近名要素）"
+                    ),
+                })
+        for a in skipped_targets:
+            report.append({
+                "name": a.name, "status": "skipped",
+                "source": "", "quality": None,
+                "note": "超出单次地理编码名额（按词典命中/权重/名称长度排序）",
+            })
+        # 允许早退分支安全读取（template 召回路径不会执行到这里）
+        self._last_geocode_report = report
         return pairs
 
     def _cold_start_pairs(
