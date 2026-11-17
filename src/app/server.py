@@ -411,6 +411,16 @@ async def _attach_ride_summary(
         payload.setdefault("warnings", []).append(
             "运动概要截图无法解码，已跳过")
         return
+    # 诊断落盘：概要图 OCR 读不到里程时（如 2026-11-17 352米案例——
+    # 用户传的概要页只有爬升/海拔行，没有里程大卡），没有原图就无从
+    # 排查「到底传了什么」。存 data/uploads 供事后核对，失败不影响主流程。
+    try:
+        _sum_dir = Path(__file__).resolve().parent.parent.parent / "data" / "uploads"
+        _sum_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(
+            str(_sum_dir / f"{int(time.time())}_summary.jpg"), img)
+    except Exception:
+        pass
     from .ocr_anchor import ocr_texts
     from .ride_summary import parse_ride_summary, summary_properties
 
