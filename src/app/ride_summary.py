@@ -55,6 +55,10 @@ _RE_KM = re.compile(
 # 数字与单位被 OCR 切成两个文本块（高德「骑行 3.68 干米」）：数字块
 # 的相邻块是纯单位块时也算候选。「干米」是 OCR 对「千米」的常见误读。
 _RE_UNIT_TOKEN = re.compile(r"^(?:千米|公里|km)$", re.IGNORECASE)
+# 裸「米」同样会被切块（2026-11-17 实测：概要页大字「352」与单位「米」
+# 字号差异大，OCR 输出两个独立文本块）。与 km 单位表分开维护：
+# 「米」绝不能进 _RE_UNIT_TOKEN，否则「352」+「米」会被当成 352 公里。
+_RE_M_UNIT_TOKEN = re.compile(r"^米$")
 _RE_PURE_NUMBER = re.compile(r"^\d+(?:\.\d+)?$")
 # 裸「米」：短骑行详情卡直接用米记账（高德「352米」，2026-11-17 实测）。
 # 必须排除「千米/公里」的尾字（(?<![千公])米）与配速「米/秒」（米后紧跟
@@ -294,6 +298,14 @@ def parse_ride_summary(
             for m in _RE_M.finditer(norm):
                 try:
                     m_cands.append((idx, float(m.group(1)) / 1000.0))
+                except ValueError:
+                    continue
+            # 数字与单位被 OCR 切成两块（「352」+「米」）：同 km 的处理，
+            # 数字块的下一块是独立「米」单位块时也算候选。
+            if (_RE_PURE_NUMBER.match(norm) and idx + 1 < len(tokens)
+                    and _RE_M_UNIT_TOKEN.match(_norm_token(tokens[idx + 1]))):
+                try:
+                    m_cands.append((idx, float(norm) / 1000.0))
                 except ValueError:
                     continue
         if not m_cands:

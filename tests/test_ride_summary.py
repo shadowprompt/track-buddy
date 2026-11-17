@@ -495,6 +495,34 @@ def test_amap_distance_ignores_milestones_and_speed() -> None:
     assert out["duration_s"] == 14 * 60 + 14  # 不是 08:34 → 514s
 
 
+def test_amap_bare_meter_split_tokens() -> None:
+    """OCR 把大字「352」与单位「米」切成两个文本块（2026-11-17 16:33
+    概要页实测：数字块 y=419、单位块 y=453，字号差异大所致）。
+
+    相邻的独立「米」单位块必须与纯数字块组合成 0.352km；且「米」
+    绝不能混进 km 单位表（否则会得出 352 公里）。
+    """
+    page = _boxed(
+        ["08:22", "23分钟"],                      # 状态栏 + 今日累计（干扰）
+        ["锅巴", "2026.11.1708:19:4715℃"],
+        ["骑行"],
+        ["352", "米"],                            # 大卡：数字与单位分块
+        ["最慢", "最快"],
+        ["00:01:29", "14千米/时", "7大卡"],
+        ["运动用时", "平均速度", "消耗热量"],
+        ["18千米/时", "157米", "4米"],            # 爬升/时速干扰
+        ["最高时速", "爬升里程", "爬升高度"],
+        ["行程高度"],
+        ["4米", "157米"],                         # 累计区重复干扰
+        ["累计爬升高度", "累计爬坡里程"],
+    )
+    out = parse_ride_summary(page, ride_labels=AMAP_LABELS)
+    assert out["distance_km"] == pytest.approx(0.352)
+    assert out["distance_label"] == "骑行"
+    assert out["duration_s"] == 89
+    assert out["calories_kcal"] == pytest.approx(7)
+
+
 def test_timestamp_separators_dot_and_slash() -> None:
     """时间戳分隔符族谱：点分（高德）与横杠（美团）都要吃。"""
     out = parse_ride_summary(_items("2026.11.1608:13:27"))
