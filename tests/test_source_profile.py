@@ -115,13 +115,12 @@ def test_base_diagnostics_carries_source_profile() -> None:
 
 
 def test_profiles_registry_matches_registered_ids() -> None:
-    """注册表内容锁定：meituan（默认）+ amap（2026-11-16 接入）。
+    """注册表内容锁定：meituan（默认）+ amap + xingzhe。
 
-    amap 初版参数按公开视觉特征估计、**待真实样本精标**（见画像定义处
-    注释与 tools/calibrate_profile.py）；此处在锁的是「结构完整性」——
-    区间式轨迹掩膜必须显式给出（高饱和亮蓝轨迹上限式提不出来）。
+    amap（2026-11-16）/ xingzhe（2026-11-17）均按真实样本精标；此处锁
+    「结构完整性」——每个来源都必须显式给出区间式轨迹掩膜。
     """
-    assert set(PROFILES) == {"meituan", "amap"}
+    assert set(PROFILES) == {"meituan", "amap", "xingzhe"}
 
 
 def test_amap_profile_initial_params_locked() -> None:

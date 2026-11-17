@@ -44,6 +44,7 @@
     - [22.21 多图拼接：从「猜形状」到「量形状」](#2221-多图拼接从猜形状到量形状2026-11-05)
 23. [新增截图识别来源：Source Profile 扩展手册（给下一个 AI）](#23-新增截图识别来源source-profile-扩展手册给下一个-ai2026-11-16新增)
 24. [诚实失败闸门链 + 多源地理编码 + 概要里程尺度先验](#24-诚实失败闸门链--多源地理编码--概要里程尺度先验2026-11-17-新增)
+    - [24.7 行者来源画像接入](#247-行者xingzhe来源画像接入2026-11-17-2100真实样本标定)
 
 ---
 
@@ -81,10 +82,16 @@
 
 ### 2.1 环境
 
+统一解释器为 **Python 3.11**（`D:\soft\Python311\python.exe`）。全新环境：
+
 ```bash
-# Python 3.13（开发版本；3.11+ 应该都能跑）
 pip install -r requirements.txt
 ```
+
+🔴 **已有环境只补缺包**：项目实际装的是 `opencv-python 4.13`（rapidocr 依赖），
+而 `requirements.txt` 写的是 `opencv-python-headless`，两者都提供 `cv2`，
+全量 `pip install -r` 会覆盖冲突。云记录还需 `cos-python-sdk-v5`，单独装：
+`python -m pip install cos-python-sdk-v5`。未装 SDK / 未配云凭据时识别行为不变。
 
 可选（仅用于真实浏览器端到端验证）：
 
@@ -95,17 +102,24 @@ pip install playwright && python -m playwright install chromium
 ### 2.2 三种用法
 
 ```bash
-# ① 网页服务（主要用法）
-python -m app.server --host 127.0.0.1 --port 8848
+# ① 网页服务（主要用法）——用 run.py，不要用 python -m app.server
+python run.py --host 127.0.0.1 --port 8848
 # 打开 http://127.0.0.1:8848
+# run.py 负责把 src/ 注入 sys.path（无需手动设 PYTHONPATH），
+# 并在后台线程预热 OCR（不阻塞监听）；python -m app.server 会跳过这两步。
 
-# ② 命令行
-python -m app.cli samples/meituan_ride_shanghai.jpg --city 上海 --out out/
-# 产出：trajectory_gcj02.geojson / trajectory_wgs84.geojson
+# ② 命令行（需 PYTHONPATH=src，run.py 方式不用）
+PYTHONPATH=src python -m app.cli samples/meituan_ride_shanghai.jpg --city 上海 --out out/
+# 产出：trajectory_gcj02.geojson / trajectory_wgs84.geojson（交付用 WGS-84）
 #       overlay_result.png / trajectory_chart.png / road_verify.png
 # stdout 输出一段 JSON 摘要
+# 也可直接调技能包脚本，自带内核：
+#   python ~/.workbuddy/skills/ride-screenshot-georeference/scripts/recognize.py <图> --out <目录>
+```
 
-# ③ 作为 Python 库
+③ 作为 Python 库（需 `PYTHONPATH=src` 或把 `src/` 加入 sys.path）：
+
+```python
 from app.config import CONFIG
 from app.pipeline import RidePipeline
 from app.cv_utils import imread_unicode
@@ -116,23 +130,31 @@ print(res.geojson_gcj02)   # 国内底图用这个
 print(res.geojson)         # GPS 设备 / Strava / GIS 用这个
 ```
 
-### 2.3 地图密钥
+### 2.3 地图密钥与地理编码源
 
-| 密钥 | 用途 | 不配会怎样 |
+🔴 **高德配额已用尽，不再调用**（`AMAP_KEY` 保留仅为兼容旧配置，不要依赖它）。
+识别走 `MAP_GEOCODING_ORDER` 指定的在线源，当前部署为百度 + 天地图；
+配置驱动、可单源可多源，改 `.env` 即时生效、无需重启。
+
+| 变量 | 用途 | 说明 |
 |---|---|---|
-| `AMAP_KEY` | 地理编码 + 路名归属（与美团底图同源，**精度最高**） | 退到词典 + OSM 冷启动，绝对精度受限 100–300m |
-| `TMAP_KEY` | 地理编码 + 网页底图 | 底图回退到腾讯官方公开示例 key（仅本地代理内部使用） |
-| `BAIDU_MAP_KEY` / `TIANDITU_API_KEY` | 地理编码备选 | 同上 |
+| `MAP_GEOCODING_ORDER` | 在线地理编码顺序 | 如 `baidu,tianditu`；单源写一个，多源按顺序回退 |
+| `TIANDITU_API_KEY` | 天地图 tk | 天地图单源时必配，只认这一个变量名 |
+| `BAIDU_MAP_KEY` | 百度地理编码 | 当前部署的在线源之一 |
+| `AMAP_KEY` | 高德（**已停用**） | 配额用尽，不要尝试调用或等恢复 |
+| `BASEMAP_PROVIDER` / `AMAP_JS_KEY` / `AMAP_JS_SECURITY` | 网页底图 | 前端底图适配层，与地理编码 key 是两回事；默认 `tmap` 用公开示例 key |
 
-配置方式：环境变量，或项目根目录 `.env` 文件。
+配置方式：环境变量，或项目根目录 `.env` 文件（密钥只在服务端，绝不下发客户端）：
 
 ```bash
-AMAP_KEY=你的key
-TMAP_KEY=你的key
+MAP_GEOCODING_ORDER=baidu,tianditu
+TIANDITU_API_KEY=你的tk
+BAIDU_MAP_KEY=你的key
 ```
 
-**注意**：`tmap_gl_key`（底图用）与 `tmap_key`（地理编码用）是两回事。
-底图可以用官方公开示例 key，地理编码必须自己申请，否则没配额。
+未配置在线源时降级为纯本地词典 + OSM 冷启动，只能识别词典覆盖的区域，
+绝对精度受限 100–300m。四类后端能力（地理编码/路名/道路几何/路线校验）
+的可插拔装配与顺序变量见 README「配置」章节。
 
 ---
 
@@ -151,8 +173,11 @@ TMAP_KEY=你的key
   │     RapidOCR（支持竖排/旋转）→ 文本分级 → 锚点候选
   │     输出：Anchor 列表（kind = icon / poi / road）
   │
-  ├─③ 地理编码  app/geocode.py + app/coldstart.py
-  │     优先级：用户确认 > 在线服务(高德/腾讯/百度/天地图)
+  ├─②.5 模板召回  app/route_template.py + app/template_fallback.py
+  │     宽泛概览图 / 已沉淀的「像素折线↔地理折线」按画像隔离命中，直接兜底
+  │
+  ├─③ 地理编码  app/geocode.py + app/coldstart.py + app/maps/
+  │     优先级：用户确认 > 在线(MAP_GEOCODING_ORDER 指定，当前 baidu,tianditu；高德已停用)
   │            > 本地词典 > OSM 冷启动
   │     输出：AnchorPair 列表（像素 ↔ 经纬度，多候选全交 RANSAC）
   │
@@ -167,35 +192,48 @@ TMAP_KEY=你的key
   │     拉真实路网 → 在保持尺度朝向前提下平移轨迹 → 贴路距离最小
   │     输出：平移量 + 精修前后贴路中位距离
   │
+  ├─④.7 用户路名线约束  app/roadname_constraint.py
+  │     用户提供的路名作为线约束重新定位（可选）
+  │
   ├─⑤ 折线投影  pipeline
-  │     采样(5m) → 简化 → 像素→墨卡托→GCJ-02 → 按需转 WGS-84
+  │     采样(5m) → 简化 → 像素→墨卡托→GCJ-02 → 交付转 WGS-84
+  │     有运动概要(ride_summary.py)时按里程比例插值时间戳 → GPX 有时间轴
   │     输出：GeoJSON（两份：GCJ-02 与 WGS-84）
   │
-  └─⑥ 路名归属  app/roadname.py
-        优先：路网几何判定 > 高德路径规划 > 截图自带标注
+  ├─⑤.5 路名串路  app/roadchain.py + app/routebuild.py + app/seampath.py
+  │     有序路名链 → 串出经过道路 → 补接缝
+  │
+  └─⑥ 路名归属 + 概要  app/roadname.py + app/ride_summary.py
+        优先：路网几何判定 > 在线路径规划 > 截图自带标注
+        概要读距离/时长/热量，与轨迹组合成完整运动记录
 ```
 
 ### 3.2 三层架构
 
 ```
 ┌─────────────────────────────────────────┐
-│  app/server.py    FastAPI HTTP 服务       │  ← 网页前端
-│  app/cli.py       命令行                 │  ← 脚本/批处理
+│  run.py → app/server.py  FastAPI/HTTP    │  ← 网页 / 小程序
+│  app/cli.py              命令行          │  ← 脚本 / 技能包
 ├─────────────────────────────────────────┤
-│  app/pipeline.py  RidePipeline 编排       │  ← 唯一的业务真相
+│  app/pipeline.py  RidePipeline 编排       │  ← 唯一的业务真相（9 阶段）
+│  app/source_profile.py  输入源画像        │  ← ContextVar 切换来源
 │  （其余模块都是纯函数/无状态类）           │
 ├─────────────────────────────────────────┤
-│  app/track.py     app/ocr_anchor.py       │
-│  app/geocode.py   app/coldstart.py       │
-│  app/register.py  app/roadfit.py         │
-│  app/roadname.py  app/geo/coords.py      │
-│  app/cv_utils.py  app/visuals.py         │
+│  图像前端  track.py ocr_anchor.py         │
+│           multishot.py stitch_backends/  │
+│  地理配准  geocode.py maps/ register.py   │
+│           roadfit.py roadname.py         │
+│  护栏校准  anchor_quality.py eval.py      │
+│           calibration.py waterguard.py   │
+│  输出      exporters/ ride_summary.py     │
+│           records/ visuals.py            │
 └─────────────────────────────────────────┘
 ```
 
 **设计约束**：除 `pipeline.py` 外，所有模块都不应直接依赖彼此，
 只依赖 `config.py` 的参数与 `geo/coords.py` 的坐标转换。
-这样每个模块都能单独测试。
+这样每个模块都能单独测试。接新来源只改 `source_profile.py` 的画像配置；
+换地图服务商只改 `.env` 的顺序变量，两者都不碰共享算法代码。
 
 ---
 
@@ -594,43 +632,81 @@ eps_px  = min(1.0 / meters_per_px, 1.0)             # 容差
 
 ## 6. 模块职责速查表
 
+按运行流程分层（行数以 2026-11-17 源码为准，仅量级参考）。完整的文件→职责
+一句话映射见 `README.md`「项目结构」章节；下表是**带关键入口/行数**的速查版。
+
+**① 入口与编排**
+
 | 文件 | 行数 | 职责 | 关键入口 |
 |---|---|---|---|
-| `app/config.py` | 152 | 全局参数、密钥读取 | `CONFIG`, `VisionConfig` |
-| `app/pipeline.py` | 717 | 流水线编排（唯一业务真相） | `RidePipeline.run()` |
-| `app/track.py` | 445 | 轨迹提取 | `extract_track()` |
-| `app/ocr_anchor.py` | 329 | OCR + 锚点分级 | `ocr_texts()`, `build_anchors()` |
-| `app/geocode.py` | 443 | 词典 + 在线地理编码 | `Geocoder.geocode()`, `Lexicon` |
-| `app/coldstart.py` | 478 | OSM 冷启动三阶段 | `get_cold_start().lookup_many()` |
-| `app/register.py` | 317 | RANSAC 配准 | `register()`, `apply_to_polyline()` |
-| `app/roadfit.py` | 385 | 路网获取 + 精修 + 归属 | `fetch_roads()`, `refine_with_roads()` |
-| `app/roadname.py` | 322 | 路名归属 | `attribute_by_amap()`, `attribute_by_shot_labels()` |
+| `run.py`（仓库根） | 50 | 启动入口：注入 path + 后台预热 OCR + 拉 uvicorn | `main()` |
+| `app/server.py` | 1908 | FastAPI 服务，20+ 路由 | `app` (ASGI) |
+| `app/cli.py` | 124 | 命令行入口 | `main()` |
+| `app/pipeline.py` | 2835 | 流水线编排（唯一业务真相，9 阶段） | `RidePipeline.run()` |
+| `app/config.py` | 555 | 全局参数 + `.env` 热读（mtime/size/sha256） | `CONFIG`, `VisionConfig` |
+| `app/source_profile.py` | 193 | 输入源画像：换 App 只改这里 | `PROFILES`, `get_profile()` |
+
+**② 图像前端（截图 → 像素折线 + 锚点）**
+
+| 文件 | 行数 | 职责 | 关键入口 |
+|---|---|---|---|
+| `app/track.py` | 775 | 轨迹提取（掩膜、骨架化、图路径追踪） | `extract_track()` |
+| `app/ocr_anchor.py` | 361 | OCR + 锚点分级（含 `warmup_ocr`） | `ocr_texts()`, `build_anchors()` |
+| `app/multishot.py` | 1148 | 多图拼接（街道级路线专用） | `stitch()` |
+| `app/posegraph.py` | 129 | 拼接位姿图优化（分摊累积漂移） | — |
+| `app/stitch_backends/` | — | 拼接后端：`sift.py`（默认）、`llm.py`、`registry.py` | `stitch()` |
+| `app/cv_utils.py` | 224 | 图像 IO、几何工具 | `imread_unicode()`, `simplify_polyline()` |
+| `app/scale.py` | 180 | 图像几何尺度（像素阈值唯一来源） | — |
+| `app/input_quality.py` | 191 | 输入质量独立校验 | — |
+| `app/stitchcheck.py` | 255 | 多图拼接核对页 | — |
+
+**③ 地理编码与配准精修（技术核心）**
+
+| 文件 | 行数 | 职责 | 关键入口 |
+|---|---|---|---|
+| `app/geocode.py` | 934 | 地理编码编排（在线源经 maps/ 装配） | `Geocoder.geocode()` |
+| `app/maps/` | — | 可插拔地图能力层：contracts / credentials / registry / http + geocoding / roadname / roads / routing / staticmap 各 provider | `registry.py` |
+| `app/coldstart.py` | 698 | OSM 冷启动（词典无覆盖时兜底） | `get_cold_start().lookup_many()` |
+| `app/register.py` | 1183 | RANSAC 配准 | `register()`, `apply_to_polyline()` |
+| `app/roadfit.py` | 595 | 路网约束精修（消「平行路陷阱」） | `refine_with_roads()` |
+| `app/roadname_constraint.py` | 707 | 用户路名线约束精修 | `refine_by_road_names()` |
+| `app/mapmatch.py` | 182 | 地图匹配 HMM / Viterbi | — |
+| `app/roadname.py` | 280 | 路名归属 | `attribute_by_*()` |
+| `app/roadchain.py` | 375 | 有序路名链 DP 选择 | `select_chain()` |
+| `app/routebuild.py` | 478 | 按路名几何串出路线 | `build_route()` |
+| `app/seampath.py` | 154 | 接缝插入（Valhalla 填真实路网） | `insert_seams()` |
+| `app/chainfit.py` | 364 | 路名骨架定尺度/位置/朝向 | — |
+| `app/endpointfit.py` | 342 | 起终点锚定（解尺度） | `fit_by_endpoints()` |
+| `app/shapefit.py` | 737 | 形状重建（旧方案，已被 routebuild 取代） | `fit_shape()` |
+| `app/simfit.py` | 554 | 相似变换拟合实验 | — |
+| `app/valhalla.py` / `app/osrm.py` | 319 / 197 | 路由客户端（bicycle/pedestrian / driving） | `*.route()` |
+| `app/llm.py` / `app/llm_geo.py` | 221 / 183 | 可选语义层（需几何验证才采纳） | `review_road_names()` |
 | `app/geo/coords.py` | 153 | 坐标转换与投影 | `wgs84_to_gcj02()`, `gcj02_to_wgs84()` |
-| `app/cv_utils.py` | 200 | 图像 IO、几何工具 | `imread_unicode()`, `simplify_polyline()` |
-| `app/visuals.py` | 382 | 三类可视化产出 | `build_overlay()`, `build_road_verify()`, `build_chart()` |
-| `app/server.py` | 577 | FastAPI 服务 | `app` (ASGI) |
-| `app/tmap_proxy.py` | 155 | 腾讯地图 GL JS 本地代理 | `create_proxy_router()` |
-| `app/cli.py` | 125 | 命令行入口 | `main()` |
-| `app/seed_lexicon.py` | 133 | 词典种子生成 | — |
-| `app/snap.py` | 207 | ⚠️ **死代码**，无任何引用 | — |
-| `app/multishot.py` | 542 | **多图拼接**（街道级路线专用）| `stitch()` |
-| `app/routebuild.py` | 478 | **按路名串路**（形状重建）| `build_route()` |
-| `app/seampath.py` | 154 | **接缝插入**（用 Valhalla 填真实路网）| `insert_seams()` |
-| `app/roadchain.py` | 375 | 路名实例链式 DP 选择 | `select_chain()` |
-| `app/endpointfit.py` | 342 | 起终点锚定（解尺度）| `fit_by_endpoints()` |
-| `app/roadname_constraint.py` | 725 | 路名约束精修 | `refine_by_road_names()` |
-| `app/waterguard.py` | 306 | 跨江检测护栏 | `check_water_crossing()` |
-| `app/valhalla.py` | 378 | Valhalla 客户端（bicycle/pedestrian）| `ValhallaClient.route()` |
-| `app/osrm.py` | 208 | OSRM 客户端（driving）| `OSRMClient.route()` |
-| `app/llm.py` / `app/llm_geo.py` | 165 / 183 | **可选**语义层（需几何验证才采纳）| `review_road_names()` |
-| `app/shapefit.py` | 737 | 形状重建（旧方案，已被 routebuild 取代）| `fit_shape()` |
-| `app/simfit.py` | 700 | 仿真拟合实验 | — |
-| `app/trajmap.py` | 209 | 轨迹地图对照页 | `render_traj_map()` |
 
-> 行数为量级参考，以实际文件为准。
+**④ 护栏与校准（防「看起来准」）**
 
-> **`app/snap.py` 是历史遗留**：里面的 `RoadNetwork` 与 `roadfit.py` 同名但实现不同
-> （走高德/腾讯路径规划而非 OSM 几何），且 `snap_to_roads()` 从未被调用。
+| 文件 | 行数 | 职责 | 关键入口 |
+|---|---|---|---|
+| `app/anchor_quality.py` | 312 | 分离 OCR 残片与系统性偏移 | — |
+| `app/waterguard.py` / `app/waterdata.py` | 269 / 130 | 跨江河流护栏 / 地理数据 | `check_water_crossing()` |
+| `app/calibration.py` | 322 | 置信度校准（自洽分→经验成功率） | — |
+| `app/eval.py` | 373 | 准确率评测（可证伪指标） | — |
+| `app/route_template.py` | 832 | 轨迹模板沉淀与复用（P0） | — |
+| `app/template_fallback.py` | 124 | 宽泛概览图前置判据（P1） | — |
+| `app/lexicon_guard.py` / `app/seed_lexicon.py` | 177 / 96 | 词典写入防毒 / 种子生成 | — |
+
+**⑤ 输出层**
+
+| 文件 | 行数 | 职责 | 关键入口 |
+|---|---|---|---|
+| `app/exporters/` | — | `base.py` 公共基座 + `gpx.py` + `tcx.py`（交付 WGS-84） | `export()` |
+| `app/ride_summary.py` | 417 | 概要 OCR 解析（距离/时长/热量→时间轴） | — |
+| `app/records/` | — | `auth.py`（微信登录+HMAC token）、`keys.py`（COS 键唯一构造处）、`store.py`（COS 存储）、`service.py`（保存编排） | `save_record()` |
+| `app/visuals.py` | 409 | 三类可视化产出 | `build_overlay()`, `build_road_verify()`, `build_chart()` |
+| `app/trajmap.py` / `app/tmap_proxy.py` | 209 / 196 | 轨迹地图对照页 / 腾讯地图 GL JS 本地代理 | — |
+
+> ⚠️ `app/snap.py`（207 行）仍是**死代码**：`snap_to_roads()` 无任何调用，
+> 且同名 `RoadNetwork` 与 `roadfit.py` 实现不同（走高德/腾讯路径规划而非 OSM 几何）。
 > 可以删，但删之前确认没有外部脚本依赖。
 
 ---
@@ -7136,3 +7212,38 @@ OCR 层（通用，与地图源无关）                地理编码层（可插
 - 荟聚Livat 在 pipeline 内 city_limit 下偶发 miss（provider 直测有候选）；
 - 垃圾 OCR 词的百度模糊匹配过滤（百度什么都能配，天地图查不到会放弃）；
 - 城市短道路路名作弱锚点需重新设计（取离轨迹最近点/路口），未实施。
+
+### 24.7 行者（xingzhe）来源画像接入（2026-11-17 21:00，真实样本标定）
+
+第三类版式：宁波 34.67km 骑行，**卫星影像底图 + 橙红轨迹 + 蓝色规划线 +
+红色三角旗起点 / 白底红字水滴终点**（样本 `samples/xingzhe_ningbo.jpg`）。
+与美团（浅荧光绿轨迹、普通底图）、高德（速度渐变线）都不同。
+
+**为什么默认画像必败**：美团上限式掩膜 `V<200,S<90` 把整张卫星图吞进来
+（实测 57 万像素 = 全图 79%），起终点徽章误检成底图色块，里程闸门因顶栏
+「距离 34.67」无 km 单位读不到而失守——输出 8.5km 假轨迹（真实 34.67km）。
+
+**标定结论**（全部按真实样本像素统计，非拍脑袋）：
+
+| 参数 | 值 | 依据 |
+|---|---|---|
+| 轨迹掩膜 | 区间式 `H[5,22] S[150,255]` | 橙红轨迹 H≈7-9/S≈175-190；卫星底图/蓝规划线(H≈95)被色相排除 |
+| 徽章检测 | `badge_min_fill=0.25` | 徽章是团块(fill≈0.37)、轨迹是细长线(fill≈0.06)，填充率区分同色两者 |
+| 徽章区间 | 起终点都 `H[0,15] S[90,255]` + 排除起点区域找终点 | 起红旗 S255、终红字 S103，无法用饱和度分；用排除半径区分 |
+| 形态学核 | close 7 / open 5 | 轨迹线宽 ~8px |
+
+**两处通用代码增强**（其他画像零影响，默认参数保持历史行为）：
+
+1. `cv_utils.find_marker` 新增 `min_fill` / `exclude_pt` / `exclude_radius`
+   参数——填充率筛选团块徽章（默认 0 = 关闭）、检测终点时排除起点团块。
+2. `track._trace_graph_path` 环形鲁棒性：最短路只覆盖 <70% 骨架时（环上抄
+   近道漏段），改用「从起点出发到最远可达点」回溯。实测行者最短路 976 点
+   /1145px 漏掉左半环，改进后 1736 点 /1960px 覆盖全程。
+
+**成果**：轨迹掩膜单一连通域 13970px（干净），徽章起(42,315)/终(334,1079)
+定位准确，折线覆盖全程。端到端 9 内点、26.3km、路名归属宁波江北/海曙区
+真实道路（环城北路/姚江东路/永丰北路），定位正确。
+
+**遗留**：①里程 26.3km vs 真实 34.67km（偏低 24%），配准尺度待优化；
+②顶栏「距离 34.67」无单位，概要正则读不到，里程闸门对行者不生效；
+③置信度 0.2 为保守封顶。全量 687 passed（新测试 test_xingzhe_profile.py 4 例）。

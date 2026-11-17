@@ -61,14 +61,27 @@ def _detect_markers_ex(
     notes: list[str] = []
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
+    min_fill = getattr(cfg, "badge_min_fill", 0.0)
     start = find_marker(
-        hsv, [cfg.start_hsv_range], cfg.badge_min_area, cfg.badge_max_area
+        hsv, [cfg.start_hsv_range], cfg.badge_min_area, cfg.badge_max_area,
+        min_fill=min_fill,
     )
+    # 起终点同色的来源（行者）：终点检测要排除起点团块本身，否则两处都
+    # 会命中较大的那个（起点红旗）。排除半径按图高比例（归一化尺度）。
+    start_pt_tmp = start[0] if start else None
+    excl = None
+    excl_r = 0.0
+    if min_fill > 0 and start_pt_tmp is not None:
+        excl = start_pt_tmp
+        excl_r = max(24.0, img.shape[0] * 0.12)
     end = find_marker(
         hsv,
         [cfg.end_hsv_range, cfg.end_hsv_range2],
         cfg.badge_min_area,
         cfg.badge_max_area,
+        min_fill=min_fill,
+        exclude_pt=excl,
+        exclude_radius=excl_r,
     )
 
     diameters = [
@@ -733,15 +746,15 @@ def _trace_graph_path(
 
     s = nearest(start_pt)
     e = nearest(end_pt)
-    if s is None or e is None:
+    if s is None:
         return None
-    if s == e:
-        return np.array([[xs[s], ys[s]]], dtype=float)
 
-    # Dijkstra
+    # Dijkstra：从起点跑**完整**最短路树（不提前在终点 break），
+    # 这样既拿到 s→e 路径，也知道整棵树的覆盖情况。
     import heapq
 
-    dist = [float("inf")] * n
+    INF = float("inf")
+    dist = [INF] * n
     prev = [-1] * n
     dist[s] = 0.0
     heap = [(0.0, s)]
@@ -751,25 +764,45 @@ def _trace_graph_path(
         if visited[u]:
             continue
         visited[u] = True
-        if u == e:
-            break
         for v, w in adj[u]:
             if not visited[v] and d + w < dist[v]:
                 dist[v] = d + w
                 prev[v] = u
                 heapq.heappush(heap, (dist[v], v))
 
-    if not visited[e] and prev[e] < 0:
+    def trace_back(target: int) -> np.ndarray | None:
+        path: list[int] = []
+        cur = target
+        while cur != -1:
+            path.append(cur)
+            if cur == s:
+                break
+            cur = prev[cur]
+        path.reverse()
+        if len(path) < 2 or path[0] != s:
+            return None
+        return np.array([[xs[i], ys[i]] for i in path], dtype=float)
+
+    if e is None or dist[e] == INF:
+        # 终点徽章接不上骨架（引线断开）——只能从起点出发取最长路径。
+        e = None
+
+    if e is not None:
+        direct = trace_back(e)
+        # 环形/自交检测：若 s→e 最短路只覆盖了骨架的一小部分，说明它在
+        # 环上抄了近道、漏掉另一侧的大段轨迹（实测行者宁波 34.67km：
+        # 最短路 976 点、骨架 2273 点，左半环整段漏掉）。此时改取「从起点
+        # 出发可达的最远点」回溯——对环形/折返轨迹，最远点天然给出绕行
+        # 全程；对普通单调轨迹，最远点仍是正确的终点，行为不变。
+        reachable = [i for i in range(n) if dist[i] < INF]
+        cover = len(direct) / max(len(reachable), 1) if direct is not None else 0.0
+        if direct is not None and cover >= 0.7:
+            return direct
+
+    # 从起点可达的最远点（环形全程 / 无终点时的兜底）
+    reachable = [i for i in range(n) if dist[i] < INF]
+    if len(reachable) < 2:
         return None
-    path: list[int] = []
-    cur = e
-    while cur != -1:
-        path.append(cur)
-        if cur == s:
-            break
-        cur = prev[cur]
-    path.reverse()
-    if len(path) < 2:
-        return None
-    return np.array([[xs[i], ys[i]] for i in path], dtype=float)
+    far = max(reachable, key=lambda i: dist[i])
+    return trace_back(far)
 

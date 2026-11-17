@@ -72,11 +72,22 @@ def find_marker(
     ranges: list[tuple[int, int, int, int, int, int]],
     min_area: int,
     max_area: int,
+    min_fill: float = 0.0,
+    exclude_pt: tuple[int, int] | None = None,
+    exclude_radius: float = 0.0,
 ) -> tuple[tuple[int, int], np.ndarray] | None:
     """按 HSV 区间找最大的圆形徽章。
 
     面积阈值是关键：美团地图上「起」「终」徽章面积约 4000+，
     而虚线碎片、文字色块只有 100-300，两者相差一个数量级。
+
+    ``min_fill``（默认 0 = 不启用，行为与历史完全一致）是给**轨迹与徽章
+    同色**的来源（行者：橙红旗与橙红轨迹色相重叠）准备的额外判据：
+    徽章是团块（填充率 ~0.3-0.4），轨迹是细长线（填充率 ~0.06），
+    用填充率下限可把「整条轨迹」这个最大连通域排除掉，只留徽章团块。
+
+    ``exclude_pt`` / ``exclude_radius``（默认不启用）：起终点同色时，
+    检测终点要排除起点团块——传入起点中心与排除半径，落在其内的候选跳过。
     """
     mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
     for lo_h, lo_s, lo_v, hi_h, hi_s, hi_v in ranges:
@@ -89,6 +100,15 @@ def find_marker(
         area = int(stats[i][4])
         if not (min_area <= area <= max_area):
             continue
+        if min_fill > 0:
+            bw, bh = int(stats[i][2]), int(stats[i][3])
+            if area / float(max(bw * bh, 1)) < min_fill:
+                continue
+        if exclude_pt is not None and exclude_radius > 0:
+            cx, cy = centroids[i]
+            if (cx - exclude_pt[0]) ** 2 + (cy - exclude_pt[1]) ** 2 \
+                    < exclude_radius ** 2:
+                continue
         if area > best_area:
             best_area, best_idx = area, i
     if best_idx < 0:

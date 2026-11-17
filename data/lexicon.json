@@ -356,5 +356,92 @@
    "address": "上海市长宁区新泾镇文洋大厦东南160米",
    "verified": false
   }
+ ],
+ "戈尔登国际酒店": [
+  {
+   "lon": 121.57325332439497,
+   "lat": 29.832266591995893,
+   "weight": 0.8999999999999999,
+   "count": 3,
+   "city": "宁波",
+   "source": "tianditu",
+   "address": "宁波市鄞州区中河街道宋诏桥嵩江东路579号",
+   "verified": false,
+   "last_confidence": 0.2
+  }
+ ],
+ "城南商务大厦": [
+  {
+   "lon": 121.53833734884496,
+   "lat": 29.815553352919878,
+   "weight": 0.7,
+   "count": 2,
+   "city": "宁波",
+   "source": "baidu",
+   "address": "宁波市鄞州区惠风西路115号",
+   "verified": false,
+   "last_confidence": 0.2
+  },
+  {
+   "lon": 121.5383581639141,
+   "lat": 29.815659402801096,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "tianditu",
+   "address": "宁波市鄞州区钟公庙街道惠风西路115号",
+   "verified": false,
+   "last_confidence": 0.2
+  }
+ ],
+ "杭甬高速": [
+  {
+   "lon": 121.25000033723357,
+   "lat": 29.988325473939693,
+   "weight": 0.5,
+   "count": 1,
+   "city": "宁波",
+   "source": "baidu",
+   "address": "浙江省宁波市",
+   "verified": false,
+   "last_confidence": 0.522
+  }
+ ],
+ "嘉和大酒店": [
+  {
+   "lon": 121.53032173590364,
+   "lat": 29.85334781310467,
+   "weight": 0.4,
+   "count": 2,
+   "city": "宁波",
+   "source": "tianditu",
+   "address": "浙江省宁波市海曙区段塘街道新典街108号",
+   "verified": false,
+   "last_confidence": 0.2
+  }
+ ],
+ "市中医院": [
+  {
+   "lon": 121.51903427952723,
+   "lat": 29.89319722684969,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "tianditu",
+   "address": "浙江省宁波市海曙区望春街道市中医院北侧",
+   "verified": false,
+   "last_confidence": 0.2
+  },
+  {
+   "lon": 121.51848418164937,
+   "lat": 29.89294882806839,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "tianditu",
+   "address": "浙江省宁波市海曙区望春街道市中医院北侧",
+   "verified": false,
+   "last_confidence": 0.2
+  }
  ]
 }

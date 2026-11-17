@@ -78,12 +78,15 @@ python ~/.workbuddy/skills/ride-screenshot-georeference/scripts/recognize_api.py
 
 ```bash
 pip install -r requirements.txt
-python run.py                    # http://127.0.0.1:8000
-python run.py --port 9000        # 指定端口
-python -m app.server --reload    # 开发模式（热重载，需 PYTHONPATH=src）
+python run.py                        # http://127.0.0.1:8000
+python run.py --port 8848            # 指定端口（IDEA 的 Dev 配置用 8848）
+PYTHONPATH=src python -m app.server --reload   # 开发模式（需先设 PYTHONPATH）
 ```
 
 打开浏览器访问 `http://127.0.0.1:8000`，上传截图即可。
+
+🔴 **优先用 `python run.py`**：它把 `src/` 注入 `sys.path`（无需手动设 PYTHONPATH），
+并在后台线程预热 OCR 模型；直接 `python -m app.server` 会跳过这两步（冷启动首图更慢）。
 
 🔴 **已有环境只补缺包**：运动记录云存储需要 `cos-python-sdk-v5`，
 用 `D:\soft\Python311\python.exe -m pip install cos-python-sdk-v5` 单独安装；
@@ -722,12 +725,14 @@ curl -X POST http://127.0.0.1:8848/api/recognize_multi \
 HSV、形态学核、RANSAC 内点容差、里程 OCR 词表，每个 App 一套参数，
 互斥不能混用。
 
-- 当前注册两个画像：`meituan`（美团骑行，参数值与模块化之前完全
-  一致，`VisionConfig` 默认值就是美团标定结果）与 `amap`（高德运动，
-  **2026-11-16 初版接入**：高饱和亮蓝轨迹走 `track_hsv_range` 区间式
-  掩膜；初版参数按公开视觉特征估计，**待真实样本精标**，用
-  `src/tools/calibrate_profile.py` 对截图统计后收紧）。默认仍为
-  `meituan`，不传 `source` 时行为不变。
+- 当前注册三个画像：
+  - `meituan`（美团骑行，参数值与模块化之前完全一致，`VisionConfig`
+    默认值就是美团标定结果）；
+  - `amap`（高德运动，2026-11-16 真实样本精标：速度渐变线走多色带
+    区间式掩膜、地图区垂直裁剪）；
+  - `xingzhe`（行者，2026-11-17 真实样本精标：卫星底图 + 橙红轨迹，
+    区间式掩膜 + 填充率徽章检测 + 环形折线鲁棒排序，详见 HANDOVER §24.7）。
+  默认仍为 `meituan`，不传 `source` 时行为不变。
 - **来源选择两条路径**（2026-11-14 起请求级入参优先）：
   1. **接口入参**：`POST /api/recognize` / `recognize_multi` 的
      `source` 表单字段（可用值见 `/api/health` 的
@@ -1950,49 +1955,68 @@ TIANDITU_API_KEY=
 
 ```
 <仓库根>/
-  run.py           启动入口（python run.py，无需设 PYTHONPATH）
+  run.py           启动入口（python run.py，无需设 PYTHONPATH；后台预热 OCR）
+  .env             全部密钥与开关（gitignore，改完即时生效、无需重启）
   data/            本地词典与水系数据（入库）
   samples/         测试截图（个人数据，不入库）
-  docs/            交接文档
-  tests/           pytest 测试
+  docs/            交接文档 HANDOVER.md（§23 = 新来源扩展手册）
+  tests/           pytest 测试（约 72 文件 / 665+ 用例）
   output/          运行时产物（不入库）
-  src/             ← 源代码
+  wxmin/           微信小程序（登录走 gateway，识别/记录走本站）
+  dist/            ride-screenshot-georeference.zip（自包含技能包）
+  src/             ← 源代码全在这里
     app/
-      cli.py         命令令入口（python -m app.cli）
-      visuals.py     可视化产出（叠加图 / 验证图 / 轨迹图）
-      config.py      全局配置（ROOT / SRC_ROOT 由目录结构自动探测）
-      cv_utils.py    中文路径读写、几何工具（含弧长保真的折线简化）
+      server.py      FastAPI 服务（20+ 路由，首页动态渲染）
+      cli.py         命令行入口（python -m app.cli，需 PYTHONPATH=src）
+      pipeline.py    流水线编排（唯一业务真相，9 阶段）
+      config.py      全局配置（ROOT/SRC_ROOT 自动探测 + .env 热读）
+      source_profile.py 输入源画像（换 App 只改这里）
+      --- 图像前端 ---
       track.py       轨迹提取（掩膜、骨架化、图路径追踪）
-      ocr_anchor.py  OCR 封装与锚点分级
-      geocode.py     四级地理编码编排 + 在线源薄适配（实现在 maps/geocoding/）
-      coldstart.py   OSM 冷启动检索（新区域无词典覆盖时的兜底）
-      register.py    RANSAC 配准（north_up / similarity / affine）
-      roadfit.py     路网约束精修（真实道路几何纠正绝对位置）
-      roadname.py    路名领域模型 + 通用入口（实现在 maps/roadname/）
-      pipeline.py    流水线编排与 GeoJSON 输出
+      ocr_anchor.py  OCR 封装与锚点分级（含 warmup_ocr）
+      multishot.py   多图拼接（街道级路线专用）
+      posegraph.py   拼接位姿图优化（分摊累积漂移）
+      stitch_backends/  拼接后端：sift（默认）/ llm / registry
+      cv_utils.py    中文路径读写、几何工具
+      scale.py       图像几何尺度（像素阈值唯一来源）
+      input_quality.py 输入质量独立校验
+      stitchcheck.py 多图拼接核对页
+      --- 地理编码与配准 ---
+      geocode.py     地理编码编排（在线源经 maps/ 装配）
       maps/          可插拔地图能力层（替换服务商只改 .env）
         contracts.py    数据契约 / CRS 声明 / 统一换算 to_gcj02
         credentials.py  env + .env 别名解析（唯一一处「找 key」）
         registry.py     按能力装配、配置驱动顺序、回退、健康探测
         http.py         Session / UA / 限流 / 重试 / 磁盘缓存
-        geocoding/      amap | tmap | baidu | tianditu 实现
-        roadname/       amap 实现
-        roads/          道路几何（OSM / Overpass 统一镜像与轮换）
-        routing/        路线校验（OSRM / Valhalla 共享基座）
-        staticmap/      静态地图素材（实验与合成测试用）
+        geocoding/      baidu | tianditu | amap(停用) | tmap 实现
+        roadname/ / roads/ / routing/ / staticmap/  其余能力 provider
+      coldstart.py   OSM 冷启动检索（新区域无词典覆盖时的兜底）
+      register.py    RANSAC 配准（north_up / similarity / affine）
+      roadfit.py     路网约束精修（消「平行路陷阱」）
+      roadname.py / roadchain.py / routebuild.py / seampath.py  路名归属与串路
+      --- 护栏与输出 ---
+      anchor_quality.py / waterguard.py / calibration.py / eval.py  防「看起来准」
+      route_template.py / template_fallback.py  轨迹模板（P0/P1）
+      ride_summary.py 运动概要解析（距离/时长/热量 → 时间轴）
+      exporters/     base.py 公共基座 + gpx.py + tcx.py（交付 WGS-84）
+      records/       auth.py / keys.py / store.py / service.py（COS 云记录）
+      visuals.py     可视化产出（叠加图 / 验证图 / 轨迹图）
+      trajmap.py / tmap_proxy.py  轨迹地图对照页 / 腾讯地图 GL 代理
       geo/coords.py  坐标转换与投影
-      server.py      FastAPI 服务（首页动态渲染，注入地图代理地址）
-      tmap_proxy.py 腾讯地图 GL JS 本地代理（鉴权转发，key 不下发浏览器）
-      seed_lexicon.py 词典种子生成
     web/
       index.html     网页界面（腾讯地图 GL JS + 原图叠加）
       js/basemap.js  底图适配层（tmap | amap，业务代码不直接调 TMap.*）
-      verify.html    轨迹验证页（GCJ-02，腾讯底图直接可用）
-      verify_wgs.html 同一数据的 WGS-84 版本（对比基准差）
+      verify.html / verify_wgs.html  GCJ-02 / WGS-84 验证页
     tools/
-      verify_browser.py 真实浏览器端到端验证（Playwright，连续识别三张）
-      exp_*.py       诊断与 A/B 实验脚本
+      verify_browser.py 真实浏览器端到端验证（Playwright）
+      calibrate_profile.py 新来源标定的参数拟合工具
+      sync_skill.py  把 app 内核同步进三处技能安装
+      eval_accuracy.py / calibrate_confidence.py  真值评测与置信度拟合
+      mint_dev_token.py 开发期签名 token
+      exp_*.py / probe_*.py  诊断与 A/B 实验脚本
 ```
+
+> ⚠️ `src/app/snap.py` 是历史死代码（`snap_to_roads()` 无调用），未列入上表。
 
 **为什么 `app/` 在 `src/` 下面**：`app` 是可导入的 Python 包，放在 `src/` 布局里
 能避免「仓库根目录被 `sys.path` 污染」——`tests/`、`tools/` 里的脚本

@@ -130,10 +130,57 @@ AMAP = SourceProfile(
     ride_labels=("骑行", "消耗热量"),
 )
 
+# 行者（2026-11-17 接入，按真实样本精标——宁波 34.67km 卫星底图骑行页）。
+# 关键实测（与美团/高德都不同）：
+#   * 底图是**卫星影像**，深绿/棕色，低饱和中等亮度——美团「上限式」掩膜
+#     (V<200,S<90) 会把整张卫星图吞进来（实测 57 万像素 = 全图 79%）。
+#   * 轨迹是**鲜艳橙红粗线**（H≈7-9，S≈175-190，线宽 ~8px），色相与底图
+#     分离干净，改用区间式掩膜 H[5,22] S[150,255]。
+#   * 图上另有**蓝色规划/对比线**（H≈95， filaments 细），必须靠色相排除。
+#   * 起点是红色三角旗、终点是白底红字水滴徽章，都与橙红轨迹同色相，
+#     现有 find_marker 的「找最大连通域」会把整条轨迹当徽章。解法：
+#     启用 badge_min_fill=0.25——徽章是团块(fill≈0.37)、轨迹是细长线
+#     (fill≈0.06)，用填充率排除轨迹，精确定位两端（通用改动，其他画像
+#     不受影响）。有了真徽章，骨架图搜索能接上起终点引线。
+#   * 顶栏「距离 34.67 / 速度 18.29 / 时间 1:53:44」里程**不带单位**——
+#     概要正则需要 km/公里字样，故顶栏里程目前不参与尺度校验（见 ride_summary）。
+XINGZHE = SourceProfile(
+    id="xingzhe",
+    title="行者",
+    vision=VisionConfig(
+        track_hsv_range=(
+            (5, 150, 120, 22, 255, 255),    # 橙红轨迹（含起点红旗）
+        ),
+        # 行者起终点都是红色团块，与橙红轨迹同色相——靠填充率区分：
+        # 实测起点红旗 area1205/fill0.38、终点红字 area452/fill0.37，
+        # 而整条轨迹连通域 area16141/fill0.063。min_fill=0.25 把轨迹排除。
+        start_hsv_range=(0, 90, 90, 15, 255, 255),
+        end_hsv_range=(0, 90, 90, 15, 255, 255),
+        end_hsv_range2=(255, 255, 255, 0, 0, 0),
+        badge_min_area=150,
+        badge_max_area=3000,
+        badge_min_fill=0.25,
+        # 轨迹线宽 ~8px，闭运算核略收窄防相邻道路粘连
+        track_close_kernel=7,
+        track_open_kernel=5,
+        # 卫星底图 POI 标注偏移与美团同量级，容差沿用。
+        ransac_inlier_m=200.0,
+    ),
+    # 行者顶栏/详情页文案：正面词「距离/里程/骑行距离」；
+    # 干扰「累计/总里程/本周/本月」等统计。
+    distance_positive=("距离", "里程", "骑行", "行程", "全程", "本次"),
+    distance_negative=("累计", "总计", "本周", "本月", "全年", "历史"),
+    ride_labels=("距离", "骑行距离"),
+)
+
 # 画像注册表：新增来源（xiaomi / keep ...）在这里加条目，
 # 并按模块 docstring 的标定指南填参数。**不要**在这里做未标定的占位
 # 条目——切换到没标定过的画像等于全链路盲跑。
-PROFILES: dict[str, SourceProfile] = {"meituan": MEITUAN, "amap": AMAP}
+PROFILES: dict[str, SourceProfile] = {
+    "meituan": MEITUAN,
+    "amap": AMAP,
+    "xingzhe": XINGZHE,
+}
 
 DEFAULT_PROFILE_ID = "meituan"
 
