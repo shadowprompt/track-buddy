@@ -853,7 +853,7 @@ class RidePipeline:
                 lonlat[i - 1][0], lonlat[i - 1][1], lonlat[i][0], lonlat[i][1]
             )
 
-        geojson = _build_geojson(lonlat, reg, track)
+        geojson = _build_geojson(lonlat, reg, track, source_id=self.cfg.source_profile_id)
 
         # --- 可选：HMM 地图匹配（备选显示层，不改主结果） ---
         map_matched = self._map_match_optional(reg, track, road_net, zoom)
@@ -916,7 +916,7 @@ class RidePipeline:
 
         # 额外提供 GCJ-02 版本：国内地图服务（腾讯/高德）底图用的是
         # GCJ-02，消费者若把 WGS-84 坐标直接画上去会整体偏移约 350 米。
-        geojson_gcj = _build_geojson(lonlat_gcj, reg, track)
+        geojson_gcj = _build_geojson(lonlat_gcj, reg, track, source_id=self.cfg.source_profile_id)
         geojson_gcj["features"][0]["properties"]["crs"] = "GCJ-02"
 
         return PipelineResult(
@@ -2291,8 +2291,11 @@ class RidePipeline:
                 lonlat[i - 1][0], lonlat[i - 1][1],
                 lonlat[i][0], lonlat[i][1],
             )
-        geojson = _build_geojson(lonlat, reg, ctx.track)
-        geojson_gcj = _build_geojson(lonlat_gcj, reg, ctx.track)
+        # refine_existing 可能被绕过 __init__ 调用（测试/轻量复用），
+        # 用 getattr 容错；拿不到画像时 source 退化为通用标签。
+        _source_id = getattr(getattr(self, "cfg", None), "source_profile_id", "")
+        geojson = _build_geojson(lonlat, reg, ctx.track, source_id=_source_id)
+        geojson_gcj = _build_geojson(lonlat_gcj, reg, ctx.track, source_id=_source_id)
         geojson_gcj["features"][0]["properties"]["crs"] = "GCJ-02"
 
         _base_diag = dict(base.diagnostics or {})
@@ -2773,7 +2776,8 @@ def _template_geojson(
 
 
 def _build_geojson(
-    lonlat: list[tuple[float, float]], reg: Registration, track: TrackResult
+    lonlat: list[tuple[float, float]], reg: Registration, track: TrackResult,
+    source_id: str = "",
 ) -> dict[str, Any]:
     """构建 GeoJSON。
 
@@ -2785,8 +2789,10 @@ def _build_geojson(
     直接画在 GCJ-02 的底图上（会造成数百米偏移）。
     """
     coords = [[round(lo, 7), round(la, 7)] for lo, la in lonlat]
+    # source 跟随实际来源画像（meituan/amap/xingzhe/...），不再硬编码。
+    # 空值时给通用标签，兼容未指定画像的调用。
     props = {
-        "source": "meituan-ride-screenshot",
+        "source": f"{source_id}-ride-screenshot" if source_id else "ride-screenshot",
         "crs": "WGS-84",
         "coordinate_order": "lon,lat",
         "direction": "first_point_is_start",

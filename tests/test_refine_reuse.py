@@ -82,7 +82,7 @@ def _install_fakes(monkeypatch, *, ok: bool = True) -> None:
         return [(121.0 + float(t[0]) / 1e5, 31.0 + float(t[1]) / 1e5)
                 for _ in poly]
 
-    def fake_geojson(lonlat, reg, track):
+    def fake_geojson(lonlat, reg, track, source_id=""):
         return {"features": [{"geometry": {
             "coordinates": [[float(lo), float(la)] for lo, la in lonlat]},
             "properties": {}}]}
