@@ -1,6 +1,11 @@
 var api = require('../../utils/api.js');
 var records = require('../../utils/records.js');
 
+// 转发分享文案与缩略图：好友/群与朋友圈共用一套。
+// 缩略图为网络图片（5:4 卡片图），需在微信内可访问。
+var SHARE_TITLE = '居然还能从轨迹截图提取经纬度啊！';
+var SHARE_IMAGE = 'https://wp-img.daozhao.com/fitconverter/wxmin_recognize.png';
+
 Page({
   data: {
     overview: '',
@@ -21,6 +26,23 @@ Page({
       { id: 'off', title: '不参考历史记录' }
     ],
     templateModeIndex: 0
+  },
+
+  // 分享给好友 / 群：点右上角「转发」或页内分享按钮时触发。
+  onShareAppMessage: function () {
+    return {
+      title: SHARE_TITLE,
+      imageUrl: SHARE_IMAGE,
+      path: '/pages/index/index'
+    };
+  },
+
+  // 分享到朋友圈：基础库 2.11.3+，从右上角菜单进入。
+  onShareTimeline: function () {
+    return {
+      title: SHARE_TITLE,
+      imageUrl: SHARE_IMAGE
+    };
   },
 
   onLoad: function () {

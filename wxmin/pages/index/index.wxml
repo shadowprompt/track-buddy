@@ -5,7 +5,12 @@
       <text class="intro-title">收录一条路线</text>
       <text class="intro-subtitle">把经过的路，存进你的运动记忆库。</text>
     </view>
-    <view class="source-tag">运动记录</view>
+    <view class="intro-actions">
+      <view class="source-tag">运动记录</view>
+      <button class="share-entry" open-type="share" aria-label="分享给好友">
+        <text class="share-entry-icon">↗</text><text>分享</text>
+      </button>
+    </view>
   </view>
 
   <view class="route-upload-card summary-card">

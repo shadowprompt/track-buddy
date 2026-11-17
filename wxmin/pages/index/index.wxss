@@ -5,7 +5,12 @@ page { background:#111820; color:#f5f8fa; font-size:32rpx; }
 .intro-kicker { color:#a7c8d8; font-size:24rpx; letter-spacing:1rpx; }
 .intro-title { margin-top:10rpx; color:#f5f8fa; font-size:42rpx; line-height:1.2; font-weight:700; letter-spacing:-1rpx; }
 .intro-subtitle { margin-top:8rpx; color:#c6d2d9; font-size:26rpx; }
-.source-tag { flex:none; margin:0 0 4rpx 12rpx; padding:10rpx 15rpx; border:1rpx solid #684452; border-radius:28rpx; background:#402836; color:#ffb4c8; font-size:24rpx; }
+.intro-actions { flex:none; display:flex; align-items:center; gap:10rpx; margin-bottom:4rpx; }
+.source-tag { padding:10rpx 15rpx; border:1rpx solid #684452; border-radius:28rpx; background:#402836; color:#ffb4c8; font-size:24rpx; }
+/* open-type=share 按钮：复位原生样式，做成与 source-tag 同高的小胶囊 */
+.share-entry { display:flex; align-items:center; gap:5rpx; margin:0; padding:10rpx 16rpx; height:auto; line-height:1.2; border:1rpx solid #52809a; border-radius:28rpx; background:#25404d; color:#b9dff0; font-size:23rpx; }
+.share-entry::after { border:0; }
+.share-entry-icon { font-size:24rpx; line-height:1; }
 .route-upload-card { padding:22rpx; border:1rpx solid #3b5967; border-radius:22rpx; background:linear-gradient(145deg,#1a2932,#19232c); box-shadow:0 12rpx 30rpx rgba(0,0,0,.2); }
 .upload-card-head { display:flex; align-items:center; gap:14rpx; }
 .step-index { width:40rpx; height:40rpx; flex:none; display:flex; align-items:center; justify-content:center; border-radius:13rpx; background:#79c8ed; color:#14212a; font-size:24rpx; font-weight:750; }
