@@ -76,3 +76,17 @@ def test_polyline_covers_full_loop(img: np.ndarray) -> None:
     # 首尾接近（环形特征）：闭合度小
     straight = float(np.linalg.norm(r.polyline[-1] - r.polyline[0]))
     assert straight / arc < 0.3, "不像环形轨迹"
+
+
+def test_endpoint_fragment_detected(img: np.ndarray) -> None:
+    """终点徽章遮挡的「跑两遍」折返段应被检测并在 notes 里报告（诊断用）。
+
+    这段被白色「终」徽章 + 蓝色定位点切成独立小连通域，主轨迹提取会当噪声
+    丢弃。这里只要求检测信号存在（2026-11-17 实测 364px），不要求接入
+    polyline——环形骨架上强行接入会乱线/里程虚高。
+    """
+    r = extract_track(img, XINGZHE.vision)
+    notes = " ".join(r.notes)
+    assert "折返碎片" in notes, f"未检测到终点折返段：{r.notes}"
+    # 诊断不能污染主轨迹：点数仍在主轨迹量级（~1736）
+    assert 1500 < len(r.polyline) < 2200, f"主轨迹被改动：{len(r.polyline)}"

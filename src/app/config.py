@@ -155,6 +155,13 @@ class VisionConfig:
     ransac_inlier_m: float = 200.0
     ransac_min_inliers: int = 3
 
+    # 终点折返段检测（可选，诊断用）：终点徽章+定位点会遮挡其下方
+    # 「跑两遍」的折返末段，使其碎成独立连通域而被主轨迹提取丢弃。
+    # 启用后检测该碎片并在 notes 里报告像素量（不接入 polyline——环形
+    # 骨架上强行接入会乱线/里程虚高，见 HANDOVER）。None = 关闭。
+    #   结构：(radius_px, min_area_px)
+    endpoint_fragment_detect: tuple | None = None
+
     # 路网吸附
     snap_radius_m: float = 60.0
     snap_enabled: bool = True

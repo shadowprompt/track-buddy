@@ -163,6 +163,11 @@ XINGZHE = SourceProfile(
         # 轨迹线宽 ~8px，闭运算核略收窄防相邻道路粘连
         track_close_kernel=7,
         track_open_kernel=5,
+        # 终点折返段检测（诊断用）：白色「终」徽章 + 蓝色定位点把底部
+        # 「跑两遍」的 U 形折返切成独立小连通域（实测 364px、质心约
+        # (333,1079)），主轨迹提取会当噪声丢弃。这里检测并在 notes 报告；
+        # 不接入 polyline——环形骨架强行接入会乱线/里程虚高（见 HANDOVER）。
+        endpoint_fragment_detect=(100, 80),
         # 卫星底图 POI 标注偏移与美团同量级，容差沿用。
         ransac_inlier_m=200.0,
     ),

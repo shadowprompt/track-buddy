@@ -158,6 +158,50 @@ def build_track_mask(
     return mask
 
 
+def detect_endpoint_fragment(
+    mask: np.ndarray,
+    end_pt: tuple[int, int] | None,
+    cfg: VisionConfig,
+) -> int:
+    """检测终点徽章邻域内、与主轨迹断开的轨迹碎片像素数（诊断用）。
+
+    终点徽章 + 定位点会把「跑两遍」的折返末段切成独立小连通域，主轨迹
+    提取只取最大连通域，这段会被当噪声丢弃。本函数从**主掩膜本身**分离
+    出这些碎片（颜色已验证、已开运算去噪，不做颜色重提以免混入徽章红字
+    与卫星底图黄线），返回其像素数供上层诊断。
+
+    **只检测、不接入 polyline**：在这类带大量分叉的环形骨架上，强行把碎片
+    接进轨迹顺序会产生乱线或里程虚高（实测 25km→40km）。检测信号用于
+    提示用户「这段存在但形状不可靠」，而非伪造轨迹。
+
+    ``cfg.endpoint_fragment_detect`` 结构：``(radius_px, min_area_px)``。
+    未配置 / 无终点时返回 0。
+    """
+    spec = getattr(cfg, "endpoint_fragment_detect", None)
+    if not spec or end_pt is None:
+        return 0
+    radius, min_area = spec[:2]
+    h, w = mask.shape[:2]
+    ex, ey = int(end_pt[0]), int(end_pt[1])
+    x1, y1 = max(0, ex - radius), max(0, ey - radius)
+    x2, y2 = min(w, ex + radius), min(h, ey + radius)
+    if x2 <= x1 or y2 <= y1:
+        return 0
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    if n < 2:
+        return 0
+    main_id = max(range(1, n), key=lambda i: stats[i, cv2.CC_STAT_AREA])
+    frag = ((mask[y1:y2, x1:x2] > 0)
+            & (labels[y1:y2, x1:x2] != main_id)).astype(np.uint8)
+    fn, _, fs, _ = cv2.connectedComponentsWithStats(frag, 8)
+    total = 0
+    for i in range(1, fn):
+        if int(fs[i, cv2.CC_STAT_AREA]) >= min_area:
+            total += int(fs[i, cv2.CC_STAT_AREA])
+    return total
+
+
 def _select_with_markers(
     mask: np.ndarray,
     labels: np.ndarray,
@@ -423,6 +467,13 @@ def extract_track(
     notes.extend(mnotes)
 
     mask = build_track_mask(img, cfg, scale)
+    # 终点折返段检测（诊断用）：只报告、不接入轨迹。
+    frag_px = detect_endpoint_fragment(mask, end_pt, cfg)
+    if frag_px > 0:
+        notes.append(
+            f"检测到终点邻域折返碎片 {frag_px}px（疑似「跑两遍」的末段，"
+            "被徽章/定位点遮挡而与主轨迹断开）——形状不可靠，未纳入轨迹"
+        )
     comp, bbox = _select_component(mask, start_pt, end_pt, scale)
 
     if comp is None:
