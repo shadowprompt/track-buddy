@@ -154,6 +154,76 @@ def test_bare_meter_regex_excludes_km_and_speed() -> None:
     assert [m.group(1) for m in _RE_M.finditer("157米 4米")] == ["157", "4"]
 
 
+def test_bare_meter_without_label_prefers_missing() -> None:
+    """米候选无标签佐证且多于 1 个时宁缺勿错（2026-11-17 实测回归）。
+
+    一张缺「骑行 352米」大卡的概要图上，米候选全是爬升值
+    （爬升里程 157米 / 爬升高度 4米，各被 OCR 读出两次）——
+    旧策略「无标签取最小」抓出了 0.004km 的荒唐结论：
+    概要统计卡上爬升值天然小于距离，取最小的方向是反的。
+    """
+    toks = _items(
+        "00:01:29", "7大卡", "运动用时", "消耗热量",
+        "157米", "4米", "157米", "4米",   # 爬升行（重复读出）
+        "最高时速", "爬升里程", "爬升高度",
+    )
+    out = parse_ride_summary(toks, ride_labels=("骑行", "消耗热量"))
+    assert out["distance_km"] is None
+    assert out["duration_s"] == 89 and out["calories_kcal"] == 7.0
+    assert any("宁缺勿错" in n for n in out["notes"])
+
+
+def test_bare_meter_single_candidate_accepted_without_label() -> None:
+    toks = _items("00:01:29", "352米")
+    out = parse_ride_summary(toks, ride_labels=("骑行", "消耗热量"))
+    assert out["distance_km"] == pytest.approx(0.352)
+    assert any("仅 1 个米数候选" in n for n in out["notes"])
+
+
+def test_refine_inherits_reject_verdict(monkeypatch) -> None:
+    """精修覆盖必须继承主流程的里程闸门裁决（2026-11-17 实测回归）。
+
+    主流程已判 ok=False，精修收尾用重建 payload 覆盖 last_result.json
+    后，ok=True、16.9km 假轨迹又「复活」回来了。
+    """
+    from app import server as S
+
+    refined = {  # 精修重建 payload：ok=True、几何复活
+        "ok": True, "confidence": 0.2, "distance_m": 16907.0,
+        "track_points": 109,
+        "geojson": {"type": "FeatureCollection", "features": [{"a": 1}]},
+        "geojson_gcj02": {"type": "FeatureCollection",
+                          "features": [{"a": 1}]},
+        "warnings": [],
+    }
+    prev = {  # 主流程闸门后的 payload
+        "shot_id": "x", "ok": False,
+        "ride_summary": {"distance_km": 0.004,
+                         "cross_check": {"available": True,
+                                         "consistent": False,
+                                         "ratio": 4226.75}},
+        "template_capture": {"written": True},
+    }
+    S._inherit_refine_fields(refined, prev)
+    assert refined["ok"] is False
+    assert refined["distance_m"] == 0
+    assert refined["geojson"]["features"] == []
+    assert refined["template_capture"] == {"written": True}
+    assert "ride_summary" in refined
+    assert any("数量级严重不符" in w for w in refined["warnings"])
+
+    # 一致的结果不受影响
+    good = {"ok": True, "distance_m": 3500.0,
+            "geojson": {"type": "FeatureCollection", "features": [{"a": 1}]},
+            "warnings": []}
+    prev_ok = {"ride_summary": {"distance_km": 3.5,
+                                "cross_check": {"available": True,
+                                                "consistent": True,
+                                                "ratio": 1.0}}}
+    S._inherit_refine_fields(good, prev_ok)
+    assert good["ok"] is True and good["distance_m"] == 3500.0
+
+
 def test_cross_check_consistent_and_inconsistent() -> None:
     ok = parse_ride_summary(_items(*ORDER_PAGE_TOKENS),
                             geom_distance_m=3406.1,

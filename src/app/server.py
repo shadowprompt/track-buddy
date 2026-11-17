@@ -1318,6 +1318,29 @@ def _build_payload(result: Any, shot_id: str, shot_path: Path) -> dict[str, Any]
     }
 
 
+def _inherit_refine_fields(payload: dict[str, Any], prev: dict[str, Any]) -> None:
+    """精修落盘前，把主流程 payload 的沉淀字段与闸门裁决合并回来。
+
+    精修 payload 是 ``_build_payload`` 重新组装的，天然没有主流程后来
+    才加的沉淀字段；直接覆盖会把 paired_registration / template_capture
+    冲掉，事后复盘就再也找不到「这次有没有注册模板」的证据。
+    ride_summary 同理：订单页概要属于本次运动，精修不改轨迹的起止
+    时间，丢了它 GPX 就没有时间轴了。
+
+    里程闸门裁决也必须随 ride_summary 一起继承——数量级不符的错误
+    轨迹不会因精修变得相符（精修只平移、不改尺度）。实测 2026-11-17：
+    主流程闸门已判 ok=False，精修收尾覆盖 last_result.json 后
+    ok=True、16.9km 假轨迹又「复活」回来了。
+    """
+    for k in ("paired_registration", "template_capture", "ride_summary"):
+        if k not in payload and k in prev:
+            payload[k] = prev[k]
+    rs = payload.get("ride_summary") or {}
+    cc = rs.get("cross_check") or {}
+    if cc.get("available") and not cc.get("consistent"):
+        _maybe_reject_by_summary_ratio(payload, rs, cc)
+
+
 def _run_refine(shot_id: str, shot_path: Path) -> None:
     """后台精修：**复用主请求上下文**，只补算平移量再重投影。
 
@@ -1364,16 +1387,8 @@ def _run_refine(shot_id: str, shot_path: Path) -> None:
                 (DATA_DIR / "last_result.json").read_text(encoding="utf-8")
             )
             if prev.get("shot_id") == shot_id:
-                # 精修 payload 是 _build_payload 重新组装的，天然没有主流程
-                # 后来才加的沉淀字段；直接覆盖会把 paired_registration /
-                # template_capture 冲掉，事后复盘就再也找不到「这次有没有
-                # 注册模板」的证据。覆盖前把主流程的沉淀字段合并回来。
-                # ride_summary 同理：订单页概要属于本次运动，精修不改轨迹
-                # 的起止时间，丢了它 GPX 就没有时间轴了。
-                for k in ("paired_registration", "template_capture",
-                          "ride_summary"):
-                    if k not in payload and k in prev:
-                        payload[k] = prev[k]
+                # 覆盖前把主流程的沉淀字段与闸门裁决合并回来（见函数注释）。
+                _inherit_refine_fields(payload, prev)
                 refine_valid = True
         except (OSError, ValueError, KeyError, TypeError):
             refine_valid = False

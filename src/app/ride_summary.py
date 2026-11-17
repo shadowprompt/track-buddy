@@ -280,9 +280,14 @@ def parse_ride_summary(
     elif km_cands:
         out["distance_km"] = min(v for _, v in km_cands)
     else:
-        # 裸「米」兜底：短骑行没有 km 计数（高德「352米」）。米值极易
-        # 撞上「爬升里程 157米」「爬升高度 4米」，所以必须同样走标签
-        # 绑定（「骑行」大卡离 352 最近），绝不能取最小/中位数。
+        # 裸「米」兜底：短骑行没有 km 计数（高德「352米」）。
+        #
+        # ⚠️ 米候选**不能沿用 km 候选的「无标签取最小」策略**：
+        # 订单页「累计 > 本次」的规律在概要统计卡上是反向的——页面上
+        # 的爬升高度（4米）、爬升里程（157米）天然比骑行距离小得多，
+        # 实测（2026-11-17）一张缺「骑行」大卡的概要图上 4 个米候选
+        # 全是爬升值，「取最小」抓出了 0.004km 的荒唐结论。
+        # 宁缺勿错：无标签佐证且候选多于 1 个时直接放弃。
         m_cands: list[tuple[int, float]] = []
         for idx, s in enumerate(tokens):
             norm = _norm_token(s)
@@ -291,18 +296,33 @@ def parse_ride_summary(
                     m_cands.append((idx, float(m.group(1)) / 1000.0))
                 except ValueError:
                     continue
-        if m_cands and _dist_pat:
+        if not m_cands:
+            pass
+        elif _dist_pat:
             val, label = _bind_labeled(tokens, m_cands, _dist_pat, boxes)
-            out["distance_km"] = val
             if label:
+                out["distance_km"] = val
                 out["distance_label"] = label
-            if len(m_cands) > 1:
+                if len(m_cands) > 1:
+                    notes.append(
+                        f"页面有 {len(m_cands)} 个米数候选"
+                        f"（{[v for _, v in m_cands]}），已按标签绑定")
+            elif len(m_cands) == 1:
+                out["distance_km"] = val
+                notes.append("页面仅 1 个米数候选且无标签近邻，已采信")
+            else:
                 notes.append(
                     f"页面有 {len(m_cands)} 个米数候选"
-                    f"（{[v for _, v in m_cands]}），"
-                    + ("已按「本次」标签绑定" if label else "无标签，取最小值"))
-        elif m_cands:
-            out["distance_km"] = min(v for _, v in m_cands)
+                    f"（{[v for _, v in m_cands]}）但无骑行标签近邻"
+                    "——多为爬升/海拔干扰值，宁缺勿错不采信")
+        elif len(m_cands) == 1:
+            out["distance_km"] = m_cands[0][1]
+            notes.append("页面仅 1 个米数候选且画像无距离标签，已采信")
+        else:
+            notes.append(
+                f"页面有 {len(m_cands)} 个米数候选"
+                f"（{[v for _, v in m_cands]}）但画像无距离标签"
+                "——宁缺勿错不采信")
 
     # --- 减碳克数（必须有「碳」标签近邻，宁缺勿错） ---
     g_cands: list[tuple[int, float]] = []
