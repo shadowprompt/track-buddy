@@ -429,6 +429,51 @@ async def _attach_ride_summary(
     cc = summary.get("cross_check") or {}
     if cc.get("available") and not cc.get("consistent"):
         payload.setdefault("warnings", []).append(str(cc["note"]))
+        _maybe_reject_by_summary_ratio(payload, summary, cc)
+
+
+# 里程交叉校验硬闸门阈值。
+#
+# ride_summary 的 cross_check 在比值 0.6~1.7 之外只给 warning；
+# 这里更严：<1/3 或 >3 意味着**数量级**错误——典型场景是锚点不足时
+# 相似变换尺度爆炸（实测 352 米骑行被 2 个泛词锚点放大成 51.5 公里、
+# 照常 ok:true 交付，2026-11-17）。数量级错误时拒绝输出轨迹，
+# 把「自信的错误」变成「明示的失败」。
+_SUMMARY_GATE_RATIO = (1.0 / 3.0, 3.0)
+
+
+def _maybe_reject_by_summary_ratio(
+    payload: dict[str, Any],
+    summary: dict[str, Any],
+    cc: dict[str, Any],
+) -> None:
+    """概要里程与几何里程数量级严重不符时，拒绝交付错误轨迹。"""
+    try:
+        ratio = float(cc.get("ratio"))
+    except (TypeError, ValueError):
+        return
+    lo, hi = _SUMMARY_GATE_RATIO
+    if lo <= ratio <= hi:
+        return
+    dkm = summary.get("distance_km")
+    gm = payload.get("distance_m")
+    msg = (
+        f"识别里程 {gm:.0f}m 与运动概要里程 {dkm}km 数量级严重不符"
+        f"（比值 {ratio:.1f}），很可能是锚点不足导致的尺度爆炸——"
+        "已拒绝输出该轨迹。建议：把地图放大到街道级、补充分段细节图"
+        "（相邻截图重叠约 1/3）后重新识别；概要页里程本身可直接采信"
+    )
+    payload["ok"] = False
+    payload["message"] = msg
+    payload["confidence"] = 0.0
+    payload["geojson"] = {"type": "FeatureCollection", "features": []}
+    payload["geojson_gcj02"] = {"type": "FeatureCollection", "features": []}
+    payload["distance_m"] = 0
+    payload["track_points"] = 0
+    # 导出层读空 GeoJSON 后会自动跳过，这里把可能已挂上的内容摘掉
+    payload.pop("gpx", None)
+    payload.pop("tcx", None)
+    payload.setdefault("warnings", []).append(msg)
 
 
 def _attach_exports(payload: dict[str, Any]) -> None:

@@ -118,3 +118,31 @@ def test_confidence_applies_independent_checks():
     assert good > base
     assert p._score_confidence(
         *args, scale_check={"available": False, "consistent": True}) == base
+
+
+def test_confidence_capped_for_two_point_model():
+    """2 点退化模型置信度封顶（2026-11-17 高德实测回归）。
+
+    「诺富特」+「大厦」2 锚点把 352 米骑行放大成 51.5 公里，
+    相似变换恰好无残差、置信度仍有 0.5+。封顶后压到 0.3；
+    路网精修确认贴路（median_after ≤ 40m）时豁免。
+    """
+    p = _stub_pipeline()
+    track = SimpleNamespace(confidence=1.0)
+    reg2 = SimpleNamespace(
+        rmse_reliable_m=0.0, n_reliable=2, rmse_m=0.0, scale=2.0,
+        inliers=[SimpleNamespace(name="诺富特", kind="poi"),
+                 SimpleNamespace(name="大厦", kind="poi")],
+        outliers=[], residuals=[0.0, 0.0],
+    )
+    reg3 = _stub_reg()
+    capped = p._score_confidence(reg2, track, [], [], None, None, None)
+    normal = p._score_confidence(reg3, track, [], [], None, None, None)
+    assert capped <= 0.3
+    assert normal > capped
+    # 路网精修确认贴路：豁免封顶（浦东 2 内点 + 贴路 3.3m 的正确案例）
+    rescued = p._score_confidence(
+        reg2, track, [], [],
+        {"ok": True, "median_after_m": 6.0, "median_before_m": 100.0},
+        None, None)
+    assert rescued > capped

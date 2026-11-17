@@ -121,6 +121,39 @@ def test_duration_with_hours() -> None:
     assert out["duration_s"] == 3600 + 5 * 60 + 10
 
 
+# --- 高德短骑行裸「米」单位（2026-11-17 真实截图实测） ---
+# 详情卡直接用米记账：「骑行」下方大字 352米；页面另有「157米」
+# （爬升里程）与「4米」（爬升高度）两个干扰值，还有「14千米/时」
+# 配速（不能被当成 km 距离候选）。
+AMAP_SHORT_TOKENS = [
+    "08:22", "23分钟", "锅巴", "骑行",
+    "352米",            # 本次距离（裸米）
+    "00:01:29", "14千米/时", "7大卡",
+    "运动用时", "平均速度", "消耗热量",
+    "157米", "4米",     # 爬升里程 / 爬升高度（干扰）
+    "最高时速", "爬升里程", "爬升高度",
+]
+
+
+def test_amap_bare_meter_distance() -> None:
+    out = parse_ride_summary(_items(*AMAP_SHORT_TOKENS),
+                             ride_labels=("骑行", "消耗热量"))
+    assert out["distance_km"] == pytest.approx(0.352)
+    assert out["duration_s"] == 89          # 冒号三段式优先于「23分钟」累计
+    assert out["calories_kcal"] == 7.0
+    # 「14千米/时」配速绝不能混进距离候选
+    assert all("千米/时" not in n or "米数候选" in n for n in out["notes"])
+
+
+def test_bare_meter_regex_excludes_km_and_speed() -> None:
+    from app.ride_summary import _RE_M
+
+    assert [m.group(1) for m in _RE_M.finditer("352米")] == ["352"]
+    assert _RE_M.search("14千米/时") is None    # 千米的尾字 + 配速
+    assert _RE_M.search("3公里路") is None      # 公里的尾字
+    assert [m.group(1) for m in _RE_M.finditer("157米 4米")] == ["157", "4"]
+
+
 def test_cross_check_consistent_and_inconsistent() -> None:
     ok = parse_ride_summary(_items(*ORDER_PAGE_TOKENS),
                             geom_distance_m=3406.1,
@@ -215,6 +248,43 @@ def test_attach_ride_summary_skips_when_absent(monkeypatch) -> None:
         payload2, _make_upload(b"not-an-image")))
     assert "ride_summary" not in payload2
     assert any("无法解码" in w for w in payload2["warnings"])
+
+
+def test_attach_ride_summary_hard_gates_magnitude_error(monkeypatch) -> None:
+    """数量级不符硬闸门：拒绝交付尺度爆炸的轨迹。
+
+    实测（2026-11-17）：352 米骑行被 2 个泛词锚点放大成 51.5 公里，
+    cross_check 只给 warning、结果仍 ok:true。现在比值 >3 时必须
+    ok=False 且清空几何/导出内容。
+    """
+    from app import server as S
+
+    monkeypatch.setattr("app.ocr_anchor.ocr_texts", _fake_ocr)
+    payload = _gj_payload()
+    payload["distance_m"] = 51500.0
+    payload["gpx"] = "<gpx/>"
+    payload["tcx"] = "<tcx/>"
+    asyncio.run(S._attach_ride_summary(payload, _make_upload(_tiny_jpg())))
+    assert payload["ok"] is False
+    assert payload["confidence"] == 0.0
+    assert payload["distance_m"] == 0
+    assert payload["geojson_gcj02"]["features"] == []
+    assert "gpx" not in payload and "tcx" not in payload
+    assert any("数量级严重不符" in w for w in payload["warnings"])
+
+
+def test_attach_ride_summary_soft_band_keeps_result(monkeypatch) -> None:
+    """轻度不符（比值 1.7~3 / 0.33~0.6）：维持 warning，不硬拦。"""
+    from app import server as S
+
+    monkeypatch.setattr("app.ocr_anchor.ocr_texts", _fake_ocr)
+    payload = _gj_payload()
+    payload["distance_m"] = 8000.0  # 比值 2.29：warning 区间
+    asyncio.run(S._attach_ride_summary(payload, _make_upload(_tiny_jpg())))
+    assert "message" not in payload
+    assert payload["distance_m"] == 8000.0
+    assert payload["geojson_gcj02"]["features"]
+    assert any("量级不符" in w for w in payload["warnings"])
 
 
 def test_recognize_endpoints_accept_summary_form() -> None:
@@ -331,5 +401,7 @@ def test_amap_duration_prefers_stat_card_over_topbar_cumulative() -> None:
     assert out["duration_text"] == "00:01:29"
     assert out["calories_kcal"] == pytest.approx(7)
     assert out["started_at"] == "2026-11-17T08:19:47"
-    # 配速「14千米/时」不能混进里程候选（单位后跟 / 被排除）
-    assert out["distance_km"] is None  # 裸「米」单位暂不支持，宁缺勿错
+    # 配速「14千米/时」不能混进里程候选（单位后跟 / 被排除）。
+    # 裸「米」已支持（2026-11-17 补）：标签绑定取「骑行」大卡的 352米，
+    # 「爬升里程 157米」「爬升高度 4米」被几何/索引绑定排除。
+    assert out["distance_km"] == pytest.approx(0.352)

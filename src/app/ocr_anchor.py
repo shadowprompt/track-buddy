@@ -36,6 +36,16 @@ TRANSIT_SUFFIXES = ("号线", "地铁", "火车站", "高铁站", "机场", "客
 # 这些是数字/符号类，不是地名
 _NON_NAME = re.compile(r"^[\W\d_]+$")
 
+# 泛词黑名单：这些词**单独出现**时指代一类设施而非某个具体地点，
+# 地名库（OSM/天地图）里同名要素遍地都是，匹配到哪个全看运气——
+# 实测「大厦」匹配到 22 公里外的同名建筑，2 点模型尺度直接爆炸
+# （352 米骑行被放大成 51 公里，2026-11-17）。真实 POI 名不会只有
+# 这一个词（「上海荟聚Livat」「巴奴毛肚火锅」都带专名）。
+_GENERIC_WORDS = frozenset({
+    "大厦", "大楼", "酒店", "宾馆", "饭店", "广场", "中心", "超市",
+    "银行", "公司", "停车场", "厕所", "餐厅", "便利店", "药店", "门诊部",
+})
+
 
 @dataclass
 class TextItem:
@@ -269,6 +279,9 @@ def build_anchors(
             continue
         # 过滤状态栏、比例尺等非地图内容
         if text in {"美团", "美团地图"}:
+            continue
+        # 泛词单独出现：不是可定位的具体地点（见 _GENERIC_WORDS 注释）
+        if text in _GENERIC_WORDS or text.endswith("出入口"):
             continue
         if re.fullmatch(r"[\d:.]+", text):
             continue

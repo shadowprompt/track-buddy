@@ -56,6 +56,10 @@ _RE_KM = re.compile(
 # 的相邻块是纯单位块时也算候选。「干米」是 OCR 对「千米」的常见误读。
 _RE_UNIT_TOKEN = re.compile(r"^(?:千米|公里|km)$", re.IGNORECASE)
 _RE_PURE_NUMBER = re.compile(r"^\d+(?:\.\d+)?$")
+# 裸「米」：短骑行详情卡直接用米记账（高德「352米」，2026-11-17 实测）。
+# 必须排除「千米/公里」的尾字（(?<![千公])米）与配速「米/秒」（米后紧跟
+# / 或 每）；否则「14千米/时」里的「14」会混进来。
+_RE_M = re.compile(r"(\d+(?:\.\d+)?)\s*(?<![千公])米(?![每/])")
 _RE_GRAMS = re.compile(r"(\d+(?:\.\d+)?)\s*g\b", re.IGNORECASE)
 
 # 标签文本块与数值文本块允许的最大索引距离（OCR 按阅读顺序输出，
@@ -275,6 +279,30 @@ def parse_ride_summary(
                 + ("已按「本次」标签绑定" if label else "无标签，取最小值"))
     elif km_cands:
         out["distance_km"] = min(v for _, v in km_cands)
+    else:
+        # 裸「米」兜底：短骑行没有 km 计数（高德「352米」）。米值极易
+        # 撞上「爬升里程 157米」「爬升高度 4米」，所以必须同样走标签
+        # 绑定（「骑行」大卡离 352 最近），绝不能取最小/中位数。
+        m_cands: list[tuple[int, float]] = []
+        for idx, s in enumerate(tokens):
+            norm = _norm_token(s)
+            for m in _RE_M.finditer(norm):
+                try:
+                    m_cands.append((idx, float(m.group(1)) / 1000.0))
+                except ValueError:
+                    continue
+        if m_cands and _dist_pat:
+            val, label = _bind_labeled(tokens, m_cands, _dist_pat, boxes)
+            out["distance_km"] = val
+            if label:
+                out["distance_label"] = label
+            if len(m_cands) > 1:
+                notes.append(
+                    f"页面有 {len(m_cands)} 个米数候选"
+                    f"（{[v for _, v in m_cands]}），"
+                    + ("已按「本次」标签绑定" if label else "无标签，取最小值"))
+        elif m_cands:
+            out["distance_km"] = min(v for _, v in m_cands)
 
     # --- 减碳克数（必须有「碳」标签近邻，宁缺勿错） ---
     g_cands: list[tuple[int, float]] = []

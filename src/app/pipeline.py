@@ -682,6 +682,15 @@ class RidePipeline:
         med_px, check_notes = self._self_check(reg, pairs)
         warnings.extend(check_notes)
 
+        # 2 点退化模型告警：与 _score_confidence 的封顶配套，让用户知道
+        # 为什么置信度被压低——相似变换被 2 点完全确定、无冗余校验。
+        if len({p.name for p in reg.inliers}) <= 2:
+            names = "、".join(dict.fromkeys(p.name for p in reg.inliers))
+            warnings.append(
+                f"地理配准仅由 2 个锚点（{names}）支撑：相似变换无冗余校验，"
+                "尺度可能整体错误。建议补充放大的细节图重试，"
+                "或以上传的运动概要里程为准")
+
         # --- 备选位置 ---
         # 收集与最优解地理上分离（>300 米）的其他自洽解。
         # 低置信度时前端会把它们列出来，让用户一键切换。
@@ -2607,6 +2616,24 @@ class RidePipeline:
 
         if zoom and not zoom.get("position_ok", True):
             conf = min(conf, 0.2)
+
+        # --- 2 点退化模型闸门 ---
+        #
+        # 相似变换恰好被 2 个点完全确定：残差恒 0、无任何冗余校验，
+        # 「看起来完美」的拟合其实连一个多余观测都没有。实测（2026-11-17）
+        # 高德详情页只有「诺富特」「大厦」两个泛词锚点命中，2 点模型把
+        # 352 米骑行放大成 51.5 公里，置信度却仍有 0.5+、照常 ok:true 交付。
+        #
+        # 2 内点不必然错（浦东实测 2 内点 + 贴路 3.3m 的结果是正确的），
+        # 但必须满足其一才可信：路网精修确认轨迹贴路（median_after 达标），
+        # 或里程交叉校验自洽。这里只做置信度封顶——把「自信的错误」压成
+        # 「明示的低可信」，最终拦截由概要里程硬闸门完成。
+        n_anchor_names = len({p.name for p in reg.inliers})
+        road_protected = bool(
+            road_fit and road_fit.get("ok")
+            and float(road_fit.get("median_after_m", 999)) <= 40)
+        if n_anchor_names <= 2 and not road_protected:
+            conf = min(conf, 0.3)
 
         # --- 真值校准（最后一步，默认不启用）---
         #
