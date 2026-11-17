@@ -306,8 +306,12 @@ class BaiduProvider(_BaseGeocodingProvider):
             return []
         self._reset_error()
         self._throttle()
-        params = {"key": key, "query": name, "region": city or "全国",
-                  "output": "json", "scope": "2"}
+        # ⚠️ 百度 WebService API 的鉴权参数名是 **ak**，不是 key——
+        # 早期实现写成 key，接口返回 status=2（请求参数非法），
+        # 这个源等于从未可用。city_limit=true 让 region 真正硬约束
+        # 在城市内（不加的话只影响排序，异地同名照样混进来）。
+        params = {"ak": key, "query": name, "region": city or "全国",
+                  "city_limit": "true", "output": "json", "scope": "2"}
         try:
             data = self._get(BAIDU_PLACE_SEARCH, params)
         except (requests.RequestException, ValueError):
@@ -328,7 +332,7 @@ class BaiduProvider(_BaseGeocodingProvider):
         return out
 
     def probe(self) -> ProbeResult:
-        params = {"key": self.key or "", "query": "上海站", "region": "全国",
+        params = {"ak": self.key or "", "query": "上海站", "region": "全国",
                   "output": "json", "scope": "2"}
         try:
             data = self._get(BAIDU_PLACE_SEARCH, params)

@@ -1153,8 +1153,11 @@ class RidePipeline:
                 continue
             matched += 1
             matched_names.add(a.name)
-            # 词典里权重最高的候选优先，其余作为备选（最多 3 个）
-            for r in results[:3]:
+            # 词典里权重最高的候选优先，其余作为备选（最多 5 个）。
+            # 上限从 3 提到 5：商业源（百度）的相关门店按全市相关性排序，
+            # 正确的「截图那家分店」常排在第 4 位（如巴奴：陆家嘴店在前、
+            # 荟聚店在后），截到 3 会把它截掉，RANSAC 拼不出自洽簇。
+            for r in results[:5]:
                 pairs.append(
                     AnchorPair(
                         name=a.name,
