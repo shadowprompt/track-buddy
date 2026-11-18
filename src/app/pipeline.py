@@ -957,6 +957,12 @@ class RidePipeline:
                 ),
                 rotation_deg=round(reg.rotation_deg, 3),
                 model=reg.model,
+                # 真实配准模型（像素→墨卡托米）：overlay 反投影必须用它，
+                # 不能重新拟合——重拟合的锚点解析条件（城市/在线开关）稍有
+                # 不同就会拟出另一个模型，绿线整体偏离原图（2026-11-18）。
+                model_matrix=[[float(v) for v in row] for row in reg.matrix],
+                model_translation=[float(reg.translation[0]),
+                                   float(reg.translation[1])],
                 rmse_m=round(reg.rmse_m, 2),
                 anchor_backproj_px=round(med_px, 1),
                 inliers=len(reg.inliers),

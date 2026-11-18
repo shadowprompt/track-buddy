@@ -81,15 +81,37 @@ def _normalize(res):
 
 
 def _registration(res: dict, sample: str):
-    """复现流水线的配准（含路网精修平移量）。"""
+    """复现流水线的配准（含路网精修平移量）。
+
+    **优先直接使用管线交付的真实模型**（diagnostics.model_matrix /
+    model_translation，2026-11-18 起）：overlay 的绿线是「交付 GeoJSON
+    的反投影」，必须与交付模型一致。这里曾按旧设计重新拟合一遍，但重
+    拟合的锚点解析条件（城市硬编码「上海」、在线开关 False）与真实运行
+    不同，对宁波样本会拟出整体西偏 1~2km 的另一个模型——绿线偏出地图
+    左缘，而交付轨迹其实没这么偏。仅当 res 未携带模型（旧数据兼容）时
+    才退回重拟合，且城市取 res 里的真实城市。
+    """
     img = imread_unicode(sample)
-    pipe = RidePipeline(CONFIG)
-    items = ocr_texts(img, CONFIG.vision)
-    anchors = build_anchors(img, items, CONFIG.vision)
+    dg = res.get("diagnostics") or {}
+    mtx = dg.get("model_matrix")
+    trn = dg.get("model_translation")
     warn: list[str] = []
-    pairs = pipe._resolve_anchors(anchors, "上海", False, warn)
-    reg = register(pairs, inlier_m=CONFIG.vision.ransac_inlier_m,
-                   min_inliers=CONFIG.vision.ransac_min_inliers)
+    if mtx and trn:
+        from app.register import Registration
+        reg = Registration(
+            ok=True,
+            model=dg.get("model", "north_up"),
+            matrix=np.array(mtx, dtype=float),
+            translation=np.array(trn, dtype=float),
+        )
+    else:
+        pipe = RidePipeline(CONFIG)
+        items = ocr_texts(img, CONFIG.vision)
+        anchors = build_anchors(img, items, CONFIG.vision)
+        city = res.get("city") or (res.get("diagnostics") or {}).get("city") or "上海"
+        pairs = pipe._resolve_anchors(anchors, city, False, warn)
+        reg = register(pairs, inlier_m=CONFIG.vision.ransac_inlier_m,
+                       min_inliers=CONFIG.vision.ransac_min_inliers)
     rf = res.get("road_fit") or {}
     if rf.get("ok"):
         reg.translation = reg.translation + np.array(
