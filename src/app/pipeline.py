@@ -906,7 +906,10 @@ class RidePipeline:
                 )
                 reg.matrix = reg.matrix * _f
                 reg.translation = reg.translation * _f + (1.0 - _f) * _c
-                reg.scale = float(reg.scale) * _f
+                # ⚠️ 不要给 reg.scale 赋值：scale 是从 matrix 实时计算的
+                # 只读属性（register.py Registration.scale），上一行缩放
+                # matrix 后 scale 已自动跟着变，赋值会 AttributeError
+                # （实测切高德底图触发校准分支才暴露）。
                 lonlat_gcj = apply_to_polyline(reg, simplified)
                 scale_calibration = {
                     "factor": round(_f, 4),

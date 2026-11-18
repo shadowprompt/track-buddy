@@ -19,6 +19,10 @@ from app.maps.contracts import CRS, Capability
 _ENV_NAMES = (
     "AMAP_KEY", "TMAP_KEY", "BAIDU_MAP_KEY",
     "TIANDITU_API_KEY", "MAP_GEOCODING_ORDER", "TIANDITU_MAP_BOUND",
+    # 中转配置也要隔离：config.py 导入时 load_dotenv() 把项目 .env 灌进
+    # os.environ，relay 开着会把 provider 的可用性与 URL 改写带进测试
+    # （实测开发者本地开中转后 3 个用例误报）。
+    "AMAP_RELAY_URL", "AMAP_RELAY_TOKEN",
 )
 
 _AMAP_URL = "restapi.amap.com/v3/place/text"

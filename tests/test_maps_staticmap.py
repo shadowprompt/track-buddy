@@ -25,6 +25,23 @@ def _parse(path: Path) -> ast.Module:
 # ------------------------------------------------------------------ provider
 
 
+@pytest.fixture(autouse=True)
+def _no_amap_relay(monkeypatch):
+    """开发者本地 .env 可能开着高德中转（AMAP_RELAY_URL）。
+
+    URL 形态断言假设「直连高德」；client 的模块级默认 cfg 会读到真实
+    .env（load_dotenv 在 config.py 导入时灌进 os.environ + 文件热读），
+    这里把它换成未配置中转的替身，保证测试与环境无关。
+    """
+    from app.amap_relay import client as _relay_client
+
+    class _NoRelayCfg:
+        amap_relay_url = None
+        amap_relay_token = None
+
+    monkeypatch.setattr(_relay_client, "_default_cfg", _NoRelayCfg())
+
+
 def test_amap_url_shape() -> None:
     from app.maps.staticmap import fetch_static_map
 
