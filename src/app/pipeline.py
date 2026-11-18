@@ -1269,13 +1269,12 @@ class RidePipeline:
         )
         # 超出名额的候选也记录进诊断明细（status=skipped）——用户排查
         # 「为什么我的 POI 没参与配准」时需要看到它是被截掉还是没查到。
-        skipped_targets = eligible[20:]
-        #
-        # 上限从 14 提到 20：城市级低缩放截图里能用的锚点本来就稀疏
-        # （整张图只有十几个标注），截掉一半会直接让配准失去约束。
-        # 名额给到 20 是权衡 Nominatim 1 次/秒的限速——命中缓存后
-        # 二次识别几乎不耗时间。
-        targets = eligible[:20]
+        # 名额默认 20（历史：按 Nominatim 1次/秒限速权衡），接高额度
+        # 高德中转后可在 .env 用 GEOCODE_TARGET_LIMIT 调大（热读）。
+        # getattr 兜底：测试桩/vendor 场景可能传入无此属性的轻量 cfg。
+        _limit = getattr(self.cfg, "geocode_target_limit", None) or 20
+        skipped_targets = eligible[_limit:]
+        targets = eligible[:_limit]
 
         matched = 0
         matched_names: set[str] = set()

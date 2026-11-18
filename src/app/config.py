@@ -80,6 +80,10 @@ AMAP_PLACE_SEARCH = "https://restapi.amap.com/v3/place/text"
 AMAP_RELAY_URL_ENV = "AMAP_RELAY_URL"
 AMAP_RELAY_TOKEN_ENV = "AMAP_RELAY_TOKEN"
 
+# 单次识别最多地理编码的锚点数。原为按 Nominatim 1次/秒限速权衡定死的
+# 20；接入高额度高德中转后可在 .env 调大（热读，改完即生效）。
+GEOCODE_TARGET_LIMIT_ENV = "GEOCODE_TARGET_LIMIT"
+
 # 运动记录云存储（腾讯 COS + 微信登录）的必需配置。
 # 单一用途、无别名；缺任一项时 records_enabled() 自动降级，
 # 识别端点保持零回归。密钥只在服务端 .env，绝不下发客户端。
@@ -406,6 +410,20 @@ class AppConfig:
     def amap_relay_token(self) -> str | None:
         """中转访问令牌（本地与服务器两端一致）。"""
         return self._env_value(AMAP_RELAY_TOKEN_ENV)
+
+    @property
+    def geocode_target_limit(self) -> int:
+        """单次识别最多地理编码的锚点数（默认 20，.env 热读）。
+
+        注意各在线源自身仍有限流（如高德 provider 的 0.35s 最小间隔），
+        调大名额会线性拉长单次识别耗时：50 个 ≈ 多花 17 秒。
+        """
+        raw = (self._env_value(GEOCODE_TARGET_LIMIT_ENV) or "").strip()
+        try:
+            n = int(raw)
+        except ValueError:
+            return 20
+        return max(1, min(n, 200))
 
     @property
     def tmap_key(self) -> str | None:
