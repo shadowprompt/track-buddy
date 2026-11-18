@@ -1540,12 +1540,42 @@ __WB_AMAP_SDK__
   // 多图识别时，底图必须换成**拼接后的大图**：
   // 轨迹坐标（track_polyline_px）是在拼接画布上算出来的，
   // 若底图还是第一张原图，叠加会完全错位（而且用户看到的只是 1/N 张图）。
+  //
+  // canvas 是按 drawPreview 执行那一刻的容器几何绝对定位的；之后窗口
+  // 缩放、侧栏开合、结果卡片撑高……任何布局变化都会让 img 重排而
+  // canvas 停在旧几何上——绿线与锚点整体错位（2026-11-18 宁波样本：
+  // 数据层 polyline 与红色轨迹中位偏差 0px，显示层却左偏 60px）。
+  // 所以绘制逻辑必须可重入，并挂 resize/ResizeObserver 重绘。
+  let _previewData = null;   // 最近一次识别结果（重绘数据源）
+  let _previewRaf = 0;       // 重绘去抖
+
   function drawPreview(d) {
     const img = $('prevImg');
     // 换图先隐藏候选线图例：没有候选位移时不能残留上一条结果。
     const legend = $('fitLegend');
     if (legend) { legend.style.display = 'none'; legend.innerHTML = ''; }
-    img.onload = () => {
+    _previewData = d;
+    img.onload = renderPreviewOverlay;
+    // 换图时必须清掉上一张的叠加层，否则新旧轨迹会叠在一起。
+    // 同一个 src 不会重新触发 onload，所以这里先主动清空画布。
+    const cOld = $('prevCanvas');
+    if (cOld) {
+      const ctxOld = cOld.getContext('2d');
+      if (ctxOld) ctxOld.clearRect(0, 0, cOld.width, cOld.height);
+    }
+    img.src = d.stitched_url || d.shot_url;
+    // 命中缓存的图 onload 可能不触发（complete 已为 true），直接补画一次
+    if (img.complete && img.naturalWidth) renderPreviewOverlay();
+    applyPreviewVisibility();
+  }
+
+  // 按当前容器几何重画叠加层（数据固定用 _previewData）。
+  function renderPreviewOverlay() {
+    const d = _previewData;
+    if (!d) return;
+    const img = $('prevImg');
+    if (!img.complete || !img.naturalWidth) return; // 尚未加载完：onload 会再来
+    const legend = $('fitLegend');
       const c = $('prevCanvas');
       // ⚠️ 画布必须与图片的**实际显示区域**完全一致。
       //
@@ -1666,16 +1696,21 @@ __WB_AMAP_SDK__
       };
       (d.anchors_used || []).forEach(a => put(a, '#ffd400'));
       (d.anchors_rejected || []).forEach(a => put(a, 'rgba(255,255,255,.55)'));
-    };
-    // 换图时必须清掉上一张的叠加层，否则新旧轨迹会叠在一起。
-    // 同一个 src 不会重新触发 onload，所以这里先主动清空画布。
-    const c = $('prevCanvas');
-    if (c) {
-      const ctx = c.getContext('2d');
-      if (ctx) ctx.clearRect(0, 0, c.width, c.height);
-    }
-    img.src = d.stitched_url || d.shot_url;
-    applyPreviewVisibility();
+  }
+
+  // 布局变化（窗口缩放、侧栏开合、结果卡片撑高）会让 img 重排，而
+  // canvas 的绝对定位/尺寸停留在绘制那一刻的几何——叠加整体错位
+  // （2026-11-18 宁波样本：数据层完美，显示层绿线左偏 60px）。
+  // 统一去抖后重绘；重复触发时 rAF 自动合并。
+  function schedulePreviewRedraw() {
+    if (!_previewData) return;
+    cancelAnimationFrame(_previewRaf);
+    _previewRaf = requestAnimationFrame(renderPreviewOverlay);
+  }
+  window.addEventListener('resize', schedulePreviewRedraw);
+  if (window.ResizeObserver) {
+    new ResizeObserver(schedulePreviewRedraw).observe($('preview'));
+    new ResizeObserver(schedulePreviewRedraw).observe($('prevImg'));
   }
 
   // 预览容器与地图容器**始终同时显示**。
