@@ -13,6 +13,7 @@ from typing import Any
 import requests
 
 from ..contracts import CRS, Capability, ProbeResult, ProviderMeta
+from ...amap_relay.client import amap_relay_enabled, rewrite_amap_request
 
 AMAP_DIRECTION = "https://restapi.amap.com/v4/direction/bicycling"
 AMAP_DIRECTION_V3 = "https://restapi.amap.com/v3/direction/driving"
@@ -39,15 +40,18 @@ class AmapRoadNameProvider:
         return self.credentials.resolve("AMAP_KEY")
 
     def is_available(self) -> bool:
-        return bool(self.key)
+        # 本地开发没有真实 key 时，配了中转（AMAP_RELAY_URL）也算可用。
+        return bool(self.key) or amap_relay_enabled(self.cfg)
 
     def probe(self) -> ProbeResult:
         """打一次 bicycling，确认 key 与接口都可用。"""
-        params = {"origin": "121.360000,31.190000",
-                  "destination": "121.400000,31.220000",
-                  "key": self.key or "", "extensions": "base", "strategy": "0"}
+        url, params = rewrite_amap_request(AMAP_DIRECTION, {
+            "origin": "121.360000,31.190000",
+            "destination": "121.400000,31.220000",
+            "key": self.key or "", "extensions": "base", "strategy": "0"},
+            self.cfg)
         try:
-            r = requests.get(AMAP_DIRECTION, params=params,
+            r = requests.get(url, params=params,
                              timeout=self.cfg.http_timeout)
             data = r.json()
         except Exception as exc:  # noqa: BLE001
@@ -76,12 +80,14 @@ class AmapRoadNameProvider:
         origin = f"{lonlat[0][0]:.6f},{lonlat[0][1]:.6f}"
         dest = f"{lonlat[-1][0]:.6f},{lonlat[-1][1]:.6f}"
         last_err = ""
-        for url in (AMAP_DIRECTION, AMAP_DIRECTION_V3):
+        for base in (AMAP_DIRECTION, AMAP_DIRECTION_V3):
             try:
+                url, params = rewrite_amap_request(base, {
+                    "origin": origin, "destination": dest, "key": key,
+                    "extensions": "base", "strategy": "0"}, self.cfg)
                 resp = requests.get(
                     url,
-                    params={"origin": origin, "destination": dest, "key": key,
-                            "extensions": "base", "strategy": "0"},
+                    params=params,
                     timeout=timeout,
                 )
                 data = resp.json()

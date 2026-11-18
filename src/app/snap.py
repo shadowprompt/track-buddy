@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 import requests
 
+from .amap_relay.client import rewrite_amap_request as _rewrite_amap_request
 from .geo.coords import haversine
 
 
@@ -118,8 +119,11 @@ class RoadNetwork:
             "extensions": "all",
         }
         # 高德没有直接的 bbox 路网接口，改用范围检索 + 过滤
+        # 配了中转（AMAP_RELAY_URL）时改走服务器中转，key 由中转注入。
+        url, params = _rewrite_amap_request(
+            "https://restapi.amap.com/v3/place/around", params)
         r = self._session.get(
-            "https://restapi.amap.com/v3/place/around",
+            url,
             params=params,
             timeout=self.timeout,
         )

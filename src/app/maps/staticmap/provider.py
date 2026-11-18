@@ -23,6 +23,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ...amap_relay.client import rewrite_amap_request
+
 # 腾讯地图静态地图 WebService 端点
 TMAP_STATICMAP = "https://apis.map.qq.com/ws/staticmap/v2/"
 # 高德静态地图 WebService 端点
@@ -100,7 +102,11 @@ def fetch_static_map(
     if provider == "tmap":
         url = _tmap_url(lon, lat, zoom, size, key, markers)
     else:
-        url = _amap_url(lon, lat, zoom, size, key, markers)
+        # _amap_url 产出的是「带 query 的完整 URL」；rewrite 会拆开
+        # query、丢弃占位 key 并改写到中转（未配中转时原样返回）。
+        url, q = rewrite_amap_request(_amap_url(lon, lat, zoom, size, key, markers))
+        if q:
+            url = url + "?" + urllib.parse.urlencode(q)
     urlopen = opener or urllib.request.urlopen
     try:
         req = urllib.request.Request(url, headers={"User-Agent": user_agent})

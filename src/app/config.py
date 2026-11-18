@@ -73,6 +73,13 @@ TMAP_GEOCODER = "https://apis.map.qq.com/ws/geocoder/v1/"
 # 高德 WebService 端点
 AMAP_PLACE_SEARCH = "https://restapi.amap.com/v3/place/text"
 
+# 高德中转（本地开发用）：高额度 AMAP_KEY 只允许服务器 IP（白名单），
+# 本地把 AMAP_RELAY_URL 指向部署在服务器上的中转（run_relay.py），
+# 所有 restapi.amap.com 请求改走中转、由中转注入服务器侧 key。
+# AMAP_RELAY_TOKEN 是中转的访问令牌，两端必须一致。
+AMAP_RELAY_URL_ENV = "AMAP_RELAY_URL"
+AMAP_RELAY_TOKEN_ENV = "AMAP_RELAY_TOKEN"
+
 # 运动记录云存储（腾讯 COS + 微信登录）的必需配置。
 # 单一用途、无别名；缺任一项时 records_enabled() 自动降级，
 # 识别端点保持零回归。密钥只在服务端 .env，绝不下发客户端。
@@ -389,6 +396,16 @@ class AppConfig:
     @property
     def amap_key(self) -> str | None:
         return self._env_value(AMAP_KEY_ENV)
+
+    @property
+    def amap_relay_url(self) -> str | None:
+        """高德中转服务地址（本地开发用，见 AMAP_RELAY_URL_ENV）。"""
+        return self._env_value(AMAP_RELAY_URL_ENV)
+
+    @property
+    def amap_relay_token(self) -> str | None:
+        """中转访问令牌（本地与服务器两端一致）。"""
+        return self._env_value(AMAP_RELAY_TOKEN_ENV)
 
     @property
     def tmap_key(self) -> str | None:

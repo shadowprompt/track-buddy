@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 import requests
 
+from ...amap_relay.client import amap_relay_enabled, rewrite_amap_request
 from ...config import (
     AMAP_PLACE_SEARCH,
     TIANDITU_MAP_BOUND_DEFAULT,
@@ -174,9 +175,20 @@ class AmapProvider(_BaseGeocodingProvider):
     output_crs = CRS.GCJ02
     credential_aliases = ("AMAP_KEY",)
 
+    def is_available(self) -> bool:
+        # 本地开发可以没有真实 AMAP_KEY：只要配了中转
+        # （AMAP_RELAY_URL，见 app.amap_relay）就算可用。
+        return bool(self.key) or amap_relay_enabled(self.cfg)
+
+    def _get(self, url: str, params: dict[str, Any]) -> Any:
+        # 高德专属改写点：配了中转时 restapi.amap.com 请求改走服务器。
+        # 其它 provider（腾讯/天地图）不受影响。
+        url, params = rewrite_amap_request(url, params, self.cfg)
+        return super()._get(url, params)
+
     def search(self, name: str, city: str) -> list[PlaceCandidate]:
         key = self.key
-        if not key:
+        if not key and not amap_relay_enabled(self.cfg):
             return []
         self._reset_error()
         self._throttle()
