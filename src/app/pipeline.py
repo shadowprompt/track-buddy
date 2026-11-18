@@ -852,6 +852,112 @@ class RidePipeline:
             for n in road_name_fit["notes"][_notes_collected:]:
                 warnings.append(n)
 
+        # --- 阶段 5.8a：路网吸附准备（可选） ---
+        #
+        # **同时修里程**：交付链原用 RDP 简化（eps 0.075px），弧长判据
+        # 把近直线路段连锁坍缩，实测把 34.9km 削到 30.4km（-12%）——
+        # 这才是「识别里程偏低」的主因之一。吸附交付时跳过 RDP，改用
+        # 2px 等距重采样（弧长保真，点数 ~1300 在 GeoJSON 无成本压力）。
+        road_snap: dict[str, Any] | None = None
+        if (getattr(cfg, "road_snap_deliver", False)
+                and road_net is not None
+                and getattr(road_net, "samples", None)):
+            low_shape = _track_lacks_shape_info(
+                track.polyline, track.bbox, bool(zoom.get("has_road_names")))
+            if low_shape:
+                road_snap = {"ok": False, "method": "gentle",
+                             "reason": "直线输入不做路网吸附（会把直线强行贴成路）"}
+            else:
+                road_snap = {}  # 占位：5.8b 执行温和吸附
+                simplified = resample_polyline(track.polyline, step_px=2.0)
+                lonlat_gcj = apply_to_polyline(reg, simplified)
+
+        # --- 阶段 5.7：里程尺度强制校准 ---
+        #
+        # OCR/概要页里程是物理真值（App 记录），比 7-12 个混源内点拟合
+        # 出的尺度更可信。实测宁波闭环样本：内点拟合地面尺度 12.24 m/px，
+        # 交付 30.37km，比 App 记录 34.67km 少 12.4%——一致性阈值 ±15%
+        # 拦不住。偏差 >8% 时直接绕轨迹质心缩放模型，把交付里程拉回
+        # 先验值（±3% 内）。绕质心缩放保证轨迹位置不动、只改尺度；
+        # 反投影 overlay 用交付模型，天然一致。
+        # 注：校准必须在吸附**之前**——吸附点 lying on roads 是相对
+        # 固定路网的，先校准再吸附才能两全。
+        scale_calibration: dict[str, Any] | None = None
+        _prior_km = distance_hint_km or ocr_distance_km
+        if (_prior_km and _prior_km > 0 and len(simplified) >= 50
+                and lonlat_gcj and len(lonlat_gcj) >= 2):
+            from .geo.coords import haversine as _hav
+
+            _geom_m = sum(
+                _hav(lonlat_gcj[i - 1][0], lonlat_gcj[i - 1][1],
+                     lonlat_gcj[i][0], lonlat_gcj[i][1])
+                for i in range(1, len(lonlat_gcj))
+            )
+            _target_m = float(_prior_km) * 1000.0
+            if _geom_m > 100.0 and abs(_geom_m - _target_m) / _target_m > 0.08:
+                _f = max(0.6, min(1.6, _target_m / _geom_m))
+                _s = (np.asarray(simplified, dtype=float)[:200:10]
+                      if len(simplified) > 200
+                      else np.asarray(simplified, dtype=float))
+                _c = np.mean(
+                    [reg.pixel_to_mercator(float(px), float(py))
+                     for px, py in _s],
+                    axis=0,
+                )
+                reg.matrix = reg.matrix * _f
+                reg.translation = reg.translation * _f + (1.0 - _f) * _c
+                reg.scale = float(reg.scale) * _f
+                lonlat_gcj = apply_to_polyline(reg, simplified)
+                scale_calibration = {
+                    "factor": round(_f, 4),
+                    "before_m": round(_geom_m, 1),
+                    "after_m": round(_geom_m * _f, 1),
+                    "target_m": round(_target_m, 1),
+                    "source": "summary" if distance_hint_km else "ocr",
+                }
+                warnings.append(
+                    f"里程尺度校准：几何里程 {_geom_m / 1000:.1f}km 与记录 "
+                    f"{_prior_km:.2f}km 偏差超 8%，已按先验缩放模型 "
+                    f"（×{_f:.3f}），交付里程以校准后为准"
+                )
+
+        # --- 阶段 5.8b：路网温和吸附执行 ---
+        #
+        # 像素描迹离 OSM 路网中位 ~52m（p90 ~190m），画在地图上会有
+        # 明显的「不在马路上」观感。gentle_snap 把离路 ≤60m 的点投影到
+        # 路上（窗口多数表决压抖动、跳变回退防跨街直线），其余保持
+        # 原样——绝对位置偏差（~300-500m 结构性）不是吸附能修的，
+        # 强行全局重匹配实测虚增 29-42%，已废弃。
+        if road_snap is None or road_snap.get("ok") is False:
+            pass  # 未启用或准备阶段已否决（直线输入等），保持原样
+        else:
+            try:
+                from .snaproute import gentle_snap
+                _snap = gentle_snap(reg, simplified, road_net)
+                road_snap.update(_snap)
+            except Exception as exc:  # noqa: BLE001 — 吸附失败不影响主结果
+                road_snap = {"ok": False, "method": "gentle",
+                             "reason": f"路网吸附失败：{type(exc).__name__}"}
+            if road_snap.get("ok"):
+                road_snap["coordinates_raw_gcj02"] = [
+                    [float(lo), float(la)] for lo, la in lonlat_gcj]
+                lonlat_gcj = [
+                    (float(lo), float(la))
+                    for lo, la in road_snap["coordinates_gcj02"]]
+                warnings.append(
+                    f"路网温和吸附：{road_snap['n_snapped']}/"
+                    f"{road_snap['n_points']} 点已投影到道路上"
+                    f"（吸附距离中位 {road_snap['median_snap_m']:.0f}m，"
+                    f"长度 {road_snap['length_before_m']:.0f}→"
+                    f"{road_snap['length_after_m']:.0f}m，回退跳变 "
+                    f"{road_snap.get('n_reverted', 0)} 处）；"
+                    "离路超容差的点保持原样——绝对位置偏差需统一锚点"
+                    "源才能根治，吸附不伪造")
+            else:
+                warnings.append(
+                    f"路网吸附未采纳：{road_snap.get('reason') or '未知原因'}"
+                    "——交付保留原始像素描迹形状")
+
         # --- 输出坐标转换 ---
         if output_crs.upper() in ("WGS-84", "WGS84", "EPSG:4326"):
             lonlat = [gcj02_to_wgs84(lo, la) for lo, la in lonlat_gcj]
@@ -871,7 +977,18 @@ class RidePipeline:
         geojson = _build_geojson(lonlat, reg, track, source_id=self.cfg.source_profile_id)
 
         # --- 可选：HMM 地图匹配（备选显示层，不改主结果） ---
-        map_matched = self._map_match_optional(reg, track, road_net, zoom)
+        # 已走路网吸附交付（road_snap）时跳过重复的 HMM 诊断——同一件事
+        # 做两遍浪费且口径混乱；吸附诊断在 road_snap 里已含。
+        if road_snap is not None and road_snap.get("ok"):
+            map_matched = {
+                "ok": True,
+                "mean_snap_m": road_snap.get("mean_snap_m"),
+                "median_snap_m": road_snap.get("median_snap_m"),
+                "n_points": road_snap.get("n_points"),
+                "delivered": True,
+            }
+        else:
+            map_matched = self._map_match_optional(reg, track, road_net, zoom)
 
         # --- 独立校验：与配准自洽指标无关的两条外部证据 ---
         # 截图里程来自 OCR（地图区内通常有里程牌/大卡）、外部路由来自
@@ -978,6 +1095,8 @@ class RidePipeline:
                 anchor_bias=reg.anchor_bias,
                 anchor_sources=reg.source_bias,
                 scale_check=scale_check,
+                scale_calibration=scale_calibration,
+                road_snap=road_snap,
                 route_validation=route_check,
                 input_quality=input_quality,
                 map_match=(

@@ -174,6 +174,16 @@ class VisionConfig:
     # 默认 False：开环来源（美团/高德）行为完全不变。
     loop_course: bool = False
 
+    # 路网温和吸附交付（snaproute.gentle_snap）：把离路 ≤60m 的像素描迹
+    # 点投影到 OSM 路网上作为主交付，修「画出来的线不在马路上」；离路
+    # 超容差的点保持原样（绝对位置偏差 ~300-500m 是结构性的，吸附不
+    # 伪造）。同时跳过 RDP 简化改用 2px 等距重采样——RDP 弧长判据把
+    # 近直路段连锁坍缩，实测把交付里程 34.9km 削到 30.4km（-12%）。
+    # 原始形状保留在 diagnostics.road_snap.coordinates_raw_gcj02 对照。
+    # 全局 HMM+Dijkstra 重匹配实测虚增 29-42%（与系统性偏差搏斗），
+    # 已废弃。默认 False：美团/高德不受影响。
+    road_snap_deliver: bool = False
+
     # 尺度标尺覆盖（可选）：显式指定 badge 直径（px），不走「起终点徽章
     # 面积反推」。行者的内容尺度（close_kernel=7 等）是对着罗盘箭头
     # （area 1205 → 直径 39.2）标定的；起点改为蓝色定位圆点（775 → 31.4）

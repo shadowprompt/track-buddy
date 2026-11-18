@@ -113,7 +113,11 @@ def _registration(res: dict, sample: str):
         reg = register(pairs, inlier_m=CONFIG.vision.ransac_inlier_m,
                        min_inliers=CONFIG.vision.ransac_min_inliers)
     rf = res.get("road_fit") or {}
-    if rf.get("ok"):
+    if mtx and trn:
+        # 交付模型已含路网精修平移（pipeline._road_refine 就地并进
+        # translation），不能再加一次 rf shift——否则 overlay 偏移 2×。
+        pass
+    elif rf.get("ok"):
         reg.translation = reg.translation + np.array(
             [rf["shift_e_m"], rf["shift_n_m"]], dtype=float)
     return img, reg

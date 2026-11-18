@@ -337,6 +337,10 @@ class RoadNetwork:
                  src_crs: str = "WGS-84"):
         self.samples: list[tuple[float, float]] = []
         self.owner: list[str] = []
+        # 按道路几何分组的采样点（GCJ-02 墨卡托米）：路网吸附需要沿路
+        # 走（链式边），光有 name→sample 的平面映射不够——同名道路有
+        # 多段不相接的几何，必须保留 way 身份与内部顺序。
+        self.ways: list[tuple[str, list[tuple[float, float]]]] = []
         for nm, pts in roads:
             if len(pts) < 2:
                 continue
@@ -344,14 +348,21 @@ class RoadNetwork:
             if src_crs.upper() == "WGS-84":
                 conv = [wgs84_to_gcj02(lo, la) for lo, la in pts]
             mpts = [lonlat_to_mercator(lo, la) for lo, la in conv]
+            way_pts: list[tuple[float, float]] = []
             for i in range(len(mpts) - 1):
                 (ax, ay), (bx, by) = mpts[i], mpts[i + 1]
                 seg = math.hypot(bx - ax, by - ay)
                 n = max(1, int(seg / sample_m))
                 for k in range(n + 1):
                     t = k / n
-                    self.samples.append((ax + (bx - ax) * t, ay + (by - ay) * t))
+                    p = (ax + (bx - ax) * t, ay + (by - ay) * t)
+                    self.samples.append(p)
                     self.owner.append(nm)
+                    if k < n:  # 段末点由下一段的起点补（避免重复）
+                        way_pts.append(p)
+            if len(mpts) >= 2:
+                way_pts.append(mpts[-1])
+            self.ways.append((nm, way_pts))
         self.tree = cKDTree(np.array(self.samples)) if self.samples else None
 
     def __len__(self) -> int:

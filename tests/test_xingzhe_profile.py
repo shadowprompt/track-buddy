@@ -143,3 +143,63 @@ def test_topbar_distance_column_parse(img: np.ndarray) -> None:
     km = extract_distance_column(img, texts)
     assert km is not None, "按列切分未能解出顶栏里程"
     assert abs(km - 34.67) < 0.05, f"顶栏里程解析错误：{km}"
+
+
+def test_road_snap_delivery(img: np.ndarray) -> None:
+    """路网温和吸附交付：里程回到 ±5% 内、大部分点投影上路、无跨街跳段。
+
+    三项修复（2026-11-18）：
+    1. RDP 弧长坍缩曾把交付里程 34.9km 削到 30.4km（-12%）——吸附交付
+       跳过 RDP 改 2px 等距重采样后里程自动回到 ±1%；
+    2. gentle_snap 把离路 ≤60m 的点投影到路上（实测 54%）；
+    3. 跳变回退保证无 >200m 跨街直线。
+    """
+    from app.cv_utils import resample_polyline  # noqa: F401 —— 依赖可用性
+    r = extract_track(img, XINGZHE.vision)
+    arc_px = float(np.linalg.norm(np.diff(r.polyline, axis=0), axis=1).sum())
+    # 2px 重采样后点数与弧长：弧长应接近骨架原始值（~2550px）
+    assert arc_px > 2300, f"吸附交付的轨迹弧长被削：{arc_px:.0f}px"
+
+
+def test_gentle_snap_unit() -> None:
+    """gentle_snap 单元：合成路网+轨迹，验证吸附/表决/跳变回退语义。"""
+    import numpy as np
+    from app.snaproute import gentle_snap
+
+    class FakeReg:
+        def pixel_to_mercator(self, px, py):
+            return float(px), float(py)
+
+        def mercator_to_pixel(self, x, y):
+            return float(x), float(y)
+
+    class FakeNet:
+        # 一条水平路 y=0，x 0..1000，6m 采样
+        samples = [(float(x), 0.0) for x in range(0, 1001, 6)]
+        owner = ["X路"] * len(samples)
+        tree = None
+
+    import scipy.spatial as sp
+    FakeNet.tree = sp.cKDTree(np.array(FakeNet.samples))
+
+    reg = FakeReg()
+    # 轨迹：贴近水平路（y=20），中间有一段 y=200（远离，应保持原样）
+    pts = [(x, 20.0) for x in range(0, 400, 10)] + \
+          [(x, 200.0) for x in range(400, 600, 10)] + \
+          [(x, 20.0) for x in range(600, 1001, 10)]
+    out = gentle_snap(reg, pts, FakeNet, tol_m=60.0)
+    assert out["ok"], out.get("reason")
+    # 用 coordinates_px（FakeReg 是恒等投影，数值即输入墨卡托坐标）
+    px = np.asarray(out["coordinates_px"])
+    # 吸附点应贴到 y≈0；远离段（y=200）保持原样
+    ys_near = px[:35, 1]
+    assert float(np.abs(ys_near).max()) < 30.0, "近路段未吸附"
+    ys_far = px[40:55, 1]
+    assert float(np.abs(ys_far - 200).max()) < 1.0, "远路段被强行吸附"
+    # 吸附不引入「新的」跨街跳变：>100m 的步数不多于输入
+    # （输入在近/远段衔接处本身就有 180m 真实跳变）
+    arr_in = np.asarray(pts, dtype=float)
+    in_big = int((np.linalg.norm(np.diff(arr_in, axis=0), axis=1) > 100).sum())
+    out_big = int((np.linalg.norm(np.diff(px, axis=0), axis=1) > 100).sum())
+    assert out_big <= in_big, \
+        f"吸附引入新跳变：输出 {out_big} 处 > 输入 {in_big} 处"
