@@ -101,6 +101,38 @@ def main(argv: list[str] | None = None) -> int:
             json.dump(res.geojson, f, ensure_ascii=False, indent=1)
         files["geojson_wgs84"] = p_wgs
 
+        # 运动文件（GPX/TCX）：与 server 的导出层共用同一实现。
+        # 无概要页时 ride_summary=None——GPX 仍可导出（纯轨迹），
+        # TCX 因缺时间轴产不出合规文件而缺席（宁缺勿错），摘要里说明。
+        try:
+            from .exporters import build_exports
+
+            feats = (res.geojson or {}).get("features") or []
+            coords = [
+                [float(lo), float(la)]
+                for lo, la in ((feats[0].get("geometry") or {})
+                               .get("coordinates") or [])
+            ] if feats else []
+            if coords:
+                exports = build_exports(
+                    coords,
+                    ride_summary=None,
+                    source_title=CONFIG.source.title,
+                    geom_distance_m=res.distance_m,
+                )
+                for fmt, content in exports.items():
+                    p_fmt = os.path.join(out_dir, f"track.{fmt}")
+                    with open(p_fmt, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    files[f"track_{fmt}"] = p_fmt
+                if "tcx" not in exports and "gpx" in exports:
+                    res.warnings.append(
+                        "TCX 未生成：无运动概要页提供开始时间/时长，"
+                        "缺时间轴的 TCX 不合规（GPX 已按纯轨迹导出）")
+        except Exception as exc:  # 导出失败不影响主产出
+            res.warnings.append("运动文件导出失败：%s: %s"
+                                % (type(exc).__name__, exc))
+
     try:
         from .visuals import build_chart, build_overlay, build_road_verify
 

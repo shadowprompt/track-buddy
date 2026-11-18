@@ -17,6 +17,7 @@ from .geocode import Geocoder, Lexicon
 from .geo.coords import gcj02_to_wgs84, lonlat_to_mercator
 from .input_quality import (
     assess_input_quality,
+    extract_distance_column,
     extract_distance_km,
     route_validation_factor,
     scale_consistency,
@@ -638,6 +639,19 @@ class RidePipeline:
                     f"请填写你记得走过的路名，或截取放大到街道级的地图。"
                 )
 
+        # --- 阶段 2.6：截图里程 OCR（尺度先验 + scale_check 共用）-------
+        #
+        # 先试带单位的正则（公里/km）；行者等 App 的顶栏数字**无单位**
+        # 且跨列粘连（实测「34.67新=江18.29」），正则漏掉时走按列切分
+        # 的二次 OCR 兜底。概要页里程（服务端解析）比截图 OCR 更权威，
+        # 两者都有时以 ``distance_hint_km`` 为准。
+        ocr_distance_km = extract_distance_km(texts)
+        if ocr_distance_km is None:
+            try:
+                ocr_distance_km = extract_distance_column(img, texts)
+            except Exception:  # noqa: BLE001 —— 裁切/OCR 失败不影响主流程
+                ocr_distance_km = None
+
         # --- 阶段 3.6：轨迹形状的信息量 ---
         # 缩放级别只看「米/像素」，抓不到「轨迹本身被渲染成直线」。
         # 这类输入下配准再准也得不到沿路的形状，必须明确说明，
@@ -662,12 +676,13 @@ class RidePipeline:
         #  2 点退化模型仍被「支队亲」这类垃圾锚点拉爆到 31 m/px，
         #  真值约 0.5）。物理里程不会撒谎，投不过它时以它为准。
         external_prior = None
-        if distance_hint_km and distance_hint_km > 0 and len(track.polyline) >= 2:
+        hint_km = distance_hint_km or ocr_distance_km
+        if hint_km and hint_km > 0 and len(track.polyline) >= 2:
             pl = np.asarray(track.polyline, dtype=float)
             track_px = float(np.linalg.norm(
                 np.diff(pl, axis=0), axis=1).sum())
             if track_px >= 20.0:
-                external_prior = distance_hint_km * 1000.0 / track_px
+                external_prior = hint_km * 1000.0 / track_px
         reg = register(
             pairs,
             inlier_m=cfg.ransac_inlier_m,
@@ -863,7 +878,7 @@ class RidePipeline:
         # Valhalla/OSRM，二者都不吃配准残差。地图区内没有里程文字时
         # （amap 单图被裁掉下半屏概要卡），退回概要页解析出的里程。
         scale_check = scale_consistency(
-            distance, extract_distance_km(texts) or distance_hint_km)
+            distance, ocr_distance_km or distance_hint_km)
         route_check = route_validation_factor(road_name_fit)
         input_quality = assess_input_quality(
             image_size=(int(img.shape[1]), int(img.shape[0])),

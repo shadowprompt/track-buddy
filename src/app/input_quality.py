@@ -19,6 +19,8 @@ import re
 import statistics
 from typing import Any, Iterable
 
+import cv2
+
 _DISTANCE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(公里|千米|km|KM|Km)")
 # 轨迹里程牌（高德轨迹自带的「3KM / 2KM / 1KM」剩余里程标记）：纯整数
 # + km 的**无上下文**短标签。真实里程读数总带小数精度或文案上下文
@@ -86,6 +88,121 @@ def extract_distance_km(texts: Iterable[Any]) -> float | None:
         return None
     best = max(prio for prio, _ in found)
     return float(statistics.median(v for prio, v in found if prio == best))
+
+
+# --- 顶栏无单位里程：按列切分 -------------------------------------------------
+#
+# 行者等 App 的顶栏是「距离 / 速度 / 时间」三列布局，数字行**没有单位**
+# （实测宁波样本 OCR：标签「距离」「速度」「时间」三个独立块，数字粘连成
+# 「34.67新=江18.29」一个块）——``_DISTANCE_RE`` 要求单位，直接漏掉。
+# 硬补「无单位数字也认」会把均速 18.29 当成里程，所以必须**按列归属**：
+# 在「距离」标签的正下方裁一条列带，二次 OCR 后取第一个数字。
+#
+# 粘连块横向跨两列，无法从块内切（TextItem 只有块级 bbox，没有字级坐标），
+# 只能回到原图裁剪。列带右边界 = 右侧下一个文本块的左缘（留 6px 余量），
+# 覆盖本列数字的完整宽度且不吞右列的数字。
+_COLUMN_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+_COL_CROP_PAD_L = 10.0
+_COL_CROP_PAD_R = 6.0
+_COL_CROP_PAD_Y0 = 8.0
+_COL_CROP_PAD_Y1 = 60.0
+_COL_REOCR_SCALE = 2.0
+
+
+def extract_distance_column(img: Any, texts: Iterable[Any]) -> float | None:
+    """顶栏「距离」标签正下方的无单位数字解析（按列裁切 + 二次 OCR）。
+
+    调用契约：仅在 ``extract_distance_km`` 返回 ``None``（全文无单位数字）
+    之后作为兜底调用。找到画像正面词标签（距离/里程…）后：
+
+    1. 找与标签行相邻（y 带重叠）、x 范围与标签列相交的数字块；
+    2. 若数字块完全落在本列（右缘 < 右邻块左缘），直接解析块内数字；
+    3. 粘连块（跨列）则从原图裁「标签左缘-10 到右邻块左缘-6」的列带，
+       2× 放大后二次 OCR，取第一个数字。
+
+    返回公里数；找不到标签 / 无数字 / 数值超出合理区间均返回 ``None``。
+    """
+    items = [t for t in (texts or []) if hasattr(t, "x0")]
+    if img is None or not items:
+        return None
+    _, pos_re = _keyword_patterns()
+    labels = [t for t in items if pos_re.search(str(t.text)) and len(str(t.text)) <= 4]
+    if not labels:
+        return None
+    neg_re, _ = _keyword_patterns()
+    for lab in sorted(labels, key=lambda t: t.x0):
+        # 右边界：y 带与标签重叠、且在标签右侧的第一个文本块的左缘
+        boundary = None
+        for t in items:
+            if t is lab or t.x0 <= lab.x1:
+                continue
+            if t.y0 <= lab.y1 + _COL_CROP_PAD_Y1 and t.y1 >= lab.y0:
+                boundary = t.x0 if boundary is None else min(boundary, t.x0)
+        if boundary is None:
+            boundary = lab.x1 + 200.0  # 无右邻：给一列的默认宽度
+
+        # 数字块：与标签 y 带相邻、x 与列带相交、无干扰词、无单位
+        cands = []
+        for t in items:
+            s = str(t.text)
+            if neg_re.search(s) or _DISTANCE_RE.search(s):
+                continue
+            if not _COLUMN_NUMBER_RE.search(s):
+                continue
+            if t.y1 < lab.y0 - _COL_CROP_PAD_Y0 or t.y0 > lab.y1 + _COL_CROP_PAD_Y1:
+                continue
+            if t.x1 <= lab.x0 - _COL_CROP_PAD_L or t.x0 >= boundary:
+                continue
+            cands.append(t)
+        if not cands:
+            continue
+
+        # 完全在本列内的块：直接解析，省一次 OCR
+        tidy = [t for t in cands if t.x1 < boundary - 2.0]
+        if tidy:
+            val = _first_reasonable_km(str(tidy[0].text))
+            if val is not None:
+                return val
+
+        # 粘连/跨列块：裁列带二次 OCR
+        x1 = max(lab.x0 - _COL_CROP_PAD_L, 0)
+        x2 = min(boundary - _COL_CROP_PAD_R, img.shape[1])
+        y1 = max(lab.y0 - _COL_CROP_PAD_Y0, 0)
+        y2 = min(
+            max(t.y1 for t in cands) + 6.0,
+            lab.y1 + _COL_CROP_PAD_Y1,
+            img.shape[0],
+        )
+        if x2 <= x1 or y2 <= y1:
+            continue
+        crop = img[int(y1):int(y2), int(x1):int(x2)]
+        if crop.size == 0:
+            continue
+        big = cv2.resize(
+            crop, None, fx=_COL_REOCR_SCALE, fy=_COL_REOCR_SCALE,
+            interpolation=cv2.INTER_CUBIC,
+        )
+        from .ocr_anchor import _OCR  # 延迟 import：单例复用模型
+
+        for it in _OCR.run(big):
+            val = _first_reasonable_km(str(it.text))
+            if val is not None:
+                return val
+    return None
+
+
+def _first_reasonable_km(s: str) -> float | None:
+    """取字符串里第一个落在合理里程区间的数字。"""
+    m = _COLUMN_NUMBER_RE.search(s)
+    if not m:
+        return None
+    try:
+        val = float(m.group(0))
+    except ValueError:
+        return None
+    if _MIN_REASONABLE_KM <= val <= _MAX_REASONABLE_KM:
+        return val
+    return None
 
 
 def scale_consistency(

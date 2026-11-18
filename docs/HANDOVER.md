@@ -7353,3 +7353,47 @@ OCR 层（通用，与地图源无关）                地理编码层（可插
 - `_select_component` 在双徽章相近（闭环）时会选中徽章旁小碎片；
 - 行者样本的 `XINGZHE.vision` 是 module 级共享实例，extract_track 不得
   就地修改 cfg 与 img。
+
+### 24.10 闭环管线端到端：地理配准核验 + 顶栏里程按列解析 + GPX 导出（2026-11-19）
+
+闭环轨迹（§24.9）接入完整管线后的三个补强，全部由真实样本端到端验证。
+
+**① 地理配准核验（虚惊一场 → 三个可信锚点 250-700m 内）**
+
+初步看 CLI 摘要曾误判「定位偏 8km」——把新起点的经纬度与旧运行的
+罗盘误检像素（图像北端）对比了。用在线编码真值核验：市中医院
+(120,326)、江北区政府 (351,364)、江东区政府 (468,530) 投影误差
+250-700m（结构性锚点偏差范围内），起点外推 (121.56, 29.80) 正确。
+overlay/road_verify 图确认青色轨迹全程贴合。诊断脚本
+`tmp_debug/georef_diag.py`（hook register dump 全部备选解）。
+
+**② 顶栏无单位里程按列解析（本会话最初诊断的落地）**
+
+行者顶栏「距离/速度/时间」三列，数字行无单位且跨列粘连（OCR 成
+「34.67新=江18.29」），`_DISTANCE_RE`（要求单位）漏掉。硬补「无单位
+也认」会把均速 18.29 当里程——必须按列归属：
+
+- `extract_distance_column(img, texts)`（input_quality.py）：找正面词
+  标签块 → 列带裁切（标签左缘-10 到右邻块左缘-6）→ 2× 放大二次 OCR
+  → 取第一个合理数字。TextItem 只有块级 bbox 没有字级坐标，粘连块
+  只能回原图裁。实测精确解出 **34.67**（均速列不吞）。
+- **接入配准尺度先验**：pipeline 阶段 2.6 计算 `ocr_distance_km`
+  （单位正则 → 按列兜底），`external_prior = (distance_hint_km or
+  ocr_distance_km) × 1000 / 轨迹像素长`。概要页里程（服务端）仍优先。
+- **接入 scale_check**：几何里程 33.94km vs OCR 34.67km，比值 0.979 ✓
+  （此前 unavailable）。尺度 13.637 m/px 由物理里程锁定。
+
+**③ CLI 补齐运动文件导出（server 已有，CLI 一直缺失）**
+
+`cli.main` 调 `build_exports`（WGS-84 坐标），输出 `track.gpx` /
+`track.tcx` 进 files 字典。无概要页时 GPX 纯轨迹导出、TCX 因缺时间轴
+合规性缺席并出 warning（宁缺勿错契约）。
+
+**端到端实测**（SOURCE_PROFILE=xingzhe，--online）：conf 0.2（绝对位置
+自校验 583m>400m 结构性封顶，诚实报告）、11 内点/10 锚点 LOO、
+33.94km（误差 2.1%）、GPX 1804 点。测试 +1
+（`test_topbar_distance_column_parse`），全量 690 passed。
+
+**遗留**：conf 封顶来自锚点反投影中位 583m 的结构性偏差（多源基准
+不一致），需要锚点源统一策略才能突破——见 anchor_bias 诊断里的
+「内点混用 3 个坐标源」警告。

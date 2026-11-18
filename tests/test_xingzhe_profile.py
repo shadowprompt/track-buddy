@@ -124,3 +124,22 @@ def test_endpoint_fragment_integrated(img: np.ndarray) -> None:
     assert "碎片" in notes and "桥接接入" in notes, (
         f"终点折返碎片未被接入：{r.notes}"
     )
+
+
+def test_topbar_distance_column_parse(img: np.ndarray) -> None:
+    """顶栏无单位里程（按列切分）：「34.67新=江18.29」应解出 34.67。
+
+    行者顶栏是「距离/速度/时间」三列，数字行无单位且跨列粘连，
+    带单位的 ``extract_distance_km`` 漏掉；按列裁切 + 二次 OCR 后
+    「距离」列下的 34.67 必须被解出（2026-11-18 顶栏 OCR 粘连修复）。
+    """
+    from app.config import CONFIG
+    from app.input_quality import extract_distance_column, extract_distance_km
+    from app.ocr_anchor import ocr_texts
+
+    texts = ocr_texts(img, XINGZHE.vision)
+    # 带单位正则确实解不出（粘连块无单位）
+    assert extract_distance_km(texts) is None
+    km = extract_distance_column(img, texts)
+    assert km is not None, "按列切分未能解出顶栏里程"
+    assert abs(km - 34.67) < 0.05, f"顶栏里程解析错误：{km}"
