@@ -63,6 +63,58 @@ def test_self_check_never_raises_on_singular_matrix():
     assert notes and "跳过" in notes[0]
 
 
+def _self_check_reg(offsets_px: list[float], kinds: list[str], scale: float = 15.0):
+    """构造一个「每个内点反投影偏移 = offsets_px[i]」的可逆配准。
+
+    令像素→墨卡托为 `m = matrix @ p`，其中 matrix = [[s,0],[0,-s]]，
+    translation = 0。取锚点真值 mercator = matrix @ (文字px + 偏移)，
+    则反投影 `inv @ mercator = 文字px + 偏移`，偏移可控。
+    """
+    from app.geo.coords import mercator_to_lonlat
+
+    matrix = np.array([[scale, 0.0], [0.0, -scale]])
+    inliers = []
+    for i, (off, kind) in enumerate(zip(offsets_px, kinds)):
+        px, py = 100.0 + i * 100, 100.0
+        mx = scale * (px + off)
+        my = -scale * py
+        lon, lat = mercator_to_lonlat(mx, my)
+        p = _pair(px, py, lon, lat)
+        p.kind = kind
+        inliers.append(p)
+    return Registration(ok=True, matrix=matrix, translation=np.zeros(2),
+                        inliers=inliers)
+
+
+def test_self_check_no_false_alarm_for_few_large_poi_offsets():
+    """少数 transit/POI 标注偏移大，不应误判为整体平移。
+
+    行者宁波长截图（2026-11-21）：城市级 14.9m/px，内点偏移中位
+    597m，但 3 个可靠锚点相对方位全吻合——是标注偏移而非平移。
+    旧代码用 400m 一刀切误报，并把置信度打 0.45 折。
+    """
+    # 6 个内点：4 个正常(100-250m)，2 个 transit 偏移大(1300m)
+    # 中位约 250m，但只有 2/6=33% 超过各自类型容差 → 不报警
+    reg = _self_check_reg(
+        offsets_px=[10, 15, 12, 16, 87, 90],   # ×15 = 150..1350m
+        kinds=["station", "poi", "poi", "station", "transit", "transit"],
+    )
+    med, notes = RidePipeline(CONFIG)._self_check(reg, [])
+    assert med > 0
+    assert not notes, f"少数大偏移被误判为整体平移: {notes}"
+
+
+def test_self_check_still_catches_systematic_translation():
+    """多数内点同时大幅偏移（整体平移），必须仍然报警。"""
+    reg = _self_check_reg(
+        offsets_px=[90, 95, 100, 92, 88, 97],  # ×15 ≈ 1350m，POI 容差 200m
+        kinds=["station", "poi", "poi", "station", "poi", "icon"],
+    )
+    med, notes = RidePipeline(CONFIG)._self_check(reg, [])
+    assert med > 0
+    assert notes and "整体平移" in notes[0], f"整体平移漏报: {notes}"
+
+
 def test_register_rejects_coincident_geo_anchors():
     """像素相距很远、地理坐标几乎相同的锚点，不能产出 ok=True。"""
     pairs = [

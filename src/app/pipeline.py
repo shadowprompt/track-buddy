@@ -2671,14 +2671,45 @@ class RidePipeline:
             return 0.0, notes
 
         med = float(np.median(offsets))
-        # POI 类锚点的合理上限：文字中心偏移一般不超过 ~300 米
-        tol_m = 400.0
-        tol_px = tol_m / max(reg.scale, 1e-6)
-        if med > tol_px:
+        # 容差必须与 register 的按类型内点容差（_KIND_TOLERANCE）自洽，
+        # 不能用一刀切的 400m：项目文档实测 POI 标注偏移 35-150m、
+        # 行政区/道路/交通线可到 800m-2km，register 给这些类型的内点
+        # 容差下限本就是 200m（POI/station）到 800m（transit/road）。
+        # 旧代码对城市级截图（14.9 m/px）用 400m=27px 卡中位偏移，
+        # 把「几个 transit 标注偏移大」误判成「整体平移」（2026-11-21
+        # 行者宁波：med=597m 触发误报，但 3 个可靠锚点相对方位全吻合）。
+        #
+        # 新判据：**逐点**与各自类型容差比较，看超容差的内点比例。
+        # 整体平移错误 → 多数内点同时超容差；个别标注偏移大 → 仅少数超。
+        from .register import _KIND_TOLERANCE, _DEFAULT_TOLERANCE
+
+        n_over = 0
+        n_cmp = 0
+        limit_m_sum = 0.0
+        for a in reg.inliers:
+            if a.lon is None or a.lat is None:
+                continue
+            mx, my = lonlat_to_mercator(a.lon, a.lat)
+            v = inv @ (np.array([mx, my]) - reg.translation)
+            off_px = float(np.hypot(v[0] - a.px, v[1] - a.py))
+            px_cap, m_floor = _KIND_TOLERANCE.get(a.kind, _DEFAULT_TOLERANCE)
+            # 与 register._anchor_tolerance 同式：像素上限换算 + 米制下限
+            limit_m = max(m_floor, px_cap * max(reg.scale, 1e-6))
+            limit_m_sum += limit_m
+            n_cmp += 1
+            if off_px * reg.scale > limit_m:
+                n_over += 1
+
+        over_ratio = (n_over / n_cmp) if n_cmp else 0.0
+        mean_limit_m = (limit_m_sum / n_cmp) if n_cmp else 400.0
+        # 过半内点超过各自类型容差，才判为整体平移（单/双内点退化时
+        # over_ratio 只能是 0 或 1，由 2 点退化告警另行提示，不在此重复）。
+        if n_cmp >= 3 and over_ratio > 0.6:
             notes.append(
-                f"绝对位置自校验未通过：锚点真值反投影偏移中位 {med:.0f}px"
-                f"（≈{med * reg.scale:.0f} 米），超过容差 {tol_m:.0f} 米。"
-                f"通常是词典中该地名的坐标指向了同名地点，结果会整体平移。"
+                f"绝对位置自校验未通过：{n_over}/{n_cmp} 个内点的真值反投影偏移"
+                f"超过各自类型容差（偏移中位 {med * reg.scale:.0f} 米，"
+                f"平均容差 {mean_limit_m:.0f} 米）。可能是同名地点坐标错误，"
+                f"结果或整体平移。"
             )
         return med, notes
 
@@ -2762,14 +2793,15 @@ class RidePipeline:
         conf = 0.40 * fit + 0.18 * ratio + 0.18 * count + 0.14 * kind_q
         conf *= track.confidence if track.confidence < 1 else 1.0
 
-        # 绝对位置自校验：偏移过大则大幅降权
-        med_px, _ = self._self_check(reg, pairs)
-        if med_px > 0:
-            tol_px = 400.0 / max(reg.scale, 1e-6)
-            if med_px > tol_px:
-                conf *= 0.45
-            elif med_px > tol_px * 0.6:
-                conf *= 0.8
+        # 绝对位置自校验：按「超各自类型容差的内点比例」降权，判据与
+        # _self_check 的警告一致（见该函数：400m 一刀切会把 POI/transit
+        # 标注偏移误判成整体平移，2026-11-21 行者宁波误报）。
+        med_px, self_check_notes = self._self_check(reg, pairs)
+        if self_check_notes:
+            conf *= 0.45
+        elif med_px > 0 and med_px * reg.scale > 250.0:
+            # 未判定整体平移，但中位偏移仍偏大 → 温和降权
+            conf *= 0.9
 
         # 路网约束精修成功时，绝对位置由「轨迹贴在真实道路上」来担保，
         # 这比锚点残差可靠得多——锚点残差大恰恰说明锚点数据源与底图
