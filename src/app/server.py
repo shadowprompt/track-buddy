@@ -413,11 +413,10 @@ async def _preparse_ride_summary(
         cv2.imwrite(str(_sum_dir / f"{int(time.time())}_summary.jpg"), img)
     except Exception:
         pass
-    from .ocr_anchor import ocr_texts
-    from .ride_summary import parse_ride_summary
+    # 与 CLI 共用同一解析路径，避免两处 OCR 参数/词表漂移。
+    from .ride_summary import parse_summary_image_bytes
 
-    texts = ocr_texts(img, CONFIG.vision)
-    return parse_ride_summary(texts, ride_labels=CONFIG.source.ride_labels)
+    return parse_summary_image_bytes(data)
 
 
 async def _attach_ride_summary(
@@ -580,11 +579,12 @@ def _maybe_reject_by_physical_speed(
 
 
 def _attach_exports(payload: dict[str, Any]) -> None:
-    """把 WGS-84 轨迹 + 运动概要交给导出层，产出 GPX / TCX 等运动文件。
+    """把 WGS-84 轨迹 + 可选运动概要交给导出层，产出能产出的运动文件。
 
-    产出放进 ``payload["gpx"]`` / ``payload["tcx"]``（内容为文件文本），
-    前端转 Blob 下载链接；数据不足产不出的格式键缺席，前端据此隐藏
-    链接。无可用坐标时全部不产出。导出失败只告警，绝不影响轨迹识别。
+    轨迹与概要可分离：只有轨迹就出纯轨迹 GPX，概要到位才多出 TCX、
+    GPX 补时间轴。导出层对数据不足的格式直接缺席（键不出现在 payload
+    里），前端据此不展示对应入口，无需额外文案。导出失败只告警，
+    不影响轨迹识别。
     """
     gj = payload.get("geojson") or {}
     feats = gj.get("features") or []
@@ -596,26 +596,15 @@ def _attach_exports(payload: dict[str, Any]) -> None:
             coords = [[float(lo), float(la)] for lo, la in cs]
     if not coords:
         return
-    # 时间轴缺失要明说：GPX/TCX 没有 <time> 时 Strava 导入后无时长/配速
-    # （TCX 甚至产不出合规文件），用户却不知道缺的是哪个环节。
+
     rs = payload.get("ride_summary") or {}
-    if not (rs.get("started_at") and rs.get("duration_s")):
-        payload.setdefault("warnings", []).append(
-            "运动文件无时间轴（GPX 无 <time>、TCX 无法生成）：缺运动"
-            f"开始时间或时长（概要识别 started_at={rs.get('started_at')!r}, "
-            f"duration_s={rs.get('duration_s')!r}）——"
-            "逐点时刻只能由运动概要截图的「开始时间+总时长」插值得出，"
-            "轨迹截图本身没有时间信息")
     # CONFIG.source_profile_id 读的是请求级画像上下文（source 入参 >
     # SOURCE_PROFILE 环境变量），单请求内导出层与识别链路自动同源。
     title = CONFIG.source.title
     try:
         exports = build_exports(
-            coords,
-            ride_summary=rs,
-            source_title=title,
-            geom_distance_m=payload.get("distance_m"),
-        )
+            coords, ride_summary=rs, source_title=title,
+            geom_distance_m=payload.get("distance_m"))
     except Exception:  # noqa: BLE001 —— 导出失败不影响轨迹识别本身
         payload.setdefault("warnings", []).append("运动文件导出失败，已跳过")
         return

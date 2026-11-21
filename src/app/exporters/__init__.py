@@ -32,9 +32,35 @@ _REGISTRY: dict[str, Callable[..., str | None]] = {
     "tcx": build_tcx,
 }
 
+# 格式分层：哪些格式**只靠轨迹坐标**就能产出，哪些必须概要数据。
+#
+# 这是「截图数据部分与轨迹部分可分离」在导出层的落点：轨迹截图
+# （概览图/细节图）单独就能产出 GeoJSON + 纯轨迹 GPX；概要截图是
+# 可选增强，到位后 GPX 补上时间轴、TCX 才产得出（TCX 规范要求逐点
+# <Time>，没有「开始时间+时长」两个端点就产不出合规文件）。
+#
+# 新增格式时必须在这里登记一层：纯轨迹格式填 False（如未来的简化
+# GeoJSON 文本格式），依赖概要的填 True（如 FIT 需要时间轴）。
+# 默认 True——宁可少产，也不能把缺数据的坏文件当成合法产物。
+_TRACK_ONLY: dict[str, bool] = {
+    "gpx": True,   # 无概要时输出无 <time> 的纯轨迹，合法且有用
+    "tcx": False,  # 必须有开始时间+时长才能插值出逐点时间
+}
+
 
 def supported_formats() -> tuple[str, ...]:
     return tuple(_REGISTRY)
+
+
+def track_only_formats() -> tuple[str, ...]:
+    """只靠轨迹坐标就能产出的格式（当前：gpx）。"""
+    return tuple(fmt for fmt in _REGISTRY if _TRACK_ONLY.get(fmt, False))
+
+
+def has_time_axis(ride_summary: dict[str, Any] | None) -> bool:
+    """概要是否具备生成逐点时间轴的两个端点（开始时间 + 总时长）。"""
+    s = ride_summary or {}
+    return bool(s.get("started_at") and s.get("duration_s"))
 
 
 def export_one(
@@ -66,6 +92,10 @@ def build_exports(
 
     产出 ``None``（数据不足）的格式**缺席**而不是给空串——调用方
     （server → 前端）据此决定隐藏哪个下载链接。
+
+    ``ride_summary=None`` 时只产出 ``track_only_formats()`` 里的格式
+    （纯轨迹 GPX）；概要到位后 GPX 带时间轴、TCX 等格式加入。调用方
+    不需要为「有没有概要」写两套分支。
     """
     out: dict[str, str] = {}
     for fmt in _REGISTRY:
@@ -75,3 +105,20 @@ def build_exports(
         if content:
             out[fmt] = content
     return out
+
+
+def build_track_exports(
+    coords: Sequence[Sequence[float]],
+    *,
+    source_title: str = "骑行",
+    geom_distance_m: float | None = None,
+) -> dict[str, str]:
+    """只用轨迹坐标产出文件（GeoJSON 由调用方单独写）——当前是纯轨迹 GPX。
+
+    这是「只有轨迹截图也能拿到可用运动文件」的保证：不读概要、
+    不依赖概要解析是否成功，轨迹提取出来就一定能导出。CLI 无概要
+    路径走这里，语义上和带概要的 ``build_exports`` 明确分开。
+    """
+    return build_exports(
+        coords, ride_summary=None, source_title=source_title,
+        geom_distance_m=geom_distance_m)

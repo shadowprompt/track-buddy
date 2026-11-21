@@ -415,3 +415,27 @@ def summary_properties(summary: dict[str, Any]) -> dict[str, Any]:
         if summary.get(k) is not None:
             props[k] = summary[k]
     return props
+
+
+def parse_summary_image_bytes(data: bytes) -> dict[str, Any] | None:
+    """概要截图字节 → 结构化字段；无法解码返回 None。
+
+    CLI 与 server 共用这一条解析路径，避免两处 OCR 参数/词表各自漂移，
+    导致「同一张概要图 web 能出 TCX、CLI 出不来」。诊断落盘由调用方
+    负责（server 落 uploads 便于排查，CLI 不需要）。
+    """
+    if not data:
+        return None
+    try:
+        import cv2
+        import numpy as np
+
+        from .ocr_anchor import ocr_texts
+
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        texts = ocr_texts(img, CONFIG.vision)
+    except Exception:  # noqa: BLE001 — 概要解析失败不影响轨迹主流程
+        return None
+    return parse_ride_summary(texts, ride_labels=CONFIG.source.ride_labels)
