@@ -718,12 +718,12 @@ curl -X POST http://127.0.0.1:8848/api/recognize_multi \
 
 ## 输入源画像（Source Profile）
 
-为支持高德、小米等其它运动 App 截图预留的结构层。核心判断：识别链路
-**下游与来源无关**——多图拼接（SIFT 与颜色无关）、轨迹模板飞轮（按
+支持多运动 App 截图的结构层（已接入美团/高德/行者三个画像）。核心判断：
+识别链路**下游与来源无关**——多图拼接（SIFT 与颜色无关）、轨迹模板飞轮（按
 形状注册/召回）、地名 OCR、地理编码、路网精修、GeoJSON 输出，新增
 来源时零改动复用；**上游与来源绑定**——轨迹线掩膜阈值、起/终徽章
 HSV、形态学核、RANSAC 内点容差、里程 OCR 词表，每个 App 一套参数，
-互斥不能混用。
+互斥不能混用。扩展手册见 `docs/HANDOVER.md` §23。
 
 - 当前注册三个画像：
   - `meituan`（美团骑行，参数值与模块化之前完全一致，`VisionConfig`
@@ -1790,7 +1790,10 @@ TIANDITU_API_KEY=
 #   配了哪家就用哪家，失败直接提示，不自动换源。
 #   写一个名字 = 只用它；写多个 = 才启用依次回退；不写 = 用默认第一个可用的。
 # MAP_GEOCODING_ORDER=tianditu
-# MAP_GEOCODING_ORDER=amap,tianditu     # 显式多源才回退
+# MAP_GEOCODING_ORDER=baidu,tianditu   # 当前部署配置（高德配额已用尽，勿依赖）
+# GEOCODE_TARGET_LIMIT=50              # 单次地理编码锚点名额(1-200,默认20,热读)
+#                                     # 与高德配额无关；锚点多的截图可调大，
+#                                     # 注意 provider 0.35s 限流会线性拉长耗时
 # MAP_ROADNAME_ORDER=amap             # 路名能力，新增实现后可在这里排序
 # MAP_ROAD_GEOMETRY_ORDER=osm         # 道路几何（公共 Overpass）
 # MAP_ROUTE_VALIDATION_ORDER=osrm,valhalla
@@ -1802,6 +1805,11 @@ TIANDITU_API_KEY=
 # BASEMAP_PROVIDER=tmap
 # AMAP_JS_KEY=                          # 高德 JS API key（不是 AMAP_KEY）
 # AMAP_JS_SECURITY=                     # 高德 JS API 安全密钥
+#
+# 本地开发复用服务器高额度高德 key（服务器侧独立中转，详见 docs/amap_relay.md）
+# AMAP_RELAY_URL=http://<服务器IP>:8849   # 仅本地配；服务器上不要配(会成环)
+# AMAP_RELAY_TOKEN=<openssl rand -hex 16> # 两端必须一致
+# NO_PROXY=<服务器IP>                    # 本地有 HTTP_PROXY 时必须绕行
 #
 # 可选增强（默认全部关闭，开启不改主 GeoJSON / 置信度 / 里程）
 # MAP_MATCH_ENABLED=1                   # HMM 地图匹配备选显示层 map_matched
@@ -1956,6 +1964,8 @@ TIANDITU_API_KEY=
 ```
 <仓库根>/
   run.py           启动入口（python run.py，无需设 PYTHONPATH；后台预热 OCR）
+  run_relay.py     高德 API 中转服务入口（服务器 pm2 amap-relay，端口 8849）
+  ecosystem.config.js / ecosystem.relay.config.js  主服务 / 中转服务的 pm2 配置
   .env             全部密钥与开关（gitignore，改完即时生效、无需重启）
   data/            本地词典与水系数据（入库）
   samples/         测试截图（个人数据，不入库）
@@ -1993,6 +2003,8 @@ TIANDITU_API_KEY=
       coldstart.py   OSM 冷启动检索（新区域无词典覆盖时的兜底）
       register.py    RANSAC 配准（north_up / similarity / affine）
       roadfit.py     路网约束精修（消「平行路陷阱」）
+      snaproute.py   路网温和吸附（≤60m 投影上路 + 防抖回退，诚实不伪造）
+      amap_relay/    server.py（服务器中转）/ client.py（本地 URL 改写）
       roadname.py / roadchain.py / routebuild.py / seampath.py  路名归属与串路
       --- 护栏与输出 ---
       anchor_quality.py / waterguard.py / calibration.py / eval.py  防「看起来准」
