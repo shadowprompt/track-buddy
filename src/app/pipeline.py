@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 import time
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -22,6 +23,7 @@ from .input_quality import (
     route_validation_factor,
     scale_consistency,
 )
+from .anchor_filter import ANCHOR_FILTER_ENV, get_filter
 from .ocr_anchor import Anchor, build_anchors, classify_text, ocr_texts
 from .register import AnchorPair, Registration, apply_to_polyline, register
 from .route_template import (
@@ -350,6 +352,14 @@ class RidePipeline:
         self.templates = templates
         self.lexicon = Lexicon(cfg.lexicon_path)
         self.geocoder = Geocoder(cfg, self.lexicon)
+        # 文本有效性过滤器（可插拔）：整条流水线共用一个实例，未来换成
+        # LLM 实现时可复用其缓存/会话。
+        # 选择优先级由 get_filter 统一处理：显式环境变量 ANCHOR_FILTER >
+        # cfg.anchor_filter > 默认 "rule"。不传 name 让它自己读环境变量。
+        _env_filter = os.environ.get(ANCHOR_FILTER_ENV, "").strip()
+        self.anchor_filter = get_filter(
+            _env_filter or getattr(cfg, "anchor_filter", None)
+        )
         # 最近一次 _score_confidence 的校准状态，写进 diagnostics。
         self._last_calibration: dict[str, Any] = {
             "enabled": False, "status": "uncalibrated", "n_samples": 0,
@@ -513,7 +523,11 @@ class RidePipeline:
     ) -> PipelineResult:
         t0 = time.time()
         warnings: list[str] = []
-        cfg = self.cfg.vision
+        # 把本轮的过滤器实例挂到 vision 配置副本上，build_anchors 从 cfg
+        # 读取；浅拷贝生成副本而非直接改共享对象，避免请求间污染。
+        # 不用 dataclasses.replace：anchor_filter 是运行时注入属性，非字段。
+        cfg = copy.copy(self.cfg.vision)
+        cfg.anchor_filter = self.anchor_filter
 
         # 清空「本轮在线源失败」记录：它是**每次识别**的，
         # 不是进程级的（否则上一张图的失败会污染这一张的提示）。
@@ -1251,6 +1265,8 @@ class RidePipeline:
         「取第一个候选」稳健得多。
         """
         pairs: list[AnchorPair] = []
+        # 裸构造（__new__）的测试桩没有 anchor_filter，回退全局默认。
+        _filter = getattr(self, "anchor_filter", None) or get_filter()
         # 只对权重较高、名字较完整的锚点做地理编码，减少请求量。
         # 排序策略：先按「本地词典能否命中」排序（命中的优先），
         # 再按锚点权重、名称长度排序。
@@ -1259,6 +1275,9 @@ class RidePipeline:
         eligible = [
             a for a in anchors
             if a.kind in ("icon", "poi") and len(a.name) >= 2
+            # 双保险：即使上游（测试桩/vendor/另类 OCR 路径）漏过滤，
+            # UI 文案也不能占用地理编码名额。
+            and not _filter.reject(a.name)
         ]
         eligible.sort(
             key=lambda a: (

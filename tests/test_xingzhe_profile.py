@@ -203,3 +203,68 @@ def test_gentle_snap_unit() -> None:
     out_big = int((np.linalg.norm(np.diff(px, axis=0), axis=1) > 100).sum())
     assert out_big <= in_big, \
         f"吸附引入新跳变：输出 {out_big} 处 > 输入 {in_big} 处"
+
+
+# ---------------------------------------------------------------------------
+# UI 文案锚点过滤（2026-11-21 真实失败复现）
+# 行者宁波图的顶栏统计 + 详情面板文字被高德当成 POI，占满
+# GEOCODE_TARGET_LIMIT=20 名额，真地名（迪士尼/东柳）被 skipped，
+# RANSAC 定不出尺度 → 0 轨迹点、ok=False。
+# ---------------------------------------------------------------------------
+
+def test_ui_noise_filter_covers_xingzhe_hud() -> None:
+    from app.ocr_anchor import is_ui_noise
+
+    ui_texts = [
+        "距离", "速度", "时间", "34.63", "15.67", "2:12:39",
+        "骑行", "运动时间", "全程时间", "运动均速", "全程均速",
+        "最快速度", "累计上升", "累计下降", "海拔范围",
+        "655米", "2.00-80.00米", "15.67km/h", "34.63公里",
+        "导出删除分享", "<返回", "地图", "分享", "备注", "数据", "图表",
+    ]
+    for t in ui_texts:
+        assert is_ui_noise(t), f"UI 文案未被过滤: {t!r}"
+
+
+def test_ui_noise_filter_keeps_real_places() -> None:
+    from app.ocr_anchor import is_ui_noise
+
+    places = ["宁波站", "鄞州区政府", "钟公庙村", "丽兹大酒店",
+              "迪士尼", "东柳", "上海西站"]
+    for t in places:
+        assert not is_ui_noise(t), f"真实地名被误杀: {t!r}"
+
+
+def test_ocr_garbage_filter_catches_mixed_fragments() -> None:
+    """OCR 粘连碎片必须被拦，正常中英混排地名不受影响。"""
+    from app.ocr_anchor import is_ocr_garbage, is_ui_noise
+
+    garbage = ["A.十", "y.十层", "34.67新=江18.29", "新=江18.29", "", "中"]
+    for t in garbage:
+        assert is_ocr_garbage(t), f"OCR 碎片未被识别: {t!r}"
+        assert is_ui_noise(t), f"OCR 碎片未接入 UI 过滤: {t!r}"
+
+    legit = ["上海荟聚Livat", "7-Eleven", "宁波站", "天一阁", "G2"]
+    for t in legit:
+        assert not is_ocr_garbage(t), f"正常地名被误杀: {t!r}"
+
+
+def test_build_anchors_drops_ui_texts() -> None:
+    from app.config import VisionConfig
+    from app.ocr_anchor import TextItem, build_anchors
+
+    def item(text: str, x: int) -> TextItem:
+        return TextItem(text=text, score=0.9, cx=float(x), cy=10.0,
+                        x0=float(x), y0=0.0, x1=float(x + 50), y1=20.0,
+                        width=50.0, height=20.0)
+
+    texts = ["距离", "速度", "骑行", "运动均速", "655米",
+             "导出删除分享", "宁波站", "迪士尼", "东柳"]
+    items = [item(t, i * 60) for i, t in enumerate(texts)]
+    img = np.zeros((100, 800, 3), dtype=np.uint8)
+
+    names = [a.name for a in build_anchors(img, items, VisionConfig())]
+    for place in ("宁波站", "迪士尼", "东柳"):
+        assert place in names, f"真实地名丢失: {place}"
+    for ui in texts[:6]:
+        assert ui not in names, f"UI 文案混入锚点: {ui}"

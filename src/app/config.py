@@ -263,6 +263,9 @@ class AppConfig:
     # 已是约 6 米等距采样，等距抽到 2000 点不会改变中位距离的统计量，
     # 但能把查询量降一个数量级。设 0 表示关闭降采样。
     road_fit_eval_budget: int = 2000
+    # OCR 文本有效性过滤器实现名（"rule" / 已注册的其它实现）。
+    # 环境变量 ANCHOR_FILTER 优先于此处，便于部署时热切换而无需改配置。
+    anchor_filter: str = "rule"
     # .env 文件位置（改完不用重启服务就能生效，见 _env_value）
     env_path: Path = ROOT / ".env"
     # .env 解析结果的缓存（按内容指纹失效）

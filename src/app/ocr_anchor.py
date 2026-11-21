@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from .anchor_filter import AnchorFilter, get_filter, is_ocr_garbage, is_ui_noise
 from .config import VisionConfig
 from .cv_utils import disk_kernel
 
@@ -33,18 +34,10 @@ ROAD_SUFFIXES = (
 # 交通设施（地铁站等），图标锚点最可靠
 TRANSIT_SUFFIXES = ("号线", "地铁", "火车站", "高铁站", "机场", "客运站", "码头")
 
-# 这些是数字/符号类，不是地名
-_NON_NAME = re.compile(r"^[\W\d_]+$")
-
-# 泛词黑名单：这些词**单独出现**时指代一类设施而非某个具体地点，
-# 地名库（OSM/天地图）里同名要素遍地都是，匹配到哪个全看运气——
-# 实测「大厦」匹配到 22 公里外的同名建筑，2 点模型尺度直接爆炸
-# （352 米骑行被放大成 51 公里，2026-11-17）。真实 POI 名不会只有
-# 这一个词（「上海荟聚Livat」「巴奴毛肚火锅」都带专名）。
-_GENERIC_WORDS = frozenset({
-    "大厦", "大楼", "酒店", "宾馆", "饭店", "广场", "中心", "超市",
-    "银行", "公司", "停车场", "厕所", "餐厅", "便利店", "药店", "门诊部",
-})
+# 文本有效性过滤已抽到 ``app.anchor_filter``（可插拔）。本模块保留
+# ``is_ui_noise`` / ``is_ocr_garbage`` 两个名字作为兼容导出，供历史
+# 调用方与测试直接 import；实际规则在 anchor_filter.RuleFilter。
+# 泛词判定（_GENERIC_WORDS）等一并迁走，见 build_anchors 中的 filter.reject。
 
 
 @dataclass
@@ -259,7 +252,7 @@ def find_icon_anchor(
 
 
 def build_anchors(
-    img: np.ndarray, items: list[TextItem], cfg: VisionConfig
+    img: np.ndarray, items: list[TextItem], cfg: VisionConfig,
 ) -> list[Anchor]:
     """从 OCR 结果构建锚点候选。
 
@@ -271,19 +264,21 @@ def build_anchors(
 
     原因是地图把路名沿道路/河流走向排布，文字中心不对应任何固定地理位置。
     早期版本把道路名也当锚点，直接让配准整体偏移 3 公里。
+
+    过滤层可插拔：优先用 ``cfg.anchor_filter``（pipeline 注入的实例，
+    例如 LLM 过滤器），否则走全局 ``get_filter()``。保持 3 参数签名
+    不变，兼容测试里对本函数的 3 参数打桩。
     """
+    filt: AnchorFilter = getattr(cfg, "anchor_filter", None) or get_filter()
     anchors: list[Anchor] = []
     for it in items:
         text = it.text
-        if _NON_NAME.match(text):
+        # 文本有效性过滤（可插拔）：纯符号/UI 文案/数值/OCR 碎片/泛词。
+        # 原来散落在本函数的 5 处判断统一收进过滤层，替换实现只改注册处。
+        if filt.reject(text):
             continue
-        # 过滤状态栏、比例尺等非地图内容
+        # 过滤状态栏、比例尺等非地图内容（来源特定，不属于通用过滤层）
         if text in {"美团", "美团地图"}:
-            continue
-        # 泛词单独出现：不是可定位的具体地点（见 _GENERIC_WORDS 注释）
-        if text in _GENERIC_WORDS or text.endswith("出入口"):
-            continue
-        if re.fullmatch(r"[\d:.]+", text):
             continue
 
         cat = classify_text(text)

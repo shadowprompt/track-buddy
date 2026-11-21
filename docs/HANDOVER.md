@@ -7451,3 +7451,26 @@ scale_check ratio 1.02、687/1281 点上路、4 处跳变回退、max_step 95m
 
 **遗留**：46% 的点离路 >60m 保持原样——绝对位置偏差的根治仍需统一
 锚点源（🔴 配置级：MAP_GEOCODING_ORDER 单源化）。
+
+### 24.16 OCR 文本有效性过滤层（可插拔，2026-11-21）
+
+**背景**：OCR 会把大量非地名文本（UI 统计栏、数值、状态栏、乱码碎片、泛词）
+读成独立文本块。这些若占用 `GEOCODE_TARGET_LIMIT` 名额或混进 RANSAC，
+轻则降低精度，重则让整张图定不出尺度（行者宁波长截图 0 轨迹点）。
+
+**分层设计**（见 `app/anchor_filter.py` 模块 docstring）：
+① 规则层（默认，零成本）→ ② 地理编码反馈 → ③ LLM 语义（可选）→ ④ RANSAC 几何裁决。
+
+**接口与扩展**：
+- 协议 `AnchorFilter.reject(text) -> bool`（True=丢弃）。
+- 默认实现 `RuleFilter`；`register_filter(name, factory)` 注册新实现；
+  `get_filter(name)` 工厂，未知名字/构造失败回落默认，绝不抛异常。
+- 切换优先级：环境变量 `ANCHOR_FILTER` > `AppConfig.anchor_filter` > `"rule"`。
+  例如接 LLM 过滤器：实现协议 → 注册为 `"llm"` → `.env` 设 `ANCHOR_FILTER=llm`。
+- 流水线在 `__init__` 取一次实例（`self.anchor_filter`）复用，`build_anchors`
+  从 `cfg.anchor_filter` 读取；`ocr_anchor.is_ui_noise` 等旧函数保留为兼容别名。
+
+> 🔴 **设计约束**：过滤层「宁可漏放，不可误杀」。被误杀的真实地名直接减少
+> 配准锚点（实测挡掉「迪士尼/东柳」会让整图定不出尺度）。默认实现只拦强特征
+> 噪声，模糊情况（如残片还原 `杭甬高→杭甬高速`）留给可选 LLM，且最终由几何
+> 一致性裁决。改动后需同步两个便携技能目录（`python src/tools/sync_skill.py <dir>`）。
