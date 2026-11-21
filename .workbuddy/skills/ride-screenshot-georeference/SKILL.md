@@ -42,7 +42,10 @@ python scripts/recognize.py <图片路径> --city 上海 --out <输出目录>
 常用参数：
 - `--city` 城市提示（默认上海）
 - `--out` 输出目录（默认内核目录下的 out）
-- `--source` 来源画像 id（`meituan` / `amap`，默认 `meituan`；通过
+- `--summary` 运动概要截图（可选）。**轨迹与数据可分离**：只传轨迹图也能
+  拿到完整的一等公民产物（GeoJSON + 纯轨迹 GPX）；传了概要且能解析出
+  「开始时间+时长」时，GPX 补上时间轴并额外产出 TCX
+- `--source` 来源画像 id（`meituan` / `amap` / `xingzhe`，默认 `meituan`；通过
   `SOURCE_PROFILE` 环境变量传给 CLI）
 - `--online` 允许在线地理编码（需已配置地理编码密钥，未配置时自动降级
   为本地词典模式）
@@ -58,8 +61,11 @@ python scripts/recognize.py <图片路径> --city 上海 --out <输出目录>
 pip install -r <技能目录>/assets/ride_core/requirements.txt
 ```
 
-**CLI 路径的产出**（仅这三件套 + 图，CLI 不产 GPX/TCX）：
+**CLI 路径的产出**：
 - `trajectory_wgs84.geojson` — WGS-84 轨迹（唯一交付坐标系）
+- `track.gpx` — GPX 1.1。无概要时为无 `<time>` 的纯轨迹（合法且可直接
+  导入）；传 `--summary` 且概要含开始时间+时长时为带时间轴版本
+- `track.tcx` — 仅传了概要且能解析出时间轴时产出（TCX 规范要求逐点时间）
 - `overlay_result.png` — 原图 + 识别轨迹叠加（橙线=轨迹，白点=采样点，
   绿=起点，红=终点，青圈=锚点）
 - `trajectory_chart.png` — 独立轨迹图（米制等比例，标路名与公里刻度）

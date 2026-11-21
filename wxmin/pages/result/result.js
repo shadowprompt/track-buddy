@@ -240,7 +240,7 @@ Page({
     if (payload.gpx) {
       exports.push({
         key: 'gpx',
-        label: 'GPX（含时间轴，Strava/Garmin）',
+        label: 'GPX（Strava/Garmin）',
         file: (baseName || 'trajectory') + '.gpx',
         content: payload.gpx
       });

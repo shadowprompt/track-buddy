@@ -55,7 +55,7 @@
     bindtap="doExport"
     data-key="{{item.key}}"
   >↓ {{item.label}}</button>
-  <view class="note">文件已统一 WGS-84 坐标；GPX/TCX 含时间轴（需运动概要截图提供开始时间与时长），可直接导入 Strava / Garmin</view>
+  <view class="note">文件已统一 WGS-84 坐标，可直接导入 Strava / Garmin</view>
 </view>
 
 <!-- 🔴 暂时下线：wx.chooseLocation 需在微信公众平台额外申请（2026-11-15）。

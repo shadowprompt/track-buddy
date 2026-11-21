@@ -57,6 +57,9 @@ def main() -> int:
     ap.add_argument("image", help="截图路径")
     ap.add_argument("--city", default="上海", help="城市提示")
     ap.add_argument("--out", default=None, help="输出目录")
+    ap.add_argument("--summary", default=None,
+                    help="运动概要截图（可选）：提供开始时间/时长后 GPX "
+                         "带时间轴并额外产出 TCX；不传只导出纯轨迹 GPX")
     ap.add_argument("--source", default=None,
                     help="来源画像 id（meituan / amap），默认 meituan")
     ap.add_argument("--online", action="store_true", help="允许在线地理编码")
@@ -87,6 +90,13 @@ def main() -> int:
            "--city", args.city]
     if args.out:
         cmd += ["--out", os.path.abspath(args.out)]
+    if args.summary:
+        if not os.path.exists(args.summary):
+            print(json.dumps({"ok": False,
+                              "error": "概要截图不存在：%s" % args.summary},
+                             ensure_ascii=False))
+            return 2
+        cmd += ["--summary", os.path.abspath(args.summary)]
     if args.online:
         cmd.append("--online")
     if args.no_chart:

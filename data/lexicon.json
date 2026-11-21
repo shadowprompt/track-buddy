@@ -114,6 +114,17 @@
    "address": "先锋街66",
    "verified": false,
    "last_confidence": 0.79
+  },
+  {
+   "lon": 121.373745,
+   "lat": 31.177126,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "先锋街66号(龙柏新村地铁站3号口步行330米)",
+   "verified": false,
+   "last_confidence": 0.892
   }
  ],
  "高岛屋百货": [
@@ -292,6 +303,17 @@
    "address": "虹桥路1921号",
    "verified": false,
    "last_confidence": 0.2
+  },
+  {
+   "lon": 121.378031,
+   "lat": 31.202047,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "虹桥路1921号",
+   "verified": false,
+   "last_confidence": 0.892
   }
  ],
  "新渔浦": [
@@ -361,8 +383,8 @@
   {
    "lon": 121.57325332439497,
    "lat": 29.832266591995893,
-   "weight": 1.2999999999999998,
-   "count": 5,
+   "weight": 3.0,
+   "count": 23,
    "city": "宁波",
    "source": "tianditu",
    "address": "宁波市鄞州区中河街道宋诏桥嵩江东路579号",
@@ -374,22 +396,33 @@
   {
    "lon": 121.53833734884496,
    "lat": 29.815553352919878,
-   "weight": 0.7,
-   "count": 2,
+   "weight": 2.6,
+   "count": 7,
    "city": "宁波",
    "source": "baidu",
    "address": "宁波市鄞州区惠风西路115号",
    "verified": false,
-   "last_confidence": 0.2
+   "last_confidence": 0.646
   },
   {
    "lon": 121.5383581639141,
    "lat": 29.815659402801096,
-   "weight": 0.6000000000000001,
-   "count": 3,
+   "weight": 3.0,
+   "count": 18,
    "city": "宁波",
    "source": "tianditu",
    "address": "宁波市鄞州区钟公庙街道惠风西路115号",
+   "verified": false,
+   "last_confidence": 0.2
+  },
+  {
+   "lon": 121.538411,
+   "lat": 29.815629,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "amap",
+   "address": "惠风西路115号(钟公庙地铁站C口步行480米)",
    "verified": false,
    "last_confidence": 0.2
   }
@@ -398,24 +431,35 @@
   {
    "lon": 121.25000033723357,
    "lat": 29.988325473939693,
-   "weight": 0.5,
-   "count": 1,
+   "weight": 2.5,
+   "count": 5,
    "city": "宁波",
    "source": "baidu",
    "address": "浙江省宁波市",
    "verified": false,
-   "last_confidence": 0.522
+   "last_confidence": 0.562
   }
  ],
  "嘉和大酒店": [
   {
    "lon": 121.53032173590364,
    "lat": 29.85334781310467,
-   "weight": 0.8,
-   "count": 4,
+   "weight": 3.0,
+   "count": 20,
    "city": "宁波",
    "source": "tianditu",
    "address": "浙江省宁波市海曙区段塘街道新典街108号",
+   "verified": false,
+   "last_confidence": 0.2
+  },
+  {
+   "lon": 121.530165,
+   "lat": 29.853233,
+   "weight": 0.4,
+   "count": 2,
+   "city": "宁波",
+   "source": "amap",
+   "address": "新典路108号",
    "verified": false,
    "last_confidence": 0.2
   }
@@ -424,8 +468,8 @@
   {
    "lon": 121.51903427952723,
    "lat": 29.89319722684969,
-   "weight": 0.2,
-   "count": 1,
+   "weight": 3.0,
+   "count": 14,
    "city": "宁波",
    "source": "tianditu",
    "address": "浙江省宁波市海曙区望春街道市中医院北侧",
@@ -435,13 +479,300 @@
   {
    "lon": 121.51848418164937,
    "lat": 29.89294882806839,
-   "weight": 0.2,
-   "count": 1,
+   "weight": 3.0,
+   "count": 14,
    "city": "宁波",
    "source": "tianditu",
    "address": "浙江省宁波市海曙区望春街道市中医院北侧",
    "verified": false,
    "last_confidence": 0.2
+  },
+  {
+   "lon": 121.51965872802573,
+   "lat": 29.888593967263365,
+   "weight": 1.5,
+   "count": 3,
+   "city": "宁波",
+   "source": "baidu",
+   "address": "轨道交通6号线;轨道交通8号线",
+   "verified": false,
+   "last_confidence": 0.562
+  },
+  {
+   "lon": 121.5188165493491,
+   "lat": 29.893079517155606,
+   "weight": 1.5,
+   "count": 3,
+   "city": "宁波",
+   "source": "baidu",
+   "address": "5路;9路;32路;33路;399路;630路;631-1路;631路;902路",
+   "verified": false,
+   "last_confidence": 0.562
+  }
+ ],
+ "宁波银行大厦": [
+  {
+   "lon": 121.43336037198235,
+   "lat": 29.31263127157395,
+   "weight": 1.0,
+   "count": 2,
+   "city": "宁波",
+   "source": "baidu",
+   "address": "宁波市宁海县地区时代大道160号",
+   "verified": false,
+   "last_confidence": 0.646
+  },
+  {
+   "lon": 121.88319974005451,
+   "lat": 29.465549322641156,
+   "weight": 1.0,
+   "count": 2,
+   "city": "宁波",
+   "source": "baidu",
+   "address": "浙江省宁波市象山县象山港路501号",
+   "verified": false,
+   "last_confidence": 0.646
+  }
+ ],
+ "宁波站": [
+  {
+   "lon": 121.53700449212802,
+   "lat": 29.86210192883159,
+   "weight": 1.1,
+   "count": 4,
+   "city": "宁波",
+   "source": "baidu",
+   "address": "宁波市海曙区南站东路19号",
+   "verified": false,
+   "last_confidence": 0.2
+  },
+  {
+   "lon": 121.536631,
+   "lat": 29.861949,
+   "weight": 3.0,
+   "count": 28,
+   "city": "宁波",
+   "source": "amap",
+   "address": "南站东路19号",
+   "verified": false,
+   "last_confidence": 0.263
+  },
+  {
+   "lon": 121.53677580502416,
+   "lat": 29.862564230321947,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "tianditu",
+   "address": "浙江省宁波市海曙区南门街道南站西巷19号",
+   "verified": false
+  }
+ ],
+ "天一阁": [
+  {
+   "lon": 121.54002025907288,
+   "lat": 29.871074346214456,
+   "weight": 1.8,
+   "count": 6,
+   "city": "宁波",
+   "source": "baidu",
+   "address": "浙江省宁波市海曙区天一街10号",
+   "verified": false,
+   "last_confidence": 0.551
+  },
+  {
+   "lon": 121.53977429712397,
+   "lat": 29.87136213636893,
+   "weight": 3.0,
+   "count": 14,
+   "city": "宁波",
+   "source": "tianditu",
+   "address": "浙江省宁波市海曙区月湖街道",
+   "verified": false,
+   "last_confidence": 0.2
+  }
+ ],
+ "姚江公园": [
+  {
+   "lon": 121.54160862306618,
+   "lat": 29.897375523890382,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "baidu",
+   "address": "13路;23路;31路;33路;337路;516路;517路;523路",
+   "verified": false
+  }
+ ],
+ "宁波市中医院": [
+  {
+   "lon": 121.51755458928359,
+   "lat": 29.89203833236313,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "baidu",
+   "address": "浙江省宁波市海曙区丽园北路819号",
+   "verified": false
+  }
+ ],
+ "中国移动": [
+  {
+   "lon": 116.359035,
+   "lat": 39.911684,
+   "weight": 1.0,
+   "count": 2,
+   "city": "",
+   "source": "amap",
+   "address": "金融大街29号中国移动大厦A座",
+   "verified": false,
+   "last_confidence": 0.486
+  }
+ ],
+ "大庆南路": [
+  {
+   "lon": 121.562393,
+   "lat": 29.890269,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "amap",
+   "address": "江北区",
+   "verified": false
+  },
+  {
+   "lon": 121.566213,
+   "lat": 29.945654,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "amap",
+   "address": "江北区",
+   "verified": false
+  },
+  {
+   "lon": 121.565913,
+   "lat": 29.959622,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "amap",
+   "address": "镇海区",
+   "verified": false
+  },
+  {
+   "lon": 121.55927803298516,
+   "lat": 29.884129007426253,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "tianditu",
+   "address": "浙江省宁波市江北区外滩街道大庆南路181号边",
+   "verified": false
+  },
+  {
+   "lon": 121.56449623266852,
+   "lat": 29.891260244788466,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "tianditu",
+   "address": "浙江省宁波市江北区外滩街道大庆南路",
+   "verified": false
+  },
+  {
+   "lon": 121.55965719024897,
+   "lat": 29.88442832409093,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "tianditu",
+   "address": "浙江省宁波市江北区外滩街道大庆南路181号东侧",
+   "verified": false
+  }
+ ],
+ "宁波儿童公园": [
+  {
+   "lon": 121.579737,
+   "lat": 29.853681,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "amap",
+   "address": "兴宁路321号(儿童公园地铁站G口步行280米)",
+   "verified": false
+  }
+ ],
+ "鄞州区政府": [
+  {
+   "lon": 121.55001888476251,
+   "lat": 29.819082047566052,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "tianditu",
+   "address": "浙江省宁波市鄞州区钟公庙街道鄞州区政府",
+   "verified": false
+  }
+ ],
+ "鄞州第二医院": [
+  {
+   "lon": 121.55545941894658,
+   "lat": 29.821369474755528,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "osm",
+   "address": "osm/way/1343566788",
+   "verified": false
+  }
+ ],
+ "红星美凯龙": [
+  {
+   "lon": 121.59606674142304,
+   "lat": 29.83964823937926,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "osm",
+   "address": "osm/way/756243066",
+   "verified": false
+  },
+  {
+   "lon": 121.30478838983117,
+   "lat": 30.16651495995471,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "osm",
+   "address": "osm/node/7902445085",
+   "verified": false
+  }
+ ],
+ "上海万象城": [
+  {
+   "lon": 121.369015,
+   "lat": 31.170352,
+   "weight": 2.0,
+   "count": 4,
+   "city": "上海",
+   "source": "amap",
+   "address": "吴中路1599号(紫藤路地铁站1号口步行210米)",
+   "verified": false,
+   "last_confidence": 0.892
+  }
+ ],
+ "东柳": [
+  {
+   "lon": 121.5896,
+   "lat": 29.860678,
+   "weight": 3.0,
+   "count": 22,
+   "city": "宁波",
+   "source": "amap",
+   "address": "鄞州区",
+   "verified": false,
+   "last_confidence": 0.263
   }
  ]
 }

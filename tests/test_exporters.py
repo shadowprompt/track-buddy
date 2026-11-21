@@ -179,11 +179,33 @@ def test_attach_exports_tcx_missing_without_time_axis() -> None:
     payload = _payload_with_coords(COORDS)
     payload["ride_summary"] = {"started_at": None, "duration_s": None}
     _attach_exports(payload)
-    # GPX 照常产出（纯轨迹合法），TCX 缺席
+    # GPX 照常产出，TCX 缺席（键不存在 → 前端不展示入口），不给多余告警
     assert "gpx" in payload
     assert "tcx" not in payload
-    # 缺时间轴要明说，不能让用户对着文件猜
-    assert any("无时间轴" in w for w in payload.get("warnings") or [])
+    assert not any("TCX" in w for w in payload.get("warnings") or [])
+
+
+def test_attach_exports_no_summary_is_track_only_no_warning() -> None:
+    """只有轨迹截图（无概要）是一等公民路径：出 GPX，不给残缺告警。"""
+    from app.server import _attach_exports
+    payload = _payload_with_coords(COORDS)
+    payload.pop("ride_summary", None)  # 没传概要时 _attach_ride_summary 不写这个键
+    _attach_exports(payload)
+    assert "gpx" in payload
+    assert "tcx" not in payload
+    assert not any("TCX" in w for w in payload.get("warnings") or [])
+
+
+def test_has_time_axis_and_track_only_formats() -> None:
+    from app.exporters import has_time_axis, track_only_formats
+
+    assert track_only_formats() == ("gpx",)
+    assert has_time_axis({"started_at": "2026-11-11T20:20:26",
+                          "duration_s": 600})
+    assert not has_time_axis({"started_at": None, "duration_s": 600})
+    assert not has_time_axis({"started_at": "2026-11-11T20:20:26",
+                              "duration_s": None})
+    assert not has_time_axis(None)
 
 
 def test_attach_exports_skips_without_coords() -> None:
