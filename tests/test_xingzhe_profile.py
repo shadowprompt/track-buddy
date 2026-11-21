@@ -280,6 +280,9 @@ def test_build_anchors_drops_ui_texts() -> None:
 LONG_SHOT = Path(__file__).resolve().parents[1] / "data" / "uploads" / \
     "1795244680_dae0a1b9.jpg"
 
+# 断裂段回归用合成掩膜（见 test_broken_line_fragments_*），不依赖
+# 二进制样本文件——仓库 .gitignore 忽略 samples/*.jpg。
+
 
 def test_speed_texts_not_parsed_as_distance() -> None:
     """详情面板的 km/h 速度不能混进里程中位数（25.15 bug 回归）。"""
@@ -315,3 +318,52 @@ def test_long_shot_badges_are_paired_adjacent() -> None:
     # 两者都必须在上半地图区域，不能落进 y>920 的详情面板
     assert s[1] < 920 and e[1] < 920, f"徽章落进详情面板: 起{s} 终{e}"
     assert any("成对定位" in n for n in notes), f"未走成对定位逻辑: {notes}"
+
+
+def _synthetic_fragments() -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """合成一张掩膜：主竖线 + 一段细线（应接回）+ 一块图例（应排除）。
+
+    主域：x=50 的竖线 y=50..250。
+    细线段：x=110 的竖线 y=60..160（细长，fill 低，gap ~1px）。
+    图例块：x=20..70、y=200..233 的实心矩形（fill 1.0，gap ~20px）。
+    """
+    mask = np.zeros((300, 200), np.uint8)
+    cv2.line(mask, (80, 30), (80, 270), 1, 2)      # 主竖线（area ~482）
+    # 细线断裂段：带弯折，bbox 60×100、fill~0.1（模拟真实轨迹的折线形态）
+    cv2.line(mask, (140, 60), (190, 110), 1, 2)
+    cv2.line(mask, (190, 110), (140, 160), 1, 2)
+    cv2.rectangle(mask, (20, 200), (60, 215), 1, -1)  # 图例实心块（分离，不碰主域）
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    main_id = max(range(1, n), key=lambda i: stats[i, cv2.CC_STAT_AREA])
+    return mask, labels, stats, main_id
+
+
+def test_broken_line_fragment_is_bridged_back() -> None:
+    """细线状断裂段必须被桥接回主域（用户反馈「路线少一截」的根因）。"""
+    from app.track import _merge_line_fragments
+
+    from app.scale import Scale
+
+    mask, labels, stats, main_id = _synthetic_fragments()
+    scale = Scale.from_image(mask, badge_d=XINGZHE.vision.scale_badge_d)
+    comp, notes = _merge_line_fragments(mask, labels, stats, main_id, scale)
+    # 细线段整段并入（用原始标签取掩膜，避免依赖具体某个坐标点）
+    seg_mask = labels == 2
+    assert comp[seg_mask].mean() > 0.95, "线状断裂段未被桥接"
+    assert any("线状段已接回" in n for n in notes), f"无桥接记录: {notes}"
+    # 不重复桥接：同一段只应记录一次
+    thin_notes = [n for n in notes if "线状段已接回" in n]
+    assert len(thin_notes) == 1, f"同一段被重复桥接: {thin_notes}"
+
+
+def test_bridge_excludes_solid_legend_block() -> None:
+    """底图图例/色块（fill 高）不能被当成轨迹段接进来。"""
+    from app.scale import Scale
+    from app.track import _merge_line_fragments
+
+    mask, labels, stats, main_id = _synthetic_fragments()
+    scale = Scale.from_image(mask, badge_d=XINGZHE.vision.scale_badge_d)
+    comp, notes = _merge_line_fragments(mask, labels, stats, main_id, scale)
+    # 图例块中心 (40, 207) 仍为背景
+    assert comp[207, 40] == 0, "实心图例块被误接为轨迹"
+    assert not any("area=600" in n for n in notes)

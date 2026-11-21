@@ -561,21 +561,100 @@ def _select_component(
     return _merge_track_fragments(labels, stats, count, scale, badges)
 
 
+def _merge_line_fragments(
+    mask: np.ndarray,
+    labels: np.ndarray,
+    stats: np.ndarray,
+    main_id: int,
+    scale: Scale,
+) -> tuple[np.ndarray, list[str]]:
+    """把被地图文字/图标打断的线状轨迹段桥接回主连通域。
+
+    闭环长截图里，骑行轨迹会被 POI 文字标注、比例尺、UI 图标切断成
+    多个连通域。``_select_loop_component`` 只取最大域，导致右上角、
+    左下角等真实轨迹段被整段丢弃（行者宁波实测丢了 3 段共 2288px，
+    主域 bbox 只到 x=364/y=899，而实际绿线延伸到 x=614/y=908）。
+
+    只接纳满足全部条件的碎片，宁可漏接不可错接：
+      1. 面积 ≥ 主域 1.5%（滤掉抗锯齿小点）；
+      2. 线状：长宽比 ≥1.8 或填充率 ≤0.35（底图团块填充率高、接近方形）；
+      3. 到主域最近距离 ≤4×badge_d（实测最大断口 131px < 157px）；
+      4. 分多次迭代，每轮重算主域，允许链式桥接（先接最近的，再接下一段）。
+
+    返回合并后的掩膜与桥接说明列表。
+    """
+    from scipy.spatial import cKDTree
+
+    comp = (labels == main_id).astype(np.uint8)
+    notes: list[str] = []
+    main_area = float(stats[main_id, cv2.CC_STAT_AREA])
+    min_area = max(40.0, main_area * 0.015)
+    max_gap = 4.0 * scale.badge_d
+
+    n = int(labels.max())
+    merged: set[int] = {main_id}
+    for _ in range(12):  # 最多桥接 12 段，防异常图无限扩张
+        ys, xs = np.where(comp > 0)
+        if len(xs) == 0:
+            break
+        tree = cKDTree(np.column_stack([xs, ys]).astype(float))
+        best: tuple[float, int, tuple[int, int], tuple[int, int]] | None = None
+        for i in range(1, n + 1):
+            if i in merged:
+                continue
+            area = float(stats[i, cv2.CC_STAT_AREA])
+            if area < min_area:
+                continue
+            x, y, w, h = (int(stats[i, k]) for k in range(4))
+            ratio = max(w, h) / max(1, min(w, h))
+            fill = area / max(1, w * h)
+            # 真实轨迹是**细线**，填充率低（行者新图各段 fill 0.07-0.20）。
+            # 底图图例/指北针/色块虽有长边，但填充率高（实测旧样本误接的
+            # 图例段 area575/bbox50x33 → fill 0.35）。用 fill 作主判据，
+            # 长宽比只作辅助（0.35~0.5 区间需同时足够细长才放行）。
+            if fill > 0.25 and not (fill <= 0.42 and ratio >= 3.0):
+                continue  # 面状团块/图例，不是细线轨迹
+            fy, fx = np.where(labels == i)
+            d, idx = tree.query(np.column_stack([fx, fy]).astype(float), k=1)
+            j = int(np.argmin(d))
+            if d[j] > max_gap:
+                continue
+            if best is None or d[j] < best[0]:
+                best = (float(d[j]), i, (int(xs[idx[j]]), int(ys[idx[j]])),
+                        (int(fx[j]), int(fy[j])))
+        if best is None:
+            break
+        gap, seg_id, p_main, p_frag = best
+        seg_area = int(stats[seg_id, cv2.CC_STAT_AREA])
+        cv2.line(comp, p_main, p_frag, 1, 1)
+        comp[labels == seg_id] = 1
+        merged.add(seg_id)
+        notes.append(
+            f"闭环断裂段桥接：area={seg_area}px 的线状段已接回主轨迹"
+            f"（gap {gap:.0f}px）"
+        )
+    return comp, notes
+
+
 def _select_loop_component(
     mask: np.ndarray,
     end_pt: tuple[int, int],
     scale: Scale,
-) -> tuple[np.ndarray | None, tuple[int, int, int, int] | None]:
+    bridge: bool = False,
+) -> tuple[np.ndarray | None, tuple[int, int, int, int] | None, list[str]]:
     """闭环赛道：取终点徽章贴住的**最大**连通域。
 
     起点与终点是同一位置（相距 ~39px）时，双徽章拓扑选择
     （``_select_with_markers``）会把徽章旁的小碎片当成「同时贴住两端的
     轨迹」（实测选中 6043px 碎片区而非 13970px 主轨迹）。闭环下拓扑
     约束已由「起终点重合」语义取代，直接取终点贴住的最大连通域即可。
+
+    ``bridge=True`` 时把被地图文字/图标打断的线状近邻段并回主域，
+    修「识别轨迹比原图少一截」（见 ``_merge_line_fragments``）。
     """
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
     if n < 2:
-        return None, None
+        return None, None, []
     main_id = max(range(1, n), key=lambda i: stats[i, cv2.CC_STAT_AREA])
     ex, ey = int(end_pt[0]), int(end_pt[1])
     r = max(8.0, scale.touch_dist)
@@ -583,9 +662,14 @@ def _select_loop_component(
     x2, y2 = min(mask.shape[1], ex + int(r) + 1), min(mask.shape[0], ey + int(r) + 1)
     if (labels[y1:y2, x1:x2] == main_id).any():
         comp = (labels == main_id).astype(np.uint8)
-        bbox = tuple(int(v) for v in stats[main_id, :4])
-        return comp, bbox
-    return None, None
+        notes: list[str] = []
+        if bridge:
+            comp, notes = _merge_line_fragments(mask, labels, stats, main_id, scale)
+        ys, xs = np.where(comp > 0)
+        bbox = (int(xs.min()), int(ys.min()),
+                int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1))
+        return comp, bbox, notes
+    return None, None, []
 
 
 def extract_track(
@@ -607,7 +691,11 @@ def extract_track(
                 "被徽章/定位点遮挡而与主轨迹断开）——形状不可靠，未纳入轨迹"
             )
     if loop_mode:
-        comp, bbox = _select_loop_component(mask, end_pt, scale)
+        comp, bbox, bridge_notes = _select_loop_component(
+            mask, end_pt, scale,
+            bridge=bool(getattr(cfg, "loop_bridge_fragments", False)),
+        )
+        notes.extend(bridge_notes)
         if comp is not None:
             # 终点邻域碎片桥接接入：被「终」徽章+定位点遮挡的进出段
             frag_px, frag_mask = _endpoint_fragment_mask(mask, end_pt, cfg)
@@ -644,7 +732,7 @@ def extract_track(
         relaxed = cv2.morphologyEx(relaxed, cv2.MORPH_CLOSE, disk_kernel(scale.close_kernel))
         relaxed = cv2.morphologyEx(relaxed, cv2.MORPH_OPEN, disk_kernel(scale.open_kernel))
         if loop_mode:
-            comp, bbox = _select_loop_component(relaxed, end_pt, scale)
+            comp, bbox, _ = _select_loop_component(relaxed, end_pt, scale)
         else:
             comp, bbox = _select_component(relaxed, start_pt, end_pt, scale)
         if comp is None:
