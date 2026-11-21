@@ -31,7 +31,7 @@ from typing import Any
 import requests
 
 from .config import AppConfig
-from .geo.coords import lonlat_to_mercator
+from .geo.coords import haversine, lonlat_to_mercator
 from .lexicon_guard import USER_SOURCE, WriteDecision, evaluate_write
 from .maps.contracts import Capability
 from .maps.geocoding import build_geocoding_registry, convert_candidates
@@ -43,6 +43,15 @@ from .maps.geocoding import build_geocoding_registry, convert_candidates
 # 实测：「上海世」(3字) 命中「上海世贸商城」(6字)，比例 0.5，
 # 属于残片，必须拦下。
 _PARTIAL_MIN_RATIO = 0.6
+
+# 词库同名多源坐标的空间去重半径（米）。
+#
+# 同一个地名在多个数据源沉淀的坐标常有几十米差异（实测「宁波站」三源
+# baidu/amap/tianditu 彼此 30-70m），旧代码只做 round(6) 精确去重——
+# 6 位小数约 0.1m，这些近邻坐标全都漏过去，被当成 3 个独立候选进入
+# 配准，挤占内点名额、稀释可靠锚点权重。150m 远小于同名异地 POI 的
+# 间距（通常 >1km），又足以覆盖同址多源的定位抖动。
+_LEXICON_DEDUP_M = 150.0
 
 
 @dataclass
@@ -196,14 +205,22 @@ class Lexicon:
                             for e in entries:
                                 partial.append((k, e))
 
+        # 空间去重：同址多源坐标聚成一组，只保留权重最高的一条。
+        # 不能先排序再去重，因为权重高的源未必先出现（exact 与 partial
+        # 混排），必须在合并过程中逐个比较、必要时替换已保留的条目。
         merged: list[dict] = []
-        seen: set[tuple[float, float]] = set()
         for e in exact + [e for _, e in partial]:
-            sig = (round(float(e["lon"]), 6), round(float(e["lat"]), 6))
-            if sig in seen:
-                continue
-            seen.add(sig)
-            merged.append(e)
+            lon, lat = float(e["lon"]), float(e["lat"])
+            dup: dict | None = None
+            for kept in merged:
+                if haversine(lon, lat, float(kept["lon"]), float(kept["lat"])) <= _LEXICON_DEDUP_M:
+                    dup = kept
+                    break
+            if dup is None:
+                merged.append(e)
+            elif float(e.get("weight", 0)) > float(dup.get("weight", 0)):
+                # 权重更高（通常是用户确认或反复核验过的源）胜出。
+                merged[merged.index(dup)] = e
 
         if city_hint:
             merged.sort(key=lambda e: (e.get("city", "") != city_hint, -float(e.get("weight", 0))))

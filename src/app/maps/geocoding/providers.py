@@ -187,6 +187,8 @@ class AmapProvider(_BaseGeocodingProvider):
         return super()._get(url, params)
 
     def search(self, name: str, city: str) -> list[PlaceCandidate]:
+        from ...geocode import Lexicon  # 延迟导入，避免包初始化环
+
         key = self.key
         if not key and not amap_relay_enabled(self.cfg):
             return []
@@ -222,9 +224,32 @@ class AmapProvider(_BaseGeocodingProvider):
                 continue
             lon, lat = (float(x) for x in loc.split(","))
             title = p.get("name", name)
-            exact = 1.0 if name in (title or "") else 0.7
+            # ⚠️ 高德会对 OCR 错字做「智能纠错」，返回名字与查询词不同
+            # 的 POI。实测「董州区政府」（OCR 错字，应为鄞州）被纠错成
+            # 「鄞州区政府」，坐标偏离真值 1370m，作为内点把整个配准
+            # 模型拉偏（2026-11-21 行者宁波）。天地图/Tmap 早有名称
+            # 包含校验，唯独高德 provider 把返回的 POI 照单全收。
+            #
+            # 判据用「包含关系」而非字符相似度，才能区分两类纠错：
+            #   - 有益：残片补全「杭甬高」→「杭甬高速」、截断还原
+            #     「波站」→「宁波站」、带后缀「宁波站-公交站」
+            #     —— 都是 query ⊂ title 或分段包含，放行 ✓
+            #   - 有害：错字替换「董州区政府」→「鄞州区政府」
+            #     —— 无包含关系，剔除 ✗（相似度虽高但坐标不可信）
+            #
+            # 与其它源保持一致：宁可少一个锚点，不要一个错锚点。
+            q = Lexicon.normalize(name)
+            t = Lexicon.normalize(title)
+            if not q or not t:
+                continue
+            if t == q:
+                quality = 1.0
+            elif _name_matches(q, title) or _name_matches(t, name):
+                quality = 0.8
+            else:
+                continue
             out.append(self._candidate(
-                name=title, lon=lon, lat=lat, quality=exact,
+                name=title, lon=lon, lat=lat, quality=quality,
                 address=p.get("address", ""), category=p.get("type", ""),
             ))
         return out
