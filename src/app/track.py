@@ -62,6 +62,47 @@ def _marker_component_diameter(found) -> float | None:
     return float(np.sqrt(4.0 * area / np.pi))
 
 
+def _pick_adjacent_badge_pair(
+    start_cands: list[tuple[tuple[int, int], int]],
+    end_cands: list[tuple[tuple[int, int], int]],
+    gap_hi: float,
+) -> tuple[tuple[tuple[int, int], np.ndarray] | None,
+           tuple[tuple[int, int], np.ndarray] | None] | None:
+    """从蓝/红徽章候选里挑出「相邻的一对」。
+
+    闭环赛道起终点必相邻（实测 39-47px），这是比「各自面积最大」更强的
+    几何判据：长截图里 UI 蓝标签和红色指北针面积都碾压真徽章，各自最大
+    会双双重定位。返回与 ``find_marker`` 同构的 ``(中心, 掩膜)`` 二元组。
+
+    ``gap_hi`` 为允许的最大间距（内容尺度，徽章直径的 2.5 倍）；超出一律
+    视为无关团块。评分为「面积和 ÷ 距离惩罚」，让近邻的真徽章对胜出。
+    """
+    if not start_cands or not end_cands:
+        return None
+    best = None
+    best_score = -1.0
+    for (sp, sa) in start_cands:
+        for (ep, ea) in end_cands:
+            gap = float(np.hypot(sp[0] - ep[0], sp[1] - ep[1]))
+            if gap > gap_hi:
+                continue
+            # 完全重合（gap≈0）多半是同一团块被两种 HSV 区间各命中一次，
+            # 不是真起终点；给一个很小的下限距离避免退化。
+            if gap < 3.0:
+                continue
+            score = (sa + ea) / (1.0 + gap / max(gap_hi, 1.0))
+            if score > best_score:
+                best_score = score
+                best = (sp, ep)
+    if best is None:
+        return None
+    sp, ep = best
+    # 掩膜这里用 1×1 占位即可：调用方只取 [0] 中心，直径由画像的
+    # scale_badge_d 显式给定（行者）或从其它候选反推，不依赖此掩膜面积。
+    one = np.ones((1, 1), dtype=np.uint8)
+    return (sp, one), (ep, one)
+
+
 def _detect_markers_ex(
     img: np.ndarray, cfg: VisionConfig
 ) -> tuple[tuple[int, int] | None, tuple[int, int] | None, list[str], Scale]:
@@ -70,6 +111,7 @@ def _detect_markers_ex(
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
     min_fill = getattr(cfg, "badge_min_fill", 0.0)
+    scale_badge_d = getattr(cfg, "scale_badge_d", None)
     start = find_marker(
         hsv, [cfg.start_hsv_range], cfg.badge_min_area, cfg.badge_max_area,
         min_fill=min_fill,
@@ -95,21 +137,33 @@ def _detect_markers_ex(
         exclude_pt=excl,
         exclude_radius=excl_r,
     )
-    # 闭环赛道：终点=起点邻域内**面积最大**的团块（起终点必相邻，实测
-    # 39px）。不能选全局最大——左边缘的红色导航指北针会截胡；也不能选
-    # 距起点最近——轨迹线末端小团块（area 195）比真徽章（area 452）更近。
-    # 半径 15% 图高内：真徽章 452 胜出，轨迹末端 195 与罗盘 1205 都被排除。
-    if getattr(cfg, "loop_course", False) and start_pt_tmp is not None:
-        cand = find_marker_candidates(
+    # 闭环赛道：起终点徽章**必须成对相邻**（实测相距 39-47px，约 1 个
+    # 徽章直径）。这是比「面积最大」强得多的几何约束——长截图带详情面板
+    # 时，面板里的蓝色 UI 元素（(318,1117) area 2464）比真起点蓝点
+    # (389,586) area 768 大得多，左上角红色指北针 (99,309) area 1329
+    # 也比真「终」徽章 (391,539) area 327 大，按最大挑必然双双重定位
+    # （2026-11-21 实测）。解法：枚举蓝×红候选的所有配对，取距离落在
+    # [下限, 上限] 内、且面积之和最大的一对——真徽章对面积/位置双优，
+    # 而「面板蓝 + 指北针红」相距 837px 直接被上限排除。
+    if getattr(cfg, "loop_course", False):
+        start_cands = find_marker_candidates(
+            hsv, [cfg.start_hsv_range],
+            cfg.badge_min_area, cfg.badge_max_area, min_fill=min_fill,
+        )
+        end_cands = find_marker_candidates(
             hsv, [cfg.end_hsv_range, cfg.end_hsv_range2],
             cfg.badge_min_area, cfg.badge_max_area, min_fill=min_fill,
         )
-        sx, sy = start_pt_tmp
-        near_r = img.shape[0] * 0.15
-        near = [c for c in cand
-                if (c[0][0] - sx) ** 2 + (c[0][1] - sy) ** 2 < near_r ** 2]
-        if near:
-            end = max(near, key=lambda c: c[1])
+        # 相邻上限按内容尺度（徽章直径）取，而非图高比例：长截图图高
+        # 1830 时 15% 图高=274px，会把远处的无关红蓝团块也配进来。
+        gap_hi = scale_badge_d * 2.5 if scale_badge_d else img.shape[0] * 0.08
+        pair = _pick_adjacent_badge_pair(start_cands, end_cands, gap_hi)
+        if pair is not None:
+            start, end = pair
+            start_pt_tmp = start[0] if start else None
+            notes.append(
+                f"闭环赛道起终点成对定位: 起{start[0]} 终{end[0]}"
+            )
 
     diameters = [
         d for d in (
@@ -120,7 +174,7 @@ def _detect_markers_ex(
     # 取较大者：误检的 UI 圆点通常比真徽章小，较大值更接近真实内容尺度。
     # 画像可用 scale_badge_d 显式覆盖（行者：内容尺度是对罗盘箭头标定的，
     # 起点换成蓝点后自动反推会缩水，见 config.scale_badge_d 注释）。
-    scale_d = getattr(cfg, "scale_badge_d", None)
+    scale_d = scale_badge_d
     if scale_d is None:
         scale_d = max(diameters) if diameters else None
     scale = Scale.from_image(img, scale_d)

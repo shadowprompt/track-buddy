@@ -268,3 +268,50 @@ def test_build_anchors_drops_ui_texts() -> None:
         assert place in names, f"真实地名丢失: {place}"
     for ui in texts[:6]:
         assert ui not in names, f"UI 文案混入锚点: {ui}"
+
+
+# --- 长截图版式回归（2026-11-21：详情面板干扰）---------------------------
+#
+# 用户新上传的 631×1830 长截图：上半地图 + 下半详情面板。两个 bug：
+#   ① 详情面板里 15.67km/h 等三个速度被当里程，与 34.63 取中位数得 25.15；
+#   ② 面板蓝色标签 (318,1117) area 2464 / 指北针 (99,309) area 1329 面积
+#      碾压真徽章，按「面积最大」挑起终点直接定位到面板和地图左上角。
+
+LONG_SHOT = Path(__file__).resolve().parents[1] / "data" / "uploads" / \
+    "1795244680_dae0a1b9.jpg"
+
+
+def test_speed_texts_not_parsed_as_distance() -> None:
+    """详情面板的 km/h 速度不能混进里程中位数（25.15 bug 回归）。"""
+    from app.input_quality import extract_distance_km
+
+    class T:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    # 复刻失败现场：真里程 34.63 + 三个速度，旧代码得中位数 25.15
+    panel = [T("34.63公里"), T("15.67km/h"), T("13.95km/h"), T("39.53km/h")]
+    assert extract_distance_km(panel) == pytest.approx(34.63)
+    # 只有速度时应返回 None，不能给出一个凭空的里程
+    assert extract_distance_km([T("15.67km/h"), T("39.53km/h")]) is None
+    # 正常来源不受影响
+    assert extract_distance_km([T("骑行 12.6公里")]) == pytest.approx(12.6)
+    assert extract_distance_km([T("总里程 8.2 km")]) == pytest.approx(8.2)
+
+
+@pytest.mark.skipif(not LONG_SHOT.exists(), reason="长截图样本未提供")
+def test_long_shot_badges_are_paired_adjacent() -> None:
+    """长截图起终点必须成对相邻，不能落在详情面板/指北针上。"""
+    from app.track import _detect_markers_ex
+
+    img = cv2.imread(str(LONG_SHOT))
+    assert img is not None
+    s, e, notes, _ = _detect_markers_ex(img, XINGZHE.vision)
+    assert s is not None and e is not None, f"未定位徽章: {notes}"
+    gap = float(np.hypot(s[0] - e[0], s[1] - e[1]))
+    # 闭环起终点实测 47px；上限取徽章直径 2.5 倍（39.2*2.5=98px）
+    assert gap <= XINGZHE.vision.scale_badge_d * 2.5, \
+        f"起终点不相邻，疑似误检到面板/指北针: 起{s} 终{e} 距{gap:.0f}px"
+    # 两者都必须在上半地图区域，不能落进 y>920 的详情面板
+    assert s[1] < 920 and e[1] < 920, f"徽章落进详情面板: 起{s} 终{e}"
+    assert any("成对定位" in n for n in notes), f"未走成对定位逻辑: {notes}"

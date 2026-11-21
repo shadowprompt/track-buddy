@@ -527,7 +527,8 @@ class RidePipeline:
         # 读取；浅拷贝生成副本而非直接改共享对象，避免请求间污染。
         # 不用 dataclasses.replace：anchor_filter 是运行时注入属性，非字段。
         cfg = copy.copy(self.cfg.vision)
-        cfg.anchor_filter = self.anchor_filter
+        # getattr 兜底：测试桩用 __new__ 裸构造时没走 __init__，无此属性。
+        cfg.anchor_filter = getattr(self, "anchor_filter", None) or get_filter()
 
         # 清空「本轮在线源失败」记录：它是**每次识别**的，
         # 不是进程级的（否则上一张图的失败会污染这一张的提示）。

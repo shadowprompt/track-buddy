@@ -21,7 +21,16 @@ from typing import Any, Iterable
 
 import cv2
 
-_DISTANCE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(公里|千米|km|KM|Km)")
+# 速度单位不能当里程读：详情面板常把里程与「15.67km/h / 39.53km/h」
+# 并排列出。旧正则只匹配到 `15.67km` 就停，把均速/最快速度全算进里程，
+# 多台数字取中位数直接把 34.63km 拉成 25.15km（2026-11-21 行者长截图）。
+# 负向前瞻：单位后紧跟 `/h`、`/小时`、`/s` 的一律不算距离。
+_SPEED_UNIT_RE = re.compile(r"/\s*(?:h|小时|s|秒|min|分钟)", re.I)
+_DISTANCE_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(公里|千米|km)"
+    r"(?!\s*/\s*(?:h|小时|s|秒|min|分钟))",
+    re.I,
+)
 # 轨迹里程牌（高德轨迹自带的「3KM / 2KM / 1KM」剩余里程标记）：纯整数
 # + km 的**无上下文**短标签。真实里程读数总带小数精度或文案上下文
 # （「3.68千米」「里程 4.2 公里」「本次 10.5公里」）；把里程牌当总里程
@@ -75,6 +84,11 @@ def extract_distance_km(texts: Iterable[Any]) -> float | None:
         if _MILESTONE_RE.match(s.strip()):
             continue  # 里程牌（3KM/2KM/1KM），不是骑行总里程
         if neg_re.search(s):
+            continue
+        # 速度块整块跳过（15.67km/h、13.95km/h、39.53km/h）：即便
+        # _DISTANCE_RE 的负向前瞻漏掉粘连写法，这里再兜一层，避免均速
+        # 混进里程中位数——行者详情面板实测把 34.63 拉成 25.15。
+        if _SPEED_UNIT_RE.search(s):
             continue
         priority = 1 if pos_re.search(s) else 0
         for num, _unit in _DISTANCE_RE.findall(s):
