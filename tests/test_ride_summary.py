@@ -594,3 +594,35 @@ def test_parse_summary_from_region_rejects_blank() -> None:
     assert parse_summary_from_region(None) is None
     blank = np.full((200, 400, 3), 255, dtype=np.uint8)
     assert parse_summary_from_region(blank) is None
+
+
+def test_km_number_unit_split_by_same_row_element() -> None:
+    """大字号数值与小字号单位被 OCR 切块后，同行右邻元素会打断
+    idx+1 邻接（2026-11-25 虹桥样本实测 OCR 顺序：「4.33」→
+    「成绩24km/h」→「干米」）——同行几何绑定必须兜住。
+
+    注意「成绩24km/h」自身不能成为 km 候选（km 后跟 /，配速排除），
+    「24千米/时」同理。
+    """
+    from app.ride_summary import parse_ride_summary
+
+    items = _boxed(
+        ["联系官方", "晒路线"],
+        ["骑行", "4.33", "成绩24km/h", "干米"],
+        ["最慢", "最快"],
+        ["00:10:37", "24千米/时", "70大卡"],
+        ["运动用时", "平均速度", "消耗热量"],
+    )
+    out = parse_ride_summary(items)
+    assert out["distance_km"] == 4.33
+    assert out["duration_s"] == 637
+    assert out["calories_kcal"] == 70.0
+
+
+def test_km_number_unit_split_no_geometry_falls_back_to_adjacency() -> None:
+    """无几何框（纯字符串输入）时保持 idx+1 邻接回退：数字块的下一
+    块是纯单位块仍是候选。"""
+    from app.ride_summary import parse_ride_summary
+
+    out = parse_ride_summary(_items("骑行", "3.68", "干米"))
+    assert out["distance_km"] == 3.68

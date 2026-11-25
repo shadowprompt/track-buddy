@@ -265,12 +265,29 @@ def parse_ride_summary(
         # 数字与单位被 OCR 切成两块（高德「3.68」+「干米」）：数字块的
         # 下一块是纯单位块时也构成候选（标签绑定逻辑不变，仍按数字块
         # 的近邻找标签）。
-        if (_RE_PURE_NUMBER.match(norm) and idx + 1 < len(tokens)
-                and _RE_UNIT_TOKEN.match(_norm_token(tokens[idx + 1]))):
+        if _RE_PURE_NUMBER.match(norm):
             try:
-                km_cands.append((idx, float(norm)))
+                val = float(norm)
             except ValueError:
                 continue
+            hit = (idx + 1 < len(tokens)
+                   and _RE_UNIT_TOKEN.match(_norm_token(tokens[idx + 1])))
+            if not hit:
+                # ⚠️ idx+1 邻接假设会被同行右邻块打破：大字号数值与
+                # 小字号单位字体不同，RapidOCR 常切成两块，但同一行
+                # 还有其它卡片元素（实测「4.33」+「成绩24km/h」+
+                # 「干米」三块同行，单位块不是 next）——退而用几何框
+                # 做同行绑定（纵向重叠 + 水平间距上限，_row_gap）。
+                if boxes and len(boxes) == len(tokens) and boxes[idx]:
+                    for j, tj in enumerate(tokens):
+                        if j == idx or not _RE_UNIT_TOKEN.match(
+                                _norm_token(tj)):
+                            continue
+                        if _row_gap(boxes[idx], boxes[j]) is not None:
+                            hit = True
+                            break
+            if hit:
+                km_cands.append((idx, val))
     if km_cands and _dist_pat:
         val, label = _bind_labeled(tokens, km_cands, _dist_pat, boxes)
         out["distance_km"] = val

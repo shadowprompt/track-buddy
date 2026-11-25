@@ -513,6 +513,7 @@ class RidePipeline:
         distance_hint_km: float | None = None,
         img_is_prepared: bool = False,
         prep_meta: dict | None = None,
+        full_img: np.ndarray | None = None,
     ) -> PipelineResult:
         """识别入口：外层只负责「词典写入会话」的生命周期。
 
@@ -536,7 +537,117 @@ class RidePipeline:
         meta（``prepare_input_image`` 的返回值第二项），用于把生效的
         裁剪/归一化写进 diagnostics——server 路径此前不记录裁剪，
         overlay 反投影会整体画偏（裁掉多少偏多少）。
+
+        ``full_img``：``img_is_prepared=True`` 时调用方可附上**原始整屏
+        图**，供「裁剪窗口放宽重试」使用（见 ``_should_retry_wide``）。
+        CLI / 直跑路径不传——管线自己准备的图，原图本来就在手里。
+
+        裁剪放宽重试（2026-11-25）：画像的 ``map_crop_v`` 是按标定样本
+        实测的固定窗口，但 App 卡片布局随版本/内容变化——实测高德新
+        截图地图区占 56% 高度，固定 44% 窗口把终点徽章、虹桥站标注和
+        轨迹下段全部切在裁剪线以下，配准必然失败。画像新增
+        ``map_crop_v_alt``（放宽窗口）；当首跑出现**截断证据**（终点
+        徽章缺失 / 轨迹 bbox 贴裁剪底边 ≥90% / 整体失败）时，用放宽
+        窗口整体重跑一次，取更好者。标定样本的首跑路径零改动。
         """
+        result = self._run_once(
+            img, city=city, allow_online=allow_online,
+            output_crs=output_crs, refine=refine, road_names=road_names,
+            skip_template_recall=skip_template_recall,
+            distance_hint_km=distance_hint_km,
+            img_is_prepared=img_is_prepared, prep_meta=prep_meta,
+        )
+
+        # --- 裁剪窗口放宽重试 -------------------------------------
+        base = img if full_img is None else full_img
+        alt = getattr(self.cfg.vision, "map_crop_v_alt", None)
+        if (
+            base is not None and alt
+            and (not prep_meta
+                 or (prep_meta.get("crop_v") or None) != tuple(alt))
+        ) and self._should_retry_wide(result):
+            try:
+                import copy as _copy
+
+                v2 = _copy.copy(self.cfg.vision)
+                v2.map_crop_v = tuple(alt)
+                img2, prep2 = prepare_input_image(base, v2)
+                # hint 继承：显式入参优先，其次首跑从概要条解析出的值
+                hint2 = distance_hint_km
+                if hint2 is None:
+                    hint2 = getattr(self, "_resolved_distance_hint_km", None)
+                r2 = self._run_once(
+                    img2, city=city, allow_online=allow_online,
+                    output_crs=output_crs, refine=refine,
+                    road_names=road_names,
+                    skip_template_recall=skip_template_recall,
+                    distance_hint_km=hint2,
+                    img_is_prepared=True, prep_meta=prep2,
+                )
+            except Exception:  # noqa: BLE001 — 重试失败不影响首跑结果
+                r2 = None
+            if r2 is not None and self._wide_better(r2, result):
+                first_conf = float(result.confidence)
+                result = r2
+                result.diagnostics = dict(result.diagnostics or {})
+                result.diagnostics["wide_crop_retry"] = {
+                    "applied": True,
+                    "crop_v": list(alt),
+                    "first_confidence": round(first_conf, 3),
+                }
+        return result
+
+    def _should_retry_wide(self, result: Any) -> bool:
+        """首跑结果是否存在「裁剪窗口切掉了地图内容」的证据。
+
+        判据（任一命中即重试）：
+        * 整体失败（无置信度 / 无轨迹点）；
+        * 起点徽章已定位但**终点徽章缺失**——整屏分享卡布局里终点
+          通常在地图区下部，缺失大概率是被裁剪线切掉；
+        * 轨迹 bbox 触到裁剪底边（≥90% prepared 高度）——轨迹被截断，
+          下游截断检测会禁用里程先验，先验恰恰是这种场景最需要的。
+        """
+        diag = result.diagnostics or {}
+        if result.confidence <= 0 or result.track_points <= 0:
+            return True
+        if diag.get("start_marker") is not None \
+                and diag.get("end_marker") is None:
+            return True
+        bbox = diag.get("bbox_px")
+        ph = (diag.get("vision_prep") or {}).get("prepared_hw")
+        if bbox and ph and ph[0]:
+            y1 = float(bbox[1]) + float(bbox[3])
+            if y1 >= 0.9 * float(ph[0]):
+                return True
+        return False
+
+    @staticmethod
+    def _wide_better(r2: Any, r1: Any) -> bool:
+        """放宽窗口的重试结果是否优于首跑。
+
+        规则保守：首跑失败时重试成功即换；两者都成功时要求轨迹点
+        明显更多（≥1.2×）才换——宽窗口引入卡片 UI 的风险用「宁缺
+        勿换」对冲。
+        """
+        if r2.confidence <= 0 or r2.track_points <= 0:
+            return False
+        if r1.confidence <= 0 or r1.track_points <= 0:
+            return True
+        return r2.track_points >= r1.track_points * 1.2
+
+    def _run_once(
+        self,
+        img: np.ndarray,
+        city: str = "",
+        allow_online: bool = True,
+        output_crs: str = "WGS-84",
+        refine: bool = True,
+        road_names: list[str] | None = None,
+        skip_template_recall: bool = False,
+        distance_hint_km: float | None = None,
+        img_is_prepared: bool = False,
+        prep_meta: dict | None = None,
+    ) -> PipelineResult:
         prep: dict = {"crop_v": None, "prepared_hw": None, "original_hw": None}
         summary_strip: np.ndarray | None = None
         if not img_is_prepared:
@@ -567,6 +678,12 @@ class RidePipeline:
                     distance_hint_km = float(_fs["distance_km"])
             except Exception:  # noqa: BLE001
                 pass
+        # 解析结果暂存：放宽窗口重试走 img_is_prepared=True 路径，没有
+        # 概要条可解析——若不继承首跑的 hint，先验会在「恰恰最需要它」
+        # 的重试里缺席（2026-11-25 虹桥样本实测：首跑截断禁用先验是
+        # 正确的，重试不受截断影响，但 hint 断了，尺度偏小 25%）。
+        if distance_hint_km is not None:
+            self._resolved_distance_hint_km = float(distance_hint_km)
         self._last_prep = prep
         self._last_calibration = {
             "enabled": False, "status": "uncalibrated", "n_samples": 0,

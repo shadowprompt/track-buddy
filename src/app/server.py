@@ -1384,6 +1384,9 @@ async def recognize(
             # 拼接空间，逐图裁剪/缩放信息不适用）。
             img_is_prepared=True,
             prep_meta=None if paired_mode else prep_meta,
+            # 原始整屏图：供管线「裁剪窗口放宽重试」用（配对模式的
+            # 识别对象是拼接画布，逐图裁剪信息不适用，不传）。
+            full_img=None if paired_mode else full_img,
         )
     except Exception as exc:  # noqa: BLE001 — 兜底，避免单次请求打挂服务
         raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc

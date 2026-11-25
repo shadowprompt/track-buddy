@@ -975,5 +975,95 @@
    "verified": false,
    "last_confidence": 0.554
   }
+ ],
+ "上海虹桥站": [
+  {
+   "lon": 121.320081,
+   "lat": 31.193964,
+   "weight": 2.7,
+   "count": 12,
+   "city": "上海",
+   "source": "amap",
+   "address": "新虹街道申贵路1500号",
+   "verified": false,
+   "last_confidence": 0.3
+  }
+ ],
+ "仙霞西路": [
+  {
+   "lon": 121.367008,
+   "lat": 31.208505,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "长宁区",
+   "verified": false
+  },
+  {
+   "lon": 121.352846,
+   "lat": 31.20954,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "长宁区",
+   "verified": false
+  },
+  {
+   "lon": 121.335352,
+   "lat": 31.212217,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "闵行区",
+   "verified": false
+  }
+ ],
+ "宁虹路": [
+  {
+   "lon": 121.326654,
+   "lat": 31.211064,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "闵行区",
+   "verified": false
+  },
+  {
+   "lon": 121.312764,
+   "lat": 31.209179,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "闵行区",
+   "verified": false
+  },
+  {
+   "lon": 121.341791,
+   "lat": 31.212132,
+   "weight": 0.2,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "长宁区",
+   "verified": false
+  }
+ ],
+ "涞港星苑": [
+  {
+   "lon": 121.30061,
+   "lat": 31.199709,
+   "weight": 1.9999999999999998,
+   "count": 10,
+   "city": "上海",
+   "source": "amap",
+   "address": "新虹街道",
+   "verified": false,
+   "last_confidence": 0.3
+  }
  ]
 }

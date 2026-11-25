@@ -34,6 +34,10 @@ ROAD_SUFFIXES = (
 # 交通设施（地铁站等），图标锚点最可靠
 TRANSIT_SUFFIXES = ("号线", "地铁", "火车站", "高铁站", "机场", "客运站", "码头")
 
+# 双关后缀：既像路名又像 POI（「虹桥中心」写字楼 vs「XX中心」场馆路）。
+# 命中时按 POI 半权重参与配准，见 build_anchors 的双关后缀救援段。
+_DUAL_USE_POI_SUFFIXES = ("中心", "苑", "广场", "公园", "园")
+
 # 文本有效性过滤已抽到 ``app.anchor_filter``（可插拔）。本模块保留
 # ``is_ui_noise`` / ``is_ocr_garbage`` 两个名字作为兼容导出，供历史
 # 调用方与测试直接 import；实际规则在 anchor_filter.RuleFilter。
@@ -288,6 +292,18 @@ def build_anchors(
             continue
 
         if cat == "road":
+            # 双关后缀救援（2026-11-25 虹桥样本实测）：中心/苑/广场/
+            # 公园/园 既出现在路名里，也是**最常见的 POI 后缀**——
+            # 「虹桥中心」「涞港星苑」是标准点状 POI，判成 road 后不
+            # 参与配准，让注册只剩 1 个可靠锚点而整体失败。这类名字
+            # 改判 POI、半权重参与（路网类后缀 路/街/大道/高架/河港
+            # 江湖 不受影响，offset 中位 458px 的实测结论对它们不变）。
+            if text.endswith(_DUAL_USE_POI_SUFFIXES):
+                anchors.append(
+                    Anchor(name=text, px=it.cx, py=it.cy, kind="poi",
+                           weight=cfg.anchor_place_weight * 0.5)
+                )
+                continue
             # 道路名不参与配准，但仍记录为「区域校验」用
             anchors.append(
                 Anchor(name=text, px=it.cx, py=it.cy, kind="road",

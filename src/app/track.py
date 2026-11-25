@@ -244,6 +244,17 @@ def build_track_mask(
         mask = ((v < cfg.track_max_value) & (s < cfg.track_max_saturation)).astype(
             np.uint8
         )
+    # 近黑区域挖除：视频缩略图内嵌迷你地图的轨迹线与真轨迹同色系，
+    # 不挖除会被碎片串接接进主链（见 VisionConfig.track_mask_exclude_dark_v）。
+    _dark_v = getattr(cfg, "track_mask_exclude_dark_v", None)
+    if _dark_v:
+        # ⚠️ 必须 ×255 成 0/255：astype 直接得 0/1，bitwise_not(1)=254，
+        # `255 & 254 = 254` 非零——挖除会静默失效（2026-11-25 实测踩坑）。
+        dark = ((hsv[:, :, 2] < int(_dark_v)).astype(np.uint8)) * 255
+        if dark.any():
+            dark = cv2.dilate(
+                dark, disk_kernel(max(3, int(scale.badge_d) // 2)))
+            mask = cv2.bitwise_and(mask, cv2.bitwise_not(dark))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, disk_kernel(scale.close_kernel))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, disk_kernel(scale.open_kernel))
     return mask
