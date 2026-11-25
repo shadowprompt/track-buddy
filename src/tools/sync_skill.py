@@ -7,7 +7,7 @@
 每个目标目录下会生成::
 
     assets/ride_core/app/...        识别核心（app 包）
-    assets/ride_core/data/lexicon.json  本地地名词典
+    assets/ride_core/state/lexicon.json 本地地名词典
     assets/ride_core/requirements.txt   依赖清单
 
 技能脚本 `scripts/recognize.py` 优先使用打包进来的核心，找不到才回退到
@@ -44,12 +44,12 @@ def sync_one(target: str) -> str:
         shutil.rmtree(app_dst)
     shutil.copytree(os.path.join(SRC, "app"), app_dst, ignore=_ignore)
 
-    # 2) 词典
-    data_dst = os.path.join(core, "data")
-    os.makedirs(data_dst, exist_ok=True)
-    lex_src = os.path.join(ROOT, "data", "lexicon.json")
+    # 2) 词典（内核与主仓库同构：state/ 存持久状态，data/ 是运行产物）
+    state_dst = os.path.join(core, "state")
+    os.makedirs(state_dst, exist_ok=True)
+    lex_src = os.path.join(ROOT, "state", "lexicon.json")
     if os.path.exists(lex_src):
-        shutil.copy(lex_src, os.path.join(data_dst, "lexicon.json"))
+        shutil.copy(lex_src, os.path.join(state_dst, "lexicon.json"))
 
     # 3) 依赖清单
     shutil.copy(os.path.join(ROOT, "requirements.txt"),

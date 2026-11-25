@@ -3,7 +3,7 @@
 代码与数据分离
 --------------
 经核验的 POI 坐标、OCR 别名、剔除清单都是**地理/业务参考数据**，
-放在 `data/seed_lexicon.json`（也可用环境变量 `RIDE_SEED_LEXICON_JSON`
+放在 `state/seed_lexicon.json`（也可用环境变量 `RIDE_SEED_LEXICON_JSON`
 指向别处）。本模块只负责：
 
   1. WGS-84 → GCJ-02 转换；
@@ -27,7 +27,7 @@ from app.config import ROOT  # noqa: E402
 from app.geo.coords import wgs84_to_gcj02  # noqa: E402
 
 SEED_FILE_ENV = "RIDE_SEED_LEXICON_JSON"
-DEFAULT_SEED_FILE = os.path.join(ROOT, "data", "seed_lexicon.json")
+DEFAULT_SEED_FILE = os.path.join(ROOT, "state", "seed_lexicon.json")
 
 
 def load_seed(path: str | None = None) -> dict:
@@ -84,7 +84,7 @@ def main() -> None:
         if src:
             out.setdefault(normalize(alias), []).extend(dict(e) for e in src)
 
-    path = os.path.join(ROOT, "data", "lexicon.json")
+    path = os.path.join(ROOT, "state", "lexicon.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=1)

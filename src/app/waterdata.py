@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-DEFAULT_WATERS_FILE = ROOT / "data" / "waters.json"
+DEFAULT_WATERS_FILE = ROOT / "state" / "waters.json"
 WATERS_FILE_ENV = "RIDE_WATERS_JSON"
 
 

@@ -93,7 +93,7 @@ def inspect_lexicon(
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="词典跨源一致性检查")
-    ap.add_argument("--path", default=str(ROOT / "data" / "lexicon.json"))
+    ap.add_argument("--path", default=str(ROOT / "state" / "lexicon.json"))
     ap.add_argument("--sep", type=float, default=200.0,
                     help="跨源坐标距离阈值（米）")
     ap.add_argument("--out", help="写完整报告 JSON")

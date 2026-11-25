@@ -79,6 +79,7 @@ def test_config_root_in_vendor_layout(tmp_path: Path) -> None:
     """
     core = tmp_path / "ride_core"
     (core / "data").mkdir(parents=True)
+    (core / "state").mkdir()
     (core / "app").mkdir()
     # 只复制 config.py 与它依赖的 geo 包
     import shutil
@@ -86,7 +87,7 @@ def test_config_root_in_vendor_layout(tmp_path: Path) -> None:
     shutil.copytree(SRC / "app" / "geo", core / "app" / "geo")
     shutil.copy(SRC / "app" / "__init__.py", core / "app" / "__init__.py")
     shutil.copy(SRC / "app" / "config.py", core / "app" / "config.py")
-    (core / "data" / "lexicon.json").write_text("{}", encoding="utf-8")
+    (core / "state" / "lexicon.json").write_text("{}", encoding="utf-8")
 
     code = (
         "import sys; sys.path.insert(0, %r);"

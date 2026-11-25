@@ -46,6 +46,9 @@ SRC_ROOT = ROOT / "src" if (ROOT / "src" / "app").is_dir() else ROOT
 
 SAMPLES_DIR = ROOT / "samples"
 DATA_DIR = ROOT / "data"
+# state/：需要同步到服务器的持久状态（词典/模板飞轮、地理种子）。
+# data/ 是纯本地运行产物（uploads/runs/cache/last_result*），不上传。
+STATE_DIR = ROOT / "state"
 
 # 地图服务配置（合规：仅腾讯/高德/百度/天地图）
 # 优先级：环境变量 > .env 文件 > 本地词典（离线兜底）
@@ -278,10 +281,10 @@ class AppConfig:
     # ``SOURCE_PROFILE`` 环境变量），见下方 ``vision`` property。把画像
     # 参数写成字段会导致「切换画像后视觉参数不跟着变」的两套真相。
     # 词典库：本地地名词典，随使用积累
-    lexicon_path: Path = DATA_DIR / "lexicon.json"
+    lexicon_path: Path = STATE_DIR / "lexicon.json"
     # 轨迹模板库：成功识别的「像素折线 ↔ 地理折线」，含真实位置，不入库
-    template_path: Path = DATA_DIR / "route_templates.json"
-    feedback_path: Path = DATA_DIR / "feedback.json"
+    template_path: Path = STATE_DIR / "route_templates.json"
+    feedback_path: Path = STATE_DIR / "feedback.json"
     # 是否启用在线地理编码（无 key 时自动降级为纯本地词典模式）
     allow_online: bool = True
     # --- 可选的大模型（OpenAI 兼容协议）---

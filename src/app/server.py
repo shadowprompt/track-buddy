@@ -31,7 +31,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 from . import records
-from .config import CONFIG, DATA_DIR, ROOT, SRC_ROOT, load_dotenv
+from .config import CONFIG, DATA_DIR, ROOT, SRC_ROOT, STATE_DIR, load_dotenv
 from .cv_utils import imread_unicode
 from .pipeline import prepare_input_image
 # 保留这个模块级别名：既有回归测试通过 monkeypatch `server.stitch_images`
@@ -1918,7 +1918,7 @@ def lexicon() -> dict[str, Any]:
 @app.get("/api/lexicon/export")
 def lexicon_export() -> FileResponse:
     """导出词典为 JSON 文件。"""
-    path = DATA_DIR / "lexicon.json"
+    path = STATE_DIR / "lexicon.json"
     if not path.exists():
         raise HTTPException(status_code=404, detail="词典尚未建立")
     return FileResponse(path, media_type="application/json", filename="lexicon.json")

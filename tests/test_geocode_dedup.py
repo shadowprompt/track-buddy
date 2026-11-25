@@ -85,7 +85,7 @@ def test_real_lexicon_ningbo_station_deduped() -> None:
     """真实词库：「宁波站」三源沉淀应收敛为 1 个候选。"""
     from pathlib import Path
 
-    lex = Lexicon(Path("data/lexicon.json"))
+    lex = Lexicon(Path("state/lexicon.json"))
     out = lex.lookup("宁波站", "宁波")
     assert len(out) == 1, f"真实词库宁波站仍有 {len(out)} 个候选"
     assert out[0].source == "amap"
