@@ -93,6 +93,29 @@ def _registration(res: dict, sample: str):
     """
     img = imread_unicode(sample)
     dg = res.get("diagnostics") or {}
+    # pipeline 在入口做过地图区裁剪时（CLI / 直跑链路），这里对回读的
+    # 原截图做同样裁剪——配准模型的像素坐标是裁剪后空间的，不裁会把
+    # 绿线整体画偏（裁掉多少就偏多少）。
+    crop_frac = dg.get("map_crop_applied")
+    if crop_frac:
+        h = img.shape[0]
+        y0 = max(0, int(round(float(crop_frac[0]) * h)))
+        y1 = min(h, int(round(float(crop_frac[1]) * h)))
+        if y1 - y0 >= 16:
+            img = img[y0:y1].copy()
+    # 分辨率归一化（2026-11-25）：pipeline 在裁剪后把图缩放到画像参考
+    # 短边，配准模型的像素坐标是归一化空间的。这里按 diagnostics 记录
+    # 的 prepared_hw 精确复现同样的缩放，保证反投影逐像素对齐。
+    _vp = dg.get("vision_prep") or {}
+    _hw = _vp.get("prepared_hw") if isinstance(_vp, dict) else None
+    if _hw and len(_hw) == 2:
+        th, tw = int(_hw[0]), int(_hw[1])
+        if (img.shape[0], img.shape[1]) != (th, tw) and th > 0 and tw > 0:
+            img = cv2.resize(
+                img, (tw, th),
+                interpolation=cv2.INTER_AREA if th < img.shape[0]
+                else cv2.INTER_CUBIC,
+            )
     mtx = dg.get("model_matrix")
     trn = dg.get("model_translation")
     warn: list[str] = []
@@ -123,11 +146,27 @@ def _registration(res: dict, sample: str):
     return img, reg
 
 
+def _delivered_coords(res) -> list:
+    """取交付 GeoJSON 的 GCJ-02 坐标；配准失败时给出可读错误。
+
+    此处曾直接 ``res[\"geojson_gcj02\"][\"features\"][0]...``，配准失败时
+    以 ``KeyError: 'features'`` 冒泡，调用方把 confusing 的键名写进
+    warnings；统一在这里转成明确语义。
+    """
+    gj = (res.get("geojson_gcj02") or {}).get("features") or []
+    if not gj:
+        raise ValueError("无交付轨迹（地理配准失败），跳过 overlay/路网图")
+    coords = gj[0].get("geometry", {}).get("coordinates") or []
+    if not coords:
+        raise ValueError("交付轨迹为空，跳过 overlay/路网图")
+    return coords
+
+
 def build_overlay(res, sample: str, out_dir: str) -> str:
     res = _normalize(res)
     """把识别出的经纬度轨迹反投影回原截图，叠加显示。"""
     img, reg = _registration(res, sample)
-    gcj = res["geojson_gcj02"]["features"][0]["geometry"]["coordinates"]
+    gcj = _delivered_coords(res)
     # 注意：geojson_gcj02 里的坐标**已经是 GCJ-02**，不能再做 wgs84_to_gcj02，
     # 否则会重复叠加一次基准偏移（约 500 米 / 100+ 像素），画出来必然偏离轨迹。
     rec = np.array([
@@ -187,7 +226,7 @@ def build_road_verify(res, sample: str, out_dir: str) -> str:
     res = _normalize(res)
     img, reg = _registration(res, sample)
     from .roadfit import fetch_roads
-    gcj_all = res["geojson_gcj02"]["features"][0]["geometry"]["coordinates"]
+    gcj_all = _delivered_coords(res)
     lons = [c[0] for c in gcj_all]
     lats = [c[1] for c in gcj_all]
     bbox = (min(lons) - 0.008, min(lats) - 0.008,
@@ -277,7 +316,7 @@ def build_chart(res, sample: str, out_dir: str) -> str:
     from matplotlib.font_manager import FontProperties
     from matplotlib.patches import FancyArrowPatch
 
-    gcj = res["geojson_gcj02"]["features"][0]["geometry"]["coordinates"]
+    gcj = _delivered_coords(res)
     lat0 = math.radians(np.mean([c[1] for c in gcj]))
     kx = 111320.0 * math.cos(lat0)
     ky = 110574.0

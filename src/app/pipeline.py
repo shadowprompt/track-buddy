@@ -9,11 +9,12 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+import cv2
 import numpy as np
 
 from .calibration import apply_calibration
 from .config import AppConfig
-from .cv_utils import resample_polyline, simplify_polyline
+from .cv_utils import crop_map_region, resample_polyline, simplify_polyline
 from .geocode import Geocoder, Lexicon
 from .geo.coords import gcj02_to_wgs84, lonlat_to_mercator
 from .input_quality import (
@@ -25,7 +26,13 @@ from .input_quality import (
 )
 from .anchor_filter import ANCHOR_FILTER_ENV, get_filter
 from .ocr_anchor import Anchor, build_anchors, classify_text, ocr_texts
-from .register import AnchorPair, Registration, apply_to_polyline, register
+from .register import (
+    AnchorPair,
+    Registration,
+    apply_to_polyline,
+    register,
+    register_with_hint,
+)
 from .route_template import (
     SHAPE_DOMAIN_OVERVIEW,
     TEMPLATE_CONFIDENCE_CAP,
@@ -341,6 +348,120 @@ _BROAD_KINDS = ("district", "transit")
 _EXPRESSWAY_MARKERS = ("高速", "国道", "省道", "高架", "环线")
 
 
+def prepare_input_image(
+    img: np.ndarray, vision: Any
+) -> tuple[np.ndarray, dict]:
+    """画像级输入准备：地图区裁剪 + 分辨率归一化。
+
+    返回 ``(处理后的图, meta)``，meta 结构::
+
+        {"crop_v": tuple | None,      # 生效的 map_crop_v（原图高度比例）
+         "prepared_hw": [h, w] | None} # 归一化后的尺寸（未缩放则 None）
+
+    meta 随 diagnostics 下发（``vision_prep``；裁剪比例另发兼容键
+    ``map_crop_applied``），visuals 对回读原截图做同样变换以对齐像素
+    坐标空间。
+
+    两步变换的顺序约定：**先裁剪后缩放**——crop_v 比例相对整图高度，
+    在原图坐标系里解释；缩放只改变内容尺度，两者互不干扰。
+
+    分辨率归一化（``vision_ref_short_side``）：把输入等比缩放到画像
+    标定样本的短边。画像里一批按标定分辨率实测的绝对像素参数（徽章
+    面积窗口、行者 scale_badge_d 锁定值等）由此在任意分辨率下都回到
+    标定状态。2026-11-24 实测：小米 1.25× 等比截图上抹除半径/容差
+    全部失准，弧长少 25%、配准尺度爆炸。
+
+    为什么放在 pipeline 入口而不是各调用方：server 已经在拼接前逐图
+    准备（传 ``img_is_prepared=True`` + ``prep_meta`` 跳过），而
+    CLI / 直跑链路此前**完全不裁**——小米/高德整屏截图下部的概要
+    卡片与轨迹同色系，速度图例条（绿→红渐变）被当成起终点徽章、
+    卡片文案被当地理编码锚点，配准只能靠 UI 文本支撑（2026-11-23
+    小米实测）。
+    """
+    meta: dict = {
+        "crop_v": None, "prepared_hw": None,
+        # 原始输入尺寸：API 响应层把像素坐标反投影回原图时必需
+        #（前端「原始截图」叠绘画在完整原图上，见 backproject_prep_px）。
+        "original_hw": [int(img.shape[0]), int(img.shape[1])],
+    }
+    frac = getattr(vision, "map_crop_v", None)
+    if frac:
+        img = crop_map_region(img, vision)
+        meta["crop_v"] = tuple(float(x) for x in frac)
+    ref = getattr(vision, "vision_ref_short_side", None)
+    if ref:
+        short = min(img.shape[:2])
+        if abs(short - int(ref)) > 2:  # 2px 内不缩，避免无谓重采样
+            s = float(ref) / short
+            interp = cv2.INTER_AREA if s < 1.0 else cv2.INTER_CUBIC
+            img = cv2.resize(img, None, fx=s, fy=s, interpolation=interp)
+    # ⚠️ prepared_hw 必须始终记录实际尺寸（裁剪也算变换，不止缩放）。
+    # None 会让 API 响应层跳过像素坐标反投影——864 标定分辨率输入
+    # 恰好不触发缩放，但 image_size 仍需回到原图高度（2026-11-25
+    # 用户实测：绿线纵向拉伸 1.85×，因为前端拿裁剪高 1037 当原图高）。
+    meta["prepared_hw"] = [int(img.shape[0]), int(img.shape[1])]
+    return img, meta
+
+
+def backproject_prep_px(
+    points: Any,
+    crop_v: tuple[float, float] | None,
+    prepared_hw: list[int] | None,
+    original_hw: list[int] | None,
+) -> Any:
+    """把 prepared（裁剪+归一化）像素坐标反投影回**原图**坐标系。
+
+    正向变换（prepare_input_image）：先按 ``crop_v`` 裁出 ``ch`` 行，
+    再等比缩放 ``s`` 得到 prepared。反投影即：
+    ``orig_x = px / s``，``orig_y = py / s + y0``。
+
+    为什么必须有它：前端「原始截图」叠绘把像素坐标画在**完整原图**
+    上，而管线内部的像素坐标全部在 prepared 空间。裁剪不切宽度时
+    横向凑巧不偏，但纵向比例 = 原图高 / 裁剪高（小米 1920/1037 ≈
+    1.85×）——绿线纵向被拉伸、环下坠、尾线冲出红标（2026-11-25
+    用户实测两次复现）。模板/内部链路继续用 prepared 坐标，只有
+    API 响应层做此换算。
+
+    ``original_hw`` 缺失（旧结果/模板派生）时返回 ``None``，调用方
+    保持原字段不动（兼容旧数据）。
+    """
+    if not original_hw or not prepared_hw:
+        return None
+    try:
+        oh, ow = int(original_hw[0]), int(original_hw[1])
+        ph, pw = int(prepared_hw[0]), int(prepared_hw[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if min(oh, ow, ph, pw) <= 0:
+        return None
+    s = ow / pw
+    y0 = float(crop_v[0]) * oh if crop_v else 0.0
+
+    def _bp(p: Any) -> Any:
+        if isinstance(p, (list, tuple)) and len(p) >= 2:
+            try:
+                return [float(p[0]) / s, float(p[1]) / s + y0]
+            except (TypeError, ValueError):
+                return p
+        return p
+
+    def _walk(x: Any) -> Any:
+        # 折线是 [[x, y], ...]；锚点是 {"px":..,"py":..}
+        if isinstance(x, list):
+            if x and isinstance(x[0], (list, tuple)):
+                return [_bp(p) for p in x]
+            return _bp(x)
+        if isinstance(x, dict):
+            out = dict(x)
+            if "px" in out and "py" in out:
+                bp = _bp([out["px"], out["py"]])
+                out["px"], out["py"] = bp[0], bp[1]
+            return out
+        return x
+
+    return _walk(points)
+
+
 class RidePipeline:
     """完整的识别流水线。"""
 
@@ -366,6 +487,10 @@ class RidePipeline:
         }
         # 最近一次配准的内点地名（规范化后），供词典写入做锚点级证据裁决。
         self._last_anchor_keys: set[str] = set()
+        # 最近一次 run() 实际生效的地图区裁剪比例（None = 未裁）。
+        # server 调用方自行裁剪（img_is_prepared=True），CLI / 直跑由
+        # run() 内部补裁；visuals 据此对齐像素坐标空间。
+        self._last_prep: dict = {"crop_v": None, "prepared_hw": None}
         # 大模型是**可选增强**：没配 LLM_BASE_URL/LLM_API_KEY 就完全跳过，
         # 现有行为一字不变。
         self.llm = None
@@ -386,6 +511,8 @@ class RidePipeline:
         road_names: list[str] | None = None,
         skip_template_recall: bool = False,
         distance_hint_km: float | None = None,
+        img_is_prepared: bool = False,
+        prep_meta: dict | None = None,
     ) -> PipelineResult:
         """识别入口：外层只负责「词典写入会话」的生命周期。
 
@@ -395,7 +522,52 @@ class RidePipeline:
 
         因此本轮所有**自动**写入先排队，等 ``_run_impl()`` 算出最终
         置信度与自洽诊断后再统一裁决落盘；用户显式纠正不排队、立即写。
+
+        ``img_is_prepared``：调用方是否已经做过画像级的输入准备（地图区
+        裁剪 + 分辨率归一化，见 ``prepare_input_image``）。server 在拼
+        接前逐图准备，传 True 避免二次处理；CLI / 直跑 pipeline 的调用
+        方不准备，这里统一补上——小米/高德这类整屏截图的概要卡片与轨迹
+        同色系（速度图例条就是绿→红渐变），不裁会被当成起终点徽章与锚
+        点（2026-11-23 小米实测：图例条两端被定位成起(213,1335)/终
+        (612,1335)，配准仅靠「活动卡路里/运动时长」两个 UI 文本支撑，
+        RMSE 260m）。
+
+        ``prep_meta``：``img_is_prepared=True`` 时调用方准备时拿到的
+        meta（``prepare_input_image`` 的返回值第二项），用于把生效的
+        裁剪/归一化写进 diagnostics——server 路径此前不记录裁剪，
+        overlay 反投影会整体画偏（裁掉多少偏多少）。
         """
+        prep: dict = {"crop_v": None, "prepared_hw": None, "original_hw": None}
+        summary_strip: np.ndarray | None = None
+        if not img_is_prepared:
+            full_img = img
+            img, prep = prepare_input_image(img, self.cfg.vision)
+            # 被裁掉的底部统计条保留：没传概要图时它是里程/时长先验的
+            # 唯一来源（小米「13.09 公里 / 00:59:52」就印在主截图底部）。
+            _frac = getattr(self.cfg.vision, "map_crop_v", None) or None
+            if _frac:
+                try:
+                    _y0 = int(float(_frac[1]) * full_img.shape[0])
+                    if full_img.shape[0] - _y0 >= 40:
+                        summary_strip = full_img[_y0:]
+                except Exception:  # noqa: BLE001 — 兜底失败不影响主流程
+                    summary_strip = None
+        elif prep_meta:
+            prep = {
+                "crop_v": prep_meta.get("crop_v"),
+                "prepared_hw": prep_meta.get("prepared_hw"),
+                "original_hw": prep_meta.get("original_hw"),
+            }
+        if distance_hint_km is None and summary_strip is not None:
+            try:
+                from .ride_summary import parse_summary_from_region
+
+                _fs = parse_summary_from_region(summary_strip)
+                if _fs and _fs.get("distance_km"):
+                    distance_hint_km = float(_fs["distance_km"])
+            except Exception:  # noqa: BLE001
+                pass
+        self._last_prep = prep
         self._last_calibration = {
             "enabled": False, "status": "uncalibrated", "n_samples": 0,
             "note": "本次未计算置信度（早退路径）",
@@ -417,6 +589,28 @@ class RidePipeline:
             raise
 
         diag = dict(result.diagnostics or {})
+        if self._last_prep.get("crop_v"):
+            # 记录生效的裁剪比例：visuals（overlay / road_verify / chart）
+            # 据此对回读的原截图做同样的裁剪，保证像素坐标空间一致。
+            diag["map_crop_applied"] = [
+                float(x) for x in self._last_prep["crop_v"]
+            ]
+        if self._last_prep.get("prepared_hw"):
+            # 分辨率归一化后的尺寸：visuals 把原图裁剪区缩放到该尺寸，
+            # 反投影像素坐标才与配准模型对齐。
+            diag["vision_prep"] = {
+                "prepared_hw": [
+                    int(self._last_prep["prepared_hw"][0]),
+                    int(self._last_prep["prepared_hw"][1]),
+                ],
+                # 原始输入尺寸：API 响应层把像素坐标反投影回原图坐标系
+                # 时必需（前端「原始截图」叠绘，见 backproject_prep_px）。
+                "original_hw": (
+                    [int(self._last_prep["original_hw"][0]),
+                     int(self._last_prep["original_hw"][1])]
+                    if self._last_prep.get("original_hw") else None
+                ),
+            }
         iq = diag.get("input_quality") or {}
         guard = self.lexicon.flush_capture(
             confidence=result.confidence,
@@ -690,19 +884,55 @@ class RidePipeline:
         # （2026-11-17 街区级特写实测：6 个自洽锚点在候选里，
         #  2 点退化模型仍被「支队亲」这类垃圾锚点拉爆到 31 m/px，
         #  真值约 0.5）。物理里程不会撒谎，投不过它时以它为准。
+        #
+        # ⚠️ 先验有一个隐含假设：**截图包含轨迹全程**。用户把详情页
+        # 地图放大（局部视图）或轨迹被底部卡片截断时，可见弧长只是
+        # 全程的一小段，先验会虚胖数倍——实测余姚 13.09km 跑步样本：
+        # 可见弧长仅 ~4km，先验 9.9 m/px（真值 ~3.1），把正确的
+        # 余姚锚点簇挤出尺度容差窗，同名异地簇（宁波江北）乘虚而入。
+        # 检测：轨迹下缘贴近裁剪区底部（≥90% 高度）即视为局部视图，
+        # 先验不参与定尺度（交由 register_with_hint 的回退逻辑）。
+        track_clipped = False
+        if len(track.polyline) >= 2:
+            _bx, _by, _bw, _bh = track.bbox
+            if _by + _bh >= 0.90 * float(img.shape[0]):
+                track_clipped = True
         external_prior = None
         hint_km = distance_hint_km or ocr_distance_km
-        if hint_km and hint_km > 0 and len(track.polyline) >= 2:
+        if (
+            hint_km and hint_km > 0 and len(track.polyline) >= 2
+            and not track_clipped
+        ):
             pl = np.asarray(track.polyline, dtype=float)
             track_px = float(np.linalg.norm(
                 np.diff(pl, axis=0), axis=1).sum())
             if track_px >= 20.0:
                 external_prior = hint_km * 1000.0 / track_px
-        reg = register(
+        if track_clipped and hint_km:
+            warnings.append(
+                "轨迹延伸出截图可视范围（被屏幕边缘/信息卡片截断），"
+                "可见部分只是全程的一段：概要里程不再用于推算比例尺，"
+                "几何里程小于概要里程属预期现象。"
+            )
+        # 城市提示 bbox：城市内候选簇优先于同名异地簇（见
+        # register_with_hint）。bbox 来自冷启动的行政区划数据。
+        city_bbox = None
+        if city and city.strip():
+            try:
+                from .coldstart import get_cold_start
+                _cold = get_cold_start(
+                    str(self.cfg.road_cache_dir / "coldstart.json")
+                )
+                city_bbox = _cold.city_bbox(city.strip())
+            except Exception:  # noqa: BLE001 —— 拿不到 bbox 就退回纯几何
+                city_bbox = None
+        reg = register_with_hint(
             pairs,
             inlier_m=cfg.ransac_inlier_m,
             min_inliers=cfg.ransac_min_inliers,
             external_scale_prior=external_prior,
+            city_bbox=city_bbox,
+            city_name=city.strip(),
         )
         warnings.extend(reg.notes)
         if not reg.ok:
@@ -899,8 +1129,13 @@ class RidePipeline:
         # 固定路网的，先校准再吸附才能两全。
         scale_calibration: dict[str, Any] | None = None
         _prior_km = distance_hint_km or ocr_distance_km
+        # ⚠️ 局部视图（track_clipped）下禁止校准：几何里程 < 概要里程
+        # 是「可见弧长只是全程一段」的必然结果，不是提取丢段。绕质心
+        # 放大只会把轨迹拉出锚点钉住的真实范围（实测余姚样本被 ×1.6
+        # 拉到 8.8km，超出截图可视区域覆盖的实际走廊）。
         if (_prior_km and _prior_km > 0 and len(simplified) >= 50
-                and lonlat_gcj and len(lonlat_gcj) >= 2):
+                and lonlat_gcj and len(lonlat_gcj) >= 2
+                and not track_clipped):
             from .geo.coords import haversine as _hav
 
             _geom_m = sum(
@@ -1391,22 +1626,36 @@ class RidePipeline:
 
         # ---- 在线地理编码源的失败原因必须让用户看到 ----
         #
-        # 单源严格模式下，若配置的那家（默认高德）不可用，
-        # 结果其实是靠**本地词典 + OSM 冷启动**兜出来的。
-        # 不提示的话，用户会以为「配了高德就一直在用高德」，
-        # 实际是每次都在失败——这正是「配置哪个就用哪个，失败直接提示」
-        # 要解决的现象。
+        # 两种降级形态都要提示（2026-11-25 用户实测「配了高德却在用
+        # 百度」毫无提示的教训）：
+        # - 部分降级：高德配额超限 → 百度接单。结果仍是在线的，但
+        #   已不是配置的首选源，用户必须知道；
+        # - 完全降级：所有在线源都失败 → 本地词典 + OSM 冷启动兜底。
         online_err = getattr(self.geocoder, "_last_error", "")
         online_failed = list(getattr(self.geocoder, "_online_failures", []))
         if online_failed:
             # 去重后只留前 3 条，避免刷屏
             uniq = list(dict.fromkeys(online_failed))[:3]
-            warnings.append(
-                "在线地理编码不可用，已降级到本地词典与 OSM 冷启动："
-                + "；".join(uniq)
-                + "。如需更换服务商，在 .env 设置 MAP_GEOCODING_ORDER"
-                "（如 tianditu 或 amap,tianditu）后无需重启即可生效。"
-            )
+            served_online = {
+                p.source for p in pairs
+                if p.source in ("amap", "tmap", "baidu", "tianditu")
+            }
+            if served_online:
+                # 部分降级：仍有在线源在服务，但不是首选的那家
+                fallback = "、".join(sorted(served_online))
+                warnings.append(
+                    f"首选地理编码源不可用（{'；'.join(uniq)}），"
+                    f"本次编码由 {fallback} 兜底：同名 POI 的坐标口径"
+                    "可能与首选源有 30-70m 系统偏差。"
+                    "如需调整顺序，在 .env 设置 MAP_GEOCODING_ORDER。"
+                )
+            else:
+                warnings.append(
+                    "在线地理编码不可用，已降级到本地词典与 OSM 冷启动："
+                    + "；".join(uniq)
+                    + "。如需更换服务商，在 .env 设置 MAP_GEOCODING_ORDER"
+                    "（如 tianditu 或 amap,tianditu）后无需重启即可生效。"
+                )
 
         # --- 诊断明细：每个候选名的地理编码结局 ------------------------
         #
@@ -2338,6 +2587,15 @@ class RidePipeline:
             max_shift_m=float(self.cfg.road_fit_max_shift_m),
             shift_span_ratio=float(self.cfg.road_fit_shift_span_ratio),
             anchor_points_m=np.asarray(anchor_residuals, dtype=float),
+            # 锚点证据可信度降级：内点跨源混用（基准打架）或残差呈
+            # 系统性方向（坐标源整体偏移）时，锚点残差主要反映基准
+            # 噪声而非配准错误，锚点一致性护栏不再有否决权（2026-11-25
+            # 余姚实测：混源解 RMSE 128m，路网想东移 200m 贴路被护栏
+            # 误拒，轨迹停在楼块上）。
+            anchors_reliable=not (
+                (getattr(reg, "source_bias", {}) or {}).get("warning")
+                or (getattr(reg, "anchor_bias", {}) or {}).get("systematic")
+            ),
             anchor_guard_m=float(self.cfg.road_fit_anchor_guard_m),
             anchor_worsen_m=float(self.cfg.road_fit_anchor_worsen_m),
             anchor_worsen_ratio=float(self.cfg.road_fit_anchor_worsen_ratio),

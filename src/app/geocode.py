@@ -864,6 +864,11 @@ class Geocoder:
                 online = []
                 errors.append(f"{pname}: {type(exc).__name__}: {exc}")
             if online:
+                # ⚠️ 后面的源兜底成功 ≠ 前面的源没失败。必须把前面源的
+                # 失败原因登记进来再返回，否则「高德配额超限 → 百度接单」
+                # 会完全静默——用户以为一直在用高德（2026-11-25 实测事故：
+                # 用户问「配置是高德优先吧，怎么还在用百度」）。
+                self._register_source_errors(errors, misses)
                 return online
             # 记录这个源的失败原因
             impl = self._impl.get(pname)
@@ -877,9 +882,23 @@ class Geocoder:
                 # 所以单独归类，不与真正的错误（配额/鉴权）混在一起。
                 misses.append(pname)
 
+        self._register_source_errors(errors, misses)
+        # 单源模式：失败就返回空，让上层提示，不再换源
+        return []
+
+    def _register_source_errors(
+        self, errors: list[str], misses: list[str]
+    ) -> None:
+        """把本轮各源的真实失败原因登记到实例状态，供上层提示。
+
+        与调用结局无关（后面有没有源兜底成功都要登记）：
+        - ``_last_error``：最近一次失败原因（/api/health 展示）；
+        - ``_online_failures``：本轮识别周期内发生过的失败（pipeline
+          据此生成「部分降级」警告）。
+        纯 miss（地名查不到）不登记——那不是故障。
+        """
         if errors:
             self._last_error = "；".join(errors[:3])
-            # 记录「这一轮失败过」，供 pipeline 判断结果是否降级而来
             for e in errors:
                 if e not in self._online_failures:
                     self._online_failures.append(e)
@@ -889,8 +908,6 @@ class Geocoder:
             # 实测天地图模式下明明查得到东方明珠，却仍显示上一次的
             # 「高德配额超限」。
             self._last_error = ""
-        # 单源模式：失败就返回空，让上层提示，不再换源
-        return []
 
     def _in_city_bounds(self, lon: float, lat: float, city: str) -> bool:
         """写回词典前校验坐标落在该城市已核验点的核心范围。

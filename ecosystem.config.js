@@ -28,7 +28,7 @@ const path = require('path');
 const ROOT = __dirname;
 const PYTHON = process.env.RIDE_PYTHON ||
   path.join(ROOT, '.venv', 'bin', 'python');
-const HOST = process.env.RIDE_HOST || '127.0.0.1';
+const HOST = process.env.RIDE_HOST || '0.0.0.0';
 const PORT = String(process.env.RIDE_PORT || '8848');
 
 module.exports = {

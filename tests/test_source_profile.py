@@ -43,7 +43,8 @@ def test_default_profile_is_meituan_with_legacy_values() -> None:
     assert v.end_hsv_range == (0, 90, 90, 12, 255, 255)
     assert v.end_hsv_range2 == (170, 90, 90, 179, 255, 255)
     assert (v.track_max_value, v.track_max_saturation) == (200, 90)
-    assert (v.track_close_kernel, v.track_open_kernel) == (11, 5)
+    # 美团标定样本短边 1260（分辨率归一化目标）
+    assert v.vision_ref_short_side == 1260
     assert v.ransac_inlier_m == 200.0
     # 里程词表 = 原 input_quality 模块常量（原样迁移，一字不差）
     assert src.distance_positive == (
@@ -115,12 +116,13 @@ def test_base_diagnostics_carries_source_profile() -> None:
 
 
 def test_profiles_registry_matches_registered_ids() -> None:
-    """注册表内容锁定：meituan（默认）+ amap + xingzhe。
+    """注册表内容锁定：meituan + amap + xingzhe + xiaomi。
 
-    amap（2026-11-16）/ xingzhe（2026-11-17）均按真实样本精标；此处锁
-    「结构完整性」——每个来源都必须显式给出区间式轨迹掩膜。
+    amap / xingzhe 按真实样本精标；xiaomi 是 2026-11-23 首张真实截图
+    驱动的可测试初版。此处锁「结构完整性」——每个来源都必须显式注册，
+    且不能因新增来源而静默删除既有画像。
     """
-    assert set(PROFILES) == {"meituan", "amap", "xingzhe"}
+    assert set(PROFILES) == {"meituan", "amap", "xingzhe", "xiaomi"}
 
 
 def test_amap_profile_initial_params_locked() -> None:
@@ -143,7 +145,8 @@ def test_amap_profile_initial_params_locked() -> None:
     # 终点徽章与轨迹红段分离；洋红端关闭（红心装饰误判源）
     assert v.end_hsv_range == (0, 110, 110, 7, 255, 255)
     assert v.end_hsv_range2 == (0, 0, 0, 0, 0, 0)
-    assert (v.track_close_kernel, v.track_open_kernel) == (11, 5)
+    # 2026-11-25 补测：标定样本 1260×2720，map_crop_v 裁剪后短边 1020
+    assert v.vision_ref_short_side == 1020
     assert v.ransac_inlier_m == 200.0
     # 干扰词必须含累计类文案（个人页统计混入详情页是高德的主要干扰源）
     assert "累计" in src.distance_negative

@@ -439,3 +439,29 @@ def parse_summary_image_bytes(data: bytes) -> dict[str, Any] | None:
     except Exception:  # noqa: BLE001 — 概要解析失败不影响轨迹主流程
         return None
     return parse_ride_summary(texts, ride_labels=CONFIG.source.ride_labels)
+
+
+def parse_summary_from_region(img: "Any") -> dict[str, Any] | None:
+    """对**图像区域**（而非完整截图）做概要解析；无可解析字段返回 None。
+
+    典型用途：小米运动健康等 App 把「13.09 公里 / 00:59:52 / 开始时间」
+    直接印在**主截图**底部的统计卡片上，而画像带 ``map_crop_v`` 时
+    pipeline/server 会把这片区域裁掉——用户没单独传概要图时，尺度
+    先验与物理闸门全部失明，2 锚点模型的尺度爆炸无人拦截（2026-11-24
+    网页实测：同一条小米轨迹落点偏出 ~40km，CLI 因传了 --summary 而
+    正确，差异完全在这个先验）。调用方负责裁出被裁掉的底部条带。
+    """
+    if img is None or getattr(img, "size", 0) == 0:
+        return None
+    try:
+        from .ocr_anchor import ocr_texts
+
+        texts = ocr_texts(img, CONFIG.vision)
+        if not texts:
+            return None
+        out = parse_ride_summary(texts, ride_labels=CONFIG.source.ride_labels)
+    except Exception:  # noqa: BLE001 — 兜底解析失败不影响主流程
+        return None
+    if not out or not out.get("available"):
+        return None
+    return out

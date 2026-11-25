@@ -145,7 +145,12 @@ def _detect_markers_ex(
     # （2026-11-21 实测）。解法：枚举蓝×红候选的所有配对，取距离落在
     # [下限, 上限] 内、且面积之和最大的一对——真徽章对面积/位置双优，
     # 而「面板蓝 + 指北针红」相距 837px 直接被上限排除。
-    if getattr(cfg, "loop_course", False):
+    # ⚠️ 小米等来源的起终点相距百余 px（棒棒糖走廊），相邻约束不成立，
+    # 会把走廊上的红色轨迹块配成「终点」（2026-11-23 余姚样本：配到
+    # (363,852)，真徽章在 (324,929)）——用 pair_loop_badges=False 关闭，
+    # 回退常规「面积最大」检测。
+    if (getattr(cfg, "loop_course", False)
+            and getattr(cfg, "pair_loop_badges", True)):
         start_cands = find_marker_candidates(
             hsv, [cfg.start_hsv_range],
             cfg.badge_min_area, cfg.badge_max_area, min_fill=min_fill,
@@ -248,6 +253,7 @@ def _endpoint_fragment_mask(
     mask: np.ndarray,
     end_pt: tuple[int, int] | None,
     cfg: VisionConfig,
+    badge_d: float | None = None,
 ) -> tuple[int, np.ndarray]:
     """检测终点徽章邻域内、与主轨迹断开的轨迹碎片。
 
@@ -257,18 +263,28 @@ def _endpoint_fragment_mask(
 
     闭环管线（``loop_course=True``）用碎片掩膜做桥接接入；开环时上层只用
     像素数做诊断报告。
-    ``cfg.endpoint_fragment_detect`` 结构：``(radius_px, min_area_px)``。
+    参数来源：``cfg.endpoint_fragment_detect_rel`` = (radius_per_badge,
+    min_area_per_badge_d2)，按内容尺度换算（需传入 badge_d）；未配置时
+    回退绝对像素形式 ``cfg.endpoint_fragment_detect`` = (radius_px,
+    min_area_px)（标定分辨率专用）。
     未配置 / 无终点时返回 ``(0, 空掩膜)``。
     """
     empty = np.zeros_like(mask)
-    spec = getattr(cfg, "endpoint_fragment_detect", None)
-    if not spec or end_pt is None:
+    if end_pt is None:
         return 0, empty
-    radius, min_area = spec[:2]
+    rel = getattr(cfg, "endpoint_fragment_detect_rel", None)
+    spec = getattr(cfg, "endpoint_fragment_detect", None)
+    if rel and badge_d:
+        radius = float(rel[0]) * float(badge_d)
+        min_area = float(rel[1]) * float(badge_d) ** 2
+    elif spec:
+        radius, min_area = spec[:2]
+    else:
+        return 0, empty
     h, w = mask.shape[:2]
     ex, ey = int(end_pt[0]), int(end_pt[1])
-    x1, y1 = max(0, ex - radius), max(0, ey - radius)
-    x2, y2 = min(w, ex + radius), min(h, ey + radius)
+    x1, y1 = max(0, int(round(ex - radius))), max(0, int(round(ey - radius)))
+    x2, y2 = min(w, int(round(ex + radius))), min(h, int(round(ey + radius)))
     if x2 <= x1 or y2 <= y1:
         return 0, empty
 
@@ -295,13 +311,14 @@ def detect_endpoint_fragment(
     mask: np.ndarray,
     end_pt: tuple[int, int] | None,
     cfg: VisionConfig,
+    badge_d: float | None = None,
 ) -> int:
     """检测终点徽章邻域内、与主轨迹断开的轨迹碎片像素数（诊断接口）。
 
     闭环赛道（``loop_course=True``）下该碎片会被桥接进主轨迹，见
     ``extract_track``；开环时仅报告。详见 ``_endpoint_fragment_mask``。
     """
-    total, _ = _endpoint_fragment_mask(mask, end_pt, cfg)
+    total, _ = _endpoint_fragment_mask(mask, end_pt, cfg, badge_d=badge_d)
     return total
 
 
@@ -684,7 +701,8 @@ def extract_track(
     mask = build_track_mask(img, cfg, scale)
     if not loop_mode:
         # 开环：终点折返段仅检测报告（强行接入会乱线/里程虚高，§24.8）
-        frag_px = detect_endpoint_fragment(mask, end_pt, cfg)
+        frag_px = detect_endpoint_fragment(
+            mask, end_pt, cfg, badge_d=scale.badge_d)
         if frag_px > 0:
             notes.append(
                 f"检测到终点邻域折返碎片 {frag_px}px（疑似「跑两遍」的末段，"
@@ -698,7 +716,8 @@ def extract_track(
         notes.extend(bridge_notes)
         if comp is not None:
             # 终点邻域碎片桥接接入：被「终」徽章+定位点遮挡的进出段
-            frag_px, frag_mask = _endpoint_fragment_mask(mask, end_pt, cfg)
+            frag_px, frag_mask = _endpoint_fragment_mask(
+                mask, end_pt, cfg, badge_d=scale.badge_d)
             if frag_px > 0:
                 cy_, cx_ = np.where(comp > 0)
                 tree_c = cKDTree(np.column_stack([cx_, cy_]).astype(float))
@@ -764,7 +783,30 @@ def extract_track(
     # 骨架化 → 提取中心线
     line = comp.copy()
     line = cv2.morphologyEx(line, cv2.MORPH_CLOSE, disk_kernel(scale.skeleton_kernel))
+    # 抹除起终点徽章/定位点团块：小米的绿定位点与红徽章颜色落在轨迹
+    # 色带内，掩膜里形成 ~26px 厚团块——骨架化后生出辐条，邮路 walk
+    # 在团块里原地徘徊（余姚样本底段 153px 直线走了 518px，弧长虚高
+    # ~20%，连带尺度校准失准）。抹除后骨架端点直指徽章中心，缺口由
+    # _reconnect_marker_blobs 按邻域像素向中心连弦补线。
+    erase_r = int(getattr(cfg, "erase_marker_blobs_r", 0) or 0)
+    # 分辨率归一化：抹除半径是按某一参考分辨率实测的像素值，而徽章
+    # 直径（scale.badge_d）是实测内容尺度——两者同源，比值即缩放系数。
+    # 2026-11-24 实测：1080×2400 = 864×1920 的 1.25× 等比图，45px 固定
+    # 半径挖不净花瓣晕圈，骨架生出「绕洞的环」，walk 弧长虚高且
+    # 棒棒糖重排因锚点容差超限整体失效。标定基准由
+    # ``marker_erase_ref_badge_d`` 给出（= 标定那张图的实测 badge_d）。
+    _erase_ref_d = getattr(cfg, "marker_erase_ref_badge_d", None)
+    if erase_r > 0 and _erase_ref_d:
+        erase_r = int(round(erase_r * scale.badge_d / float(_erase_ref_d)))
+    blob_marks = []
+    if erase_r > 0 and loop_mode:
+        for bp in (start_pt, end_pt):
+            if bp is not None:
+                blob_marks.append(bp)
+                cv2.circle(line, (int(bp[0]), int(bp[1])), erase_r, 0, -1)
     skeleton = _thin(line)
+    if blob_marks:
+        _reconnect_marker_blobs(skeleton, blob_marks, erase_r)
     pts = np.argwhere(skeleton > 0)
     if len(pts) == 0:
         pts = np.argwhere(comp > 0)
@@ -854,7 +896,7 @@ def extract_track(
 
     polyline = None
     if loop_mode and skeleton is not None:
-        polyline = _trace_loop_path(skeleton, end_pt)
+        polyline = _trace_loop_path(skeleton, end_pt, badge_d=scale.badge_d)
         if polyline is not None and len(polyline) >= 10:
             arc = float(np.linalg.norm(np.diff(polyline, axis=0), axis=1).sum())
             notes.append(
@@ -862,6 +904,22 @@ def extract_track(
                 "（中国邮路：奇度配对自动把重合往返段计两遍，"
                 "起点=终点，无跳步）"
             )
+            # 棒棒糖路线（起点/终点在走廊上且不重合）：邮路 walk 只覆盖
+            # 每条边一次，走廊不翻倍、欧拉端点落在环底结点/末端尖角而非
+            # 真实起终点。按语义重排为 起点→走廊→环→走廊→起点→终点。
+            if (getattr(cfg, "split_loop_delivery", False)
+                    and start_pt is not None and end_pt is not None):
+                reordered = _lollipop_order(
+                    polyline, start_pt, end_pt, badge_d=scale.badge_d)
+                if reordered is not None:
+                    polyline = reordered
+                    arc2 = float(np.linalg.norm(
+                        np.diff(polyline, axis=0), axis=1).sum())
+                    notes.append(
+                        "棒棒糖路线交付排序：起点→走廊→环→走廊→起点→终点"
+                        f"，{len(polyline)} 点，弧长 {arc2:.0f}px"
+                        "（走廊计两遍=原路返回，端点对齐起终点徽章）"
+                    )
         elif polyline is not None:
             polyline = None
     if polyline is None:
@@ -879,6 +937,112 @@ def extract_track(
         confidence=round(confidence, 3),
         notes=notes,
     )
+
+
+def _reconnect_marker_blobs(
+    skeleton: np.ndarray,
+    marks: list[tuple[int, int]],
+    erase_r: int,
+) -> None:
+    """团块抹除后把骨架缺口接回徽章中心（就地修改）。
+
+    抹除在掩膜上开了半径 ``erase_r`` 的孔：路线末端（红徽章）只从一侧
+    进入，补到中心即得到干净的 deg-1 端点；路线中段（绿定位点在走廊上）
+    从两侧进入，各向中心连弦形成直通。比 ``_bridge_skeleton_breaks``
+    （max_geo=15px）能补更大的孔，且端点精确落在徽章中心。
+    """
+    ys, xs = np.where(skeleton > 0)
+    if len(ys) == 0:
+        return
+    P = np.column_stack([xs, ys]).astype(float)
+    for mx, my in marks:
+        d = np.hypot(P[:, 0] - mx, P[:, 1] - my)
+        ring = np.where((d >= erase_r - 1) & (d <= erase_r + 6))[0]
+        if len(ring) == 0:
+            continue
+        # 环带像素按 8-连通性分侧（像素数少，BFS 足够）：只有中段点
+        # （走廊穿过定位点）会有 ≥2 侧，末端点只有 1 侧。
+        ring_set = {tuple(int(v) for v in P[i]) for i in ring}
+        sides: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+        for seed in list(ring_set):
+            if seed in seen:
+                continue
+            comp = [seed]
+            seen.add(seed)
+            dq = deque([seed])
+            while dq:
+                cx, cy = dq.popleft()
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        q = (cx + dx, cy + dy)
+                        if q in ring_set and q not in seen:
+                            seen.add(q)
+                            comp.append(q)
+                            dq.append(q)
+            j = min(
+                comp,
+                key=lambda t: (t[0] - mx) ** 2 + (t[1] - my) ** 2,
+            )
+            sides.append(j)
+        for sx, sy in sides[:3]:
+            cv2.line(skeleton, (sx, sy), (int(mx), int(my)), 1, 1)
+
+
+def _lollipop_order(
+    polyline: np.ndarray,
+    start_pt: tuple[int, int],
+    end_pt: tuple[int, int],
+    badge_d: float | None = None,
+) -> np.ndarray | None:
+    """棒棒糖路线交付排序（loop_course + split_loop_delivery）。
+
+    邮路 walk 形如 ``[尖端 → 起点 → 走廊 → 环底结点 → 环 → 环底结点]``：
+    终端（walk[-1]）在途中被访问过两次（j 处）。真实跑法是
+    ``起点 → 走廊 → 环 → 走廊 → 起点 → 终点``，全部片段都在 walk 里：
+
+        walk[S:j+1]            起点→走廊→结点
+        walk[j:]               结点→环→结点
+        walk[S:j][::-1]        结点→走廊→起点（走廊第二遍）
+        walk[0:S+1][::-1]      起点→尖端（=终点）
+
+    条件不满足（结构不符 / 起终点不在 walk 上）返回 None 回退原 walk。
+
+    ``badge_d``：实测内容尺度（徽章直径）。锚点/重访容差曾是固定像素
+    （30/6px，按 864×1920 标定），2026-11-24 在 1.25× 等比截图上
+    walk 头部离红徽章 46px > 30px，重排整体失效、弧长少 25%。改为
+    badge_d 相对值：锚点容差 ≈0.95×badge_d（徽章团块抹除半径的量级），
+    重访容差 ≈0.15×badge_d。
+    """
+    p = polyline
+    n = len(p)
+    if n < 20:
+        return None
+    if badge_d:
+        tol_revisit = max(6.0, badge_d * 0.15)
+        tol_anchor = max(30.0, badge_d * 0.95)
+    else:
+        tol_revisit, tol_anchor = 6.0, 30.0
+    # walk 终端必须是途中 revisit 的点
+    tail = p[-1]
+    d_tail = np.hypot(p[:-1, 0] - tail[0], p[:-1, 1] - tail[1])
+    j = int(np.argmin(d_tail))
+    if d_tail[j] > tol_revisit or j < 10 or j > n - 10:
+        return None
+    d_s = np.hypot(p[:j, 0] - start_pt[0], p[:j, 1] - start_pt[1])
+    S = int(np.argmin(d_s))
+    if S < 5 or S > j - 5 or d_s[S] > tol_anchor:
+        return None
+    d_e = np.hypot(p[0, 0] - end_pt[0], p[0, 1] - end_pt[1])
+    if d_e > tol_anchor:
+        # 终点徽章不在 walk 头部：结构不符，回退
+        return None
+    return np.vstack([
+        p[S:j + 1],           # 起点→走廊→环底结点
+        p[j:],                # 结点→环→结点
+        p[S:j][::-1],         # 结点→走廊→起点（走廊第二遍=原路返回）
+        p[0:S + 1][::-1],     # 起点→尖端（红徽章=终点）
+    ])
 
 
 def _thin(mask: np.ndarray) -> np.ndarray:
@@ -1039,6 +1203,8 @@ def _weld_skeleton_parts(skeleton: np.ndarray, max_gap: float = 20.0) -> int:
             break
         groups: dict[tuple[int, int], list[tuple[int, int]]] = {}
         for p, c in comp_of.items():
+            if c not in groups:
+                groups[c] = []
             groups[c].append(p)
         keys = sorted(groups, key=lambda k: -len(groups[k]))
         big = groups[keys[0]]
@@ -1113,13 +1279,15 @@ def _bridge_skeleton_breaks(skeleton: np.ndarray, max_geo: float = 15.0) -> int:
 def _trace_loop_path(
     skeleton: np.ndarray,
     anchor_pt: tuple[int, int],
+    badge_d: float | None = None,
 ) -> np.ndarray | None:
     """闭环赛道专用：清理骨架 + 中国邮路追踪，返回有序折线（像素坐标）。
 
     ``skeleton`` 会被就地修改（压薄/焊接/桥接）。流程：
       1. 压薄 2px 带 → 焊接分量 → 桥接断口（循环至稳定）；
-      2. 奇度节点贪心最短路配对（复制 ≤100px；更长的对视为自然开放端，
-         即被起终点徽章遮挡的「起点=终点」衔接处）；
+      2. 奇度节点贪心最短路配对（复制 ≤2.4×badge_d，标定图上 ≈100px；
+         更长的对视为自然开放端，即被起终点徽章遮挡的「起点=终点」
+         衔接处）；
       3. 复制路径入多重图，Hierholzer 栈式遍历（起点取开放端或锚点）；
       4. 输出像素级 walk（每步 1-1.4px，无跳步，首尾=起终点）。
     失败（骨架为空 / 不连通且 gap 超限）返回 None，上层回退开环排序。
@@ -1182,8 +1350,13 @@ def _trace_loop_path(
     degs = {i: len(adj[i]) for i in range(n)}
     oddset = {i for i in range(n) if degs[i] % 2 == 1}
 
-    # 奇度配对：全局贪心最近对，成本 ≤100px；超出的一对作为自然开放端
-    # （起终点徽章遮挡处——起点=终点语义下 walk 从一端头走到另一端头）。
+    # 奇度配对：全局贪心最近对，成本 ≤ 配对上限；超出的一对作为自然
+    # 开放端（起终点徽章遮挡处——起点=终点语义下 walk 从一端头走到
+    # 另一端头）。上限曾是固定 100px（864×1920 标定），2026-11-24 在
+    # 1.25× 等比截图上几何距离同比例放大，固定上限会相对收紧、把本该
+    # 桥接的真断口误判为开放端。改为 badge_d 相对值：2.4×badge_d 在
+    # 标定图上 ≈100px（行为不变），其余分辨率随内容尺度缩放。
+    pair_cap = max(100.0, badge_d * 2.4) if badge_d else 100.0
     pairs: list[tuple[int, int]] = []
     open_ends: list[int] = []
     cand: list[tuple[float, int, int]] = []
@@ -1199,7 +1372,7 @@ def _trace_loop_path(
     for c, s, t in cand:
         if s in used or t in used:
             continue
-        if c > 100.0 and len(open_ends) < 2:
+        if c > pair_cap and len(open_ends) < 2:
             open_ends = [s, t]
             used |= {s, t}
             continue

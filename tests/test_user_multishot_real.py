@@ -83,7 +83,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from app.config import CONFIG  # noqa: E402
 from app.multishot import stitch  # noqa: E402
+from app.pipeline import prepare_input_image  # noqa: E402
+from app.source_profile import AMAP  # noqa: E402
 from app.track import extract_track  # noqa: E402
+
+# 带独立画像标定的样本：默认 CONFIG（美团口径）不适用，须走对应画像 +
+# prepare_input_image（裁剪/归一化）后再提取
+_PROFILE_SAMPLES = {"amap_ride_shanghai.jpg": AMAP}
 
 UPLOADS = "data/uploads"
 
@@ -210,7 +216,12 @@ def test_real_samples_not_broken() -> None:
         im = cv2.imread(f)
         if im is None:
             continue
-        tr = extract_track(im, CONFIG.vision)
+        profile = _PROFILE_SAMPLES.get(os.path.basename(f))
+        if profile is not None:
+            im, _meta = prepare_input_image(im, profile.vision)
+            tr = extract_track(im, profile.vision)
+        else:
+            tr = extract_track(im, CONFIG.vision)
         bad = [n for n in tr.notes if "形状不合理" in n]
         assert not bad, f"{os.path.basename(f)} 被形状检查误伤：{bad[0][:80]}"
         assert len(tr.polyline) > 50, (

@@ -1642,7 +1642,11 @@ __WB_AMAP_SDK__
       }
 
       // 轨迹
-      const pts = d.track_polyline_px || [];
+      // 轨迹折线：优先用 track_polyline_img_px（服务端已反投影回原图
+      // 坐标系，与 image_size 同空间）。旧版服务端只回 prepared 坐标
+      // （裁剪+归一化空间），画在完整原图上会纵向拉伸——小米画像
+      // map_crop_v=(0,0.54) 时绿线纵向拉伸 1.85×（2026-11-25 用户实测）。
+      const pts = d.track_polyline_img_px || d.track_polyline_px || [];
       if (pts.length > 1) {
         ctx.strokeStyle = '#00e05a';
         ctx.lineWidth = 3;

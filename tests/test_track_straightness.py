@@ -100,4 +100,4 @@ def test_pipeline_wires_the_warning_and_diagnostic() -> None:
     assert "track_straightness=round(straightness, 3)" in PIPELINE_SRC
     # 必须在配准之前算完，不能依赖 reg / geojson
     assert PIPELINE_SRC.index("straightness = _track_straightness") < \
-        PIPELINE_SRC.index("reg = register(")
+        PIPELINE_SRC.index("reg = register_with_hint(")

@@ -555,3 +555,42 @@ def test_amap_duration_prefers_stat_card_over_topbar_cumulative() -> None:
     # 裸「米」已支持（2026-11-17 补）：标签绑定取「骑行」大卡的 352米，
     # 「爬升里程 157米」「爬升高度 4米」被几何/索引绑定排除。
     assert out["distance_km"] == pytest.approx(0.352)
+
+
+def test_attach_ride_summary_accepts_preparsed_without_file() -> None:
+    """主截图底部卡片兜底解析（没传概要文件）也要进 payload 并驱动闸门。
+
+    2026-11-24 网页实测：小米截图不传概要图时尺度先验/物理闸门全部
+    失明，2 锚点模型落点偏出约 40km；兜底解析结果必须与上传概要
+    同等对待。
+    """
+    from app import server as S
+
+    payload = _gj_payload()
+    payload["distance_m"] = 13192.5
+    pre = {
+        "distance_km": 13.09,
+        "duration_s": 3592,
+        "calories_kcal": 831.0,
+        "started_at": "2025-01-19T10:03:00",
+        "available": True,
+        "notes": ["未单独传概要图：已从主截图底部统计卡片解析出运动概要"],
+    }
+    asyncio.run(S._attach_ride_summary(payload, None, pre_parsed=pre))
+    rs = payload["ride_summary"]
+    assert rs["distance_km"] == pytest.approx(13.09)
+    assert rs["duration_s"] == 3592
+    assert "cross_check" in rs
+    # 13.19km vs 13.09km 在软区间内，不得误杀
+    assert payload.get("ok", True) is True
+
+
+def test_parse_summary_from_region_rejects_blank() -> None:
+    """空图/None 直接返回 None，绝不抛异常影响主流程。"""
+    import numpy as np
+
+    from app.ride_summary import parse_summary_from_region
+
+    assert parse_summary_from_region(None) is None
+    blank = np.full((200, 400, 3), 255, dtype=np.uint8)
+    assert parse_summary_from_region(blank) is None

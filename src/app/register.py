@@ -330,6 +330,28 @@ def _haversine(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
     return haversine(lon1, lat1, lon2, lat2)
 
 
+# 物理尺度护栏（地面米/像素）。手机截图上的可读地图范围约
+# 0.05（街道级特写）到 40（大都市全域）米/像素；超出该范围的
+# 「解」必然是同名异地候选拼凑出来的伪解——实测余姚样本：
+# 两个错候选相距 15 公里 / 像素距离 330px，投票出 102 m/px 的
+# 伪尺度，north_up_2pt 兜底模型照样给了「自洽」解。
+_SCALE_GROUND_MIN = 0.05
+_SCALE_GROUND_MAX = 40.0
+
+
+def _ground_scale(reg: "Registration") -> float:
+    """Registration 的墨卡托尺度换算成地面米/像素。"""
+    lats = [p.lat for p in reg.inliers if p.lat is not None]
+    if not lats:
+        return float("inf")
+    mean_lat = float(np.mean(lats))
+    return float(reg.scale) * math.cos(math.radians(mean_lat))
+
+
+def _scale_physically_plausible(reg: "Registration") -> bool:
+    return _SCALE_GROUND_MIN <= _ground_scale(reg) <= _SCALE_GROUND_MAX
+
+
 def _estimate_scale_prior(
     src: np.ndarray,
     dst: np.ndarray,
@@ -838,6 +860,7 @@ def register(
     inlier_m: float = 120.0,
     min_inliers: int = 3,
     external_scale_prior: float | None = None,
+    _skip_vote_prior: bool = False,
 ) -> Registration:
     """像素→墨卡托配准。
 
@@ -864,6 +887,9 @@ def register(
       * 两者一致（<35%）→ 用投票先验（更精细），容差保持 12%。
     """
     notes: list[str] = []
+    # 外部先验是否参与了本轮搜索（决定失败时能否降级重试：
+    # 只有投票先验才允许丢弃重试，外部先验必须诚实失败）
+    _prior_from_external = bool(external_scale_prior and external_scale_prior > 0)
     valid_all = [p for p in pairs if p.lon is not None and p.lat is not None]
     # OCR 残片路名（截断地名）会在 road 的 800m 容差下混进内点，
     # 把 RMSE 和尺度一起带偏。它们必须**不进入 RANSAC**，但仍保留在
@@ -924,7 +950,10 @@ def register(
     #
     # 所以先用可靠锚点单独拟合出一个尺度，再把它作为先验
     # 去约束全锚点的模型搜索。
-    scale_prior, prior_groups = _estimate_scale_prior(src, dst, groups, kinds)
+    scale_prior, prior_groups = (
+        (None, []) if _skip_vote_prior
+        else _estimate_scale_prior(src, dst, groups, kinds)
+    )
 
     # --- 外部尺度先验融合（见 docstring 的融合规则） ---
     prior_tol = 0.12
@@ -987,7 +1016,7 @@ def register(
                 fixed_scale=scale_prior, kinds=kinds,
             )
             key0 = (consistent0, -med_loo0)
-            best_reg = Registration(
+            reg0 = Registration(
                 ok=True,
                 matrix=m0,
                 translation=t0,
@@ -999,9 +1028,12 @@ def register(
                 n_reliable=len(reps0),
                 model="north_up",
             )
-            best_key = key0
-            best_n_anchor = len(reps0)
-            alternatives.append(best_reg)
+            # 物理尺度护栏：先验路径的解同样不能超出真实截图的可能尺度
+            if _scale_physically_plausible(reg0):
+                best_reg = reg0
+                best_key = key0
+                best_n_anchor = len(reps0)
+                alternatives.append(best_reg)
 
     for model_name, fitter, min_pts, required in models:
         if len(groups) < min_pts:
@@ -1040,6 +1072,11 @@ def register(
             n_reliable=len(rel),
             model=model_name,
         )
+        # 物理尺度护栏：同名异地候选可以拼出任意大的伪尺度解
+        # （实测 102 m/px 的伪解拿到了 2 个「自洽」内点），不设防
+        # 就会顶掉物理上正确的解。
+        if not _scale_physically_plausible(cand_reg):
+            continue
         alternatives.append(cand_reg)
         # 物理优先级：**列表里第一个成立且达标的模型就是最优解**。
         # 美团地图默认正北朝上，north_up 是物理真值；高自由度模型
@@ -1055,6 +1092,23 @@ def register(
             best_n_anchor = n_anchor
 
     if best_reg is None:
+        # 尺度投票可能被同名异地候选整体带偏（实测余姚样本：城市内垃圾
+        # 候选投出 91 m/px，把 ~3 m/px 的正确解锁在窗外，所有模型在
+        # 投票窗内找不到物理上合理的解）。投票来源的先验全军覆没时，
+        # 丢弃投票降级重试一轮纯几何枚举——仍有物理尺度护栏兜底。
+        # ⚠️ 外部先验（概要里程）不适用此回退：它与锚点簇矛盾时必须
+        # 诚实失败（2026-11-17 契约——垃圾锚点簇也能凑出低 RMSE，
+        # 背叛先验会救回伪解）。
+        if not _skip_vote_prior and scale_prior is not None and not _prior_from_external:
+            retry = register(
+                pairs, inlier_m=inlier_m, min_inliers=min_inliers,
+                external_scale_prior=None, _skip_vote_prior=True,
+            )
+            if retry.ok:
+                retry.notes.append(
+                    "锚点尺度投票不可信，已按纯几何枚举降级求解"
+                )
+                return retry
         return Registration(
             ok=False,
             notes=notes + ["配准失败：所有模型均未找到足够的内点"],
@@ -1173,6 +1227,167 @@ def register(
             "可在前端「换个位置」中切换"
         )
     return reg
+
+
+def register_with_hint(
+    pairs: list[AnchorPair],
+    inlier_m: float = 120.0,
+    min_inliers: int = 3,
+    external_scale_prior: float | None = None,
+    city_bbox: tuple[float, float, float, float] | None = None,
+    city_name: str = "",
+) -> Registration:
+    """带外部提示的配准编排层（不改变 register 本身的几何判据）。
+
+    两类提示都可能救回「几何自洽但地点错误」的解——同名 POI 在
+    多个城市各有候选，每簇内部都可能像素自洽，纯几何挑不出真簇：
+
+    * **城市提示先验**：用户明确说了截图来自哪个城市（如「余姚」）。
+      若城市 bbox 内存在 ≥2 个锚点组的候选，单独跑一次城市内配准；
+      当全量解的内点落在城市之外（= 同名异地簇获胜）时，以城市内解
+      为准，全量解降级为「换个位置」备选。实测余姚样本：宁波江北的
+      同名「姜庵」簇像素自洽（RMSE 261m），把轨迹拉到 30 公里外；
+      城市内解落在余姚凤山街道，与地名志一致。
+
+    * **概要先验降级回退**（已废弃）：原计划在先验解质量差时改用无先验
+      几何解，但这违背 2026-11-17 的契约——「外部先验是权威，锚点簇
+      与先验矛盾时不许背叛先验」（同名异地垃圾簇照样能凑出低 RMSE）。
+      局部视图场景由管线层的截断检测解决（track_clipped → 先验不传
+      进来），城市纠偏由城市提示路径解决，此处不再二次裁决。
+
+    决策顺序：城市内解 > 全量解。落选解一律进入
+    ``alternatives``，前端「换个位置」仍可切换。
+    """
+    reg_full = register(
+        pairs, inlier_m=inlier_m, min_inliers=min_inliers,
+        external_scale_prior=external_scale_prior,
+    )
+    chosen = reg_full
+    rejected: list[Registration] = []
+
+    def _mean_pos(r: Registration) -> tuple[float, float] | None:
+        pts = [(p.lon, p.lat) for p in r.inliers
+               if p.lon is not None and p.lat is not None]
+        if not pts:
+            return None
+        return (
+            float(np.mean([p[0] for p in pts])),
+            float(np.mean([p[1] for p in pts])),
+        )
+
+    def _in_city(pos: tuple[float, float] | None) -> bool:
+        if pos is None or city_bbox is None:
+            return False
+        w, s, e, n = city_bbox
+        return w <= pos[0] <= e and s <= pos[1] <= n
+
+    city_used = False
+    if city_bbox is not None:
+        in_city_pairs = [
+            p for p in pairs
+            if p.lon is not None and p.lat is not None
+            and city_bbox[0] <= p.lon <= city_bbox[2]
+            and city_bbox[1] <= p.lat <= city_bbox[3]
+        ]
+        n_city_groups = len(_group_candidates(in_city_pairs))
+        if n_city_groups >= 2:
+            # 几何优先：先验可能正是错误来源（局部视图虚胖）。
+            reg_city = register(
+                in_city_pairs, inlier_m=inlier_m, min_inliers=min_inliers,
+                external_scale_prior=None,
+            )
+            if not reg_city.ok and external_scale_prior:
+                reg_city = register(
+                    in_city_pairs, inlier_m=inlier_m, min_inliers=min_inliers,
+                    external_scale_prior=external_scale_prior,
+                )
+            _city_ok = (
+                reg_city.ok
+                and len({p.name for p in reg_city.inliers}) >= 2
+                and reg_city.rmse_reliable_m <= 300.0
+            )
+            if _city_ok:
+                full_pos = _mean_pos(reg_full)
+                # 全量解内点整体落在城市之外 → 同名异地簇获胜，纠正之；
+                # 或全量解根本没解出来 → 城市内解是唯一可用解。
+                if not reg_full.ok or (
+                    full_pos is not None and not _in_city(full_pos)
+                ):
+                    adopted = reg_city
+                    rejected.append(reg_full)
+                    if reg_full.ok:
+                        adopted.notes.append(
+                            f"城市提示「{city_name or '用户指定'}」参与锚点取舍："
+                            "全量候选的几何自洽簇落在提示城市之外"
+                            "（同名异地 POI），已优先采用城市范围内的锚点簇"
+                        )
+                    chosen = adopted
+                    city_used = True
+                elif (reg_full.ok and reg_city.rmse_reliable_m
+                        < reg_full.rmse_reliable_m * 0.5
+                        and _in_city(_mean_pos(reg_city))):
+                    # 两解都在城内/不确定时，几何质量显著更优者胜
+                    adopted = reg_city
+                    rejected.append(reg_full)
+                    adopted.notes.append(
+                        "城市内锚点簇的配准质量显著优于全量解"
+                        f"（RMSE {reg_city.rmse_reliable_m:.0f}m vs "
+                        f"{reg_full.rmse_reliable_m:.0f}m），已采用前者"
+                    )
+                    chosen = adopted
+                    city_used = True
+
+    # 单源统一重配：内点混用多个坐标源且基准互相打架时（spread 超阈），
+    # 混源解的位置被拉向各源系统性偏差的加权平均——实测余姚样本：
+    # 百度候选整体西偏 ~191m，把 north_up 解又拖偏几十米，路网精修
+    # 想东移 200m 贴路又被锚点护栏挡住。用主源候选单独重配：基线
+    # 一致性的收益远大于内点数减少的代价——锚点位置本身就有 100m 级
+    # 噪声，RMSE 的微小变化不构成否决理由。
+    if chosen.ok and not city_used:
+        sb = getattr(chosen, "source_bias", {}) or {}
+        dom = sb.get("dominant") or ""
+        if sb.get("warning") and dom:
+            dom_pairs = [
+                p for p in pairs
+                if p.source == dom and p.lon is not None and p.lat is not None
+            ]
+            if len(dom_pairs) >= min_inliers * 2:
+                reg_dom = register(
+                    dom_pairs, inlier_m=inlier_m, min_inliers=min_inliers,
+                    external_scale_prior=external_scale_prior,
+                )
+                if (
+                    reg_dom.ok
+                    and reg_dom.n_reliable >= 2
+                    and len(reg_dom.inliers) >= min_inliers
+                    and reg_dom.rmse_reliable_m
+                    <= chosen.rmse_reliable_m * 2.0 + 50.0
+                ):
+                    rejected.append(chosen)
+                    reg_dom.notes.append(
+                        f"内点混用 {len(sb['by_source'])} 个坐标源"
+                        f"（平均残差相距 {sb['spread_m']:.0f}m），"
+                        f"已统一为 {dom} 单源重配：消除跨源基准偏差，"
+                        f"RMSE {chosen.rmse_reliable_m:.0f}m → "
+                        f"{reg_dom.rmse_reliable_m:.0f}m"
+                    )
+                    chosen = reg_dom
+
+    # 落选解进入备选（「换个位置」）。register 内部已做 300 米间隔
+    # 去重，这里只做浅拼接到已选解的 alternatives。
+    extra: list[Registration] = []
+    for r in rejected:
+        if not r.ok:
+            continue
+        if r is chosen:
+            continue
+        extra.append(r)
+    if extra:
+        chosen.alternatives = list(chosen.alternatives) + [
+            r for r in extra if r not in chosen.alternatives
+        ]
+    return chosen
+
 
 def apply_to_polyline(
     reg: Registration, polyline_px: np.ndarray

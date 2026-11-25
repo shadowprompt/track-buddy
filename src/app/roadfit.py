@@ -417,6 +417,7 @@ def refine_with_roads(
     sample_m: float = 6.0,
     shift_span_ratio: float = 0.15,
     anchor_points_m: np.ndarray | None = None,
+    anchors_reliable: bool = True,
     anchor_guard_m: float = 100.0,
     anchor_worsen_m: float = 80.0,
     anchor_worsen_ratio: float = 2.5,
@@ -454,6 +455,17 @@ def refine_with_roads(
     if len(polyline_px) < 3 or not roads:
         result.notes.append("轨迹或路网数据不足，跳过路网精修")
         return result
+
+    # 轨迹直线度（弦长/总长）：直线轨迹对「平移贴路」没有判别力——
+    # 直线与任何平行路都能贴合（2026-11-17 假阳性的根源）；弯折轨迹
+    # 的每个转弯都是形状证据，错误平移不可能让所有转弯同时贴合。
+    # 该值只用于下面的「决定性贴路改善」判据，不影响任何搜索行为。
+    _pl = np.asarray(polyline_px, dtype=float)
+    _len = float(np.linalg.norm(np.diff(_pl, axis=0), axis=1).sum())
+    _straightness = (
+        min(1.0, float(np.linalg.norm(_pl[-1] - _pl[0])) / _len)
+        if _len > 1e-6 else 1.0
+    )
 
     net = RoadNetwork(roads, sample_m=sample_m)
     if len(net) < 50:
@@ -561,13 +573,46 @@ def refine_with_roads(
         # 结果：同一段合理平移，锚点基线越小，相对放大倍数越大，反而
         # 越容易被判成「破坏锚点一致性」而误拒。锚点不可信时仍由位移
         # 比例护栏与贴路改善判据兜底，不会失去防止「搬到平行路」的能力。
-        anchor_reliable = before_anchor <= anchor_guard_m
-        anchor_bad = anchor_reliable and (
-            after_anchor > before_anchor + anchor_worsen_m
-            or (
-                before_anchor > 0
-                and after_anchor > before_anchor * anchor_worsen_ratio
-                and after_anchor > anchor_guard_m
+        anchor_reliable = anchors_reliable and before_anchor <= anchor_guard_m
+        if not anchors_reliable:
+            # 锚点证据本身不可信（跨源基准混用 / 系统性偏移）时，
+            # 「残差被平移放大」不构成否决理由：残差大主要反映的是
+            # 基准噪声而非配准错误，此时由位移限幅与贴路改善判据兜底。
+            result.notes.append(
+                "锚点存在跨源基准混用或系统性偏移，"
+                "锚点一致性护栏本次降级不参与否决"
+            )
+        # 决定性贴路改善：弯折轨迹（直线度 < 0.75，起终点重合的闭环
+        # 轨迹弦长≈0，天然满足）经单次刚体平移把全线压到路网极近处
+        # （改善 ≥85% 且绝对值 ≤15m）时，形状信息已经完成判别——
+        # 错误的平行路平移不可能让一条弯折轨迹的所有转弯同时贴合，
+        # 而直线轨迹没有这种判别力（保持原契约，见下方否决分支）。
+        # 此时锚点残差被放大只说明 POI 文字标注点位有排版偏移
+        # （常见 100m+），不足以推翻路网几何证据。
+        # 2026-11-25 余姚实测：单源重配后锚点残差 74m（可信），但
+        # 候选平移 东240m/北70m 把贴路中位 87m → 6m，被旧护栏误拒，
+        # 轨迹整体停在楼块上 200m+。
+        decisive_snap = (
+            _straightness < 0.75
+            and before >= 60.0
+            and after <= max(15.0, before * 0.15)
+        )
+        if decisive_snap:
+            result.notes.append(
+                f"贴路改善具有决定性（{before:.0f}m → {after:.0f}m、"
+                f"直线度 {_straightness:.2f}）：形状判别力已排除平行路"
+                "假阳性，锚点残差放大不构成否决理由"
+            )
+        anchor_bad = (
+            anchor_reliable
+            and not decisive_snap
+            and (
+                after_anchor > before_anchor + anchor_worsen_m
+                or (
+                    before_anchor > 0
+                    and after_anchor > before_anchor * anchor_worsen_ratio
+                    and after_anchor > anchor_guard_m
+                )
             )
         )
         if anchor_bad:

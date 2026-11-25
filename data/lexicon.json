@@ -25,6 +25,17 @@
    "address": "威宁路276弄1~20号",
    "verified": false,
    "last_confidence": 0.2
+  },
+  {
+   "lon": 121.386201,
+   "lat": 31.212014,
+   "weight": 0.5,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "威宁路276弄1号-20号(威宁路地铁站4号口步行480米)",
+   "verified": false,
+   "last_confidence": 0.35
   }
  ],
  "上海西站": [
@@ -125,6 +136,17 @@
    "address": "先锋街66号(龙柏新村地铁站3号口步行330米)",
    "verified": false,
    "last_confidence": 0.892
+  },
+  {
+   "lon": 121.3737444935737,
+   "lat": 31.17713185918589,
+   "weight": 0.5,
+   "count": 1,
+   "city": "上海",
+   "source": "baidu",
+   "address": "上海市闵行区吴中路1588号上海爱琴海购物中心底商F1",
+   "verified": false,
+   "last_confidence": 0.35
   }
  ],
  "高岛屋百货": [
@@ -175,6 +197,17 @@
    "address": "上海市徐汇区徐家汇街道上海体育场",
    "verified": false,
    "last_confidence": 0.2
+  },
+  {
+   "lon": 121.44203,
+   "lat": 31.181448,
+   "weight": 0.5,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "徐家汇街道天钥桥路666号",
+   "verified": false,
+   "last_confidence": 0.554
   }
  ],
  "交通大学": [
@@ -212,6 +245,17 @@
    "address": "上海市长宁区中山西路229号",
    "verified": false,
    "last_confidence": 0.2
+  },
+  {
+   "lon": 121.411362,
+   "lat": 31.21817,
+   "weight": 0.5,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "中山西路229号",
+   "verified": false,
+   "last_confidence": 0.554
   }
  ],
  "上海昆虫博物馆": [
@@ -238,6 +282,17 @@
    "address": "淮海中路1850",
    "verified": false,
    "last_confidence": 0.892
+  },
+  {
+   "lon": 121.438278,
+   "lat": 31.20443,
+   "weight": 0.5,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "淮海中路1850号",
+   "verified": false,
+   "last_confidence": 0.554
   }
  ],
  "武夷MIX320": [
@@ -277,6 +332,17 @@
    "address": "仙霞路750弄4~63号",
    "verified": false,
    "last_confidence": 0.2
+  },
+  {
+   "lon": 121.384799,
+   "lat": 31.205077,
+   "weight": 0.5,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "仙霞路750弄之4-63号",
+   "verified": false,
+   "last_confidence": 0.35
   }
  ],
  "上海普瑞眼科医院": [
@@ -340,6 +406,17 @@
    "address": "威宁路358弄1~49号",
    "verified": false,
    "last_confidence": 0.2
+  },
+  {
+   "lon": 121.387092,
+   "lat": 31.213195,
+   "weight": 0.5,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "威宁路358弄1-49号",
+   "verified": false,
+   "last_confidence": 0.35
   }
  ],
  "新安小区": [
@@ -550,12 +627,12 @@
    "lon": 121.536631,
    "lat": 29.861949,
    "weight": 3.0,
-   "count": 28,
+   "count": 30,
    "city": "宁波",
    "source": "amap",
    "address": "南站东路19号",
    "verified": false,
-   "last_confidence": 0.263
+   "last_confidence": 0.2
   },
   {
    "lon": 121.53677580502416,
@@ -760,6 +837,17 @@
    "address": "吴中路1599号(紫藤路地铁站1号口步行210米)",
    "verified": false,
    "last_confidence": 0.892
+  },
+  {
+   "lon": 121.36920425024971,
+   "lat": 31.170354053320974,
+   "weight": 0.5,
+   "count": 1,
+   "city": "上海",
+   "source": "baidu",
+   "address": "上海市闵行区吴中路1599号",
+   "verified": false,
+   "last_confidence": 0.35
   }
  ],
  "东柳": [
@@ -767,12 +855,125 @@
    "lon": 121.5896,
    "lat": 29.860678,
    "weight": 3.0,
-   "count": 22,
+   "count": 23,
    "city": "宁波",
    "source": "amap",
    "address": "鄞州区",
    "verified": false,
    "last_confidence": 0.263
+  }
+ ],
+ "梁湖头村": [
+  {
+   "lon": 121.200430758157,
+   "lat": 30.07306856691848,
+   "weight": 1.5999999999999999,
+   "count": 5,
+   "city": "余姚",
+   "source": "baidu",
+   "address": "凤山街道",
+   "verified": false,
+   "last_confidence": 0.269
+  }
+ ],
+ "湖闸": [
+  {
+   "lon": 121.19794291620833,
+   "lat": 30.062981773315958,
+   "weight": 0.2,
+   "count": 1,
+   "city": "宁波",
+   "source": "tianditu",
+   "address": "浙江省宁波市余姚市",
+   "verified": false,
+   "last_confidence": 0.2
+  }
+ ],
+ "牛山": [
+  {
+   "lon": 121.35572771327797,
+   "lat": 29.748437566109175,
+   "weight": 1.7999999999999998,
+   "count": 6,
+   "city": "余姚",
+   "source": "baidu",
+   "address": "宁波市湖金线",
+   "verified": false,
+   "last_confidence": 0.269
+  },
+  {
+   "lon": 121.80279750114076,
+   "lat": 29.76552483706842,
+   "weight": 1.7999999999999998,
+   "count": 6,
+   "city": "余姚",
+   "source": "baidu",
+   "address": "宁波市宝瞻线",
+   "verified": false,
+   "last_confidence": 0.269
+  },
+  {
+   "lon": 121.19260357022873,
+   "lat": 30.080447343386755,
+   "weight": 1.5999999999999999,
+   "count": 5,
+   "city": "余姚",
+   "source": "baidu",
+   "address": "浙江省宁波市余姚市凤山街道",
+   "verified": false,
+   "last_confidence": 0.269
+  }
+ ],
+ "P+R枢纽大楼": [
+  {
+   "lon": 121.358769,
+   "lat": 31.219396,
+   "weight": 0.5,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "金钟路631弄3号(淞虹路地铁站5号口步行80米)",
+   "verified": false,
+   "last_confidence": 0.35
+  }
+ ],
+ "上海长风大悦城": [
+  {
+   "lon": 121.395319,
+   "lat": 31.222678,
+   "weight": 0.5,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "大渡河路196号",
+   "verified": false,
+   "last_confidence": 0.554
+  }
+ ],
+ "苏州河景观步廊": [
+  {
+   "lon": 121.393033,
+   "lat": 31.21784,
+   "weight": 0.5,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "上海市周家桥街道长宁路与芙蓉江路交口西南30米",
+   "verified": false,
+   "last_confidence": 0.554
+  }
+ ],
+ "ARK新华宁": [
+  {
+   "lon": 121.422507,
+   "lat": 31.217499,
+   "weight": 0.5,
+   "count": 1,
+   "city": "上海",
+   "source": "amap",
+   "address": "宣化路300号华宁国际广场",
+   "verified": false,
+   "last_confidence": 0.554
   }
  ]
 }

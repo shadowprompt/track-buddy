@@ -32,7 +32,8 @@ from fastapi.staticfiles import StaticFiles
 
 from . import records
 from .config import CONFIG, DATA_DIR, ROOT, SRC_ROOT, load_dotenv
-from .cv_utils import crop_map_region, imread_unicode
+from .cv_utils import imread_unicode
+from .pipeline import prepare_input_image
 # 保留这个模块级别名：既有回归测试通过 monkeypatch `server.stitch_images`
 # 注入假拼接结果，默认 SIFT 路径必须继续走它。
 from .multishot import stitch as stitch_images
@@ -43,7 +44,7 @@ from .stitch_backends import (
     run_stitch,
 )
 from .exporters import build_exports
-from .pipeline import RidePipeline, _result_is_self_consistent
+from .pipeline import RidePipeline, _result_is_self_consistent, backproject_prep_px
 from .route_template import TemplateStore
 from .source_profile import (
     PROFILES,
@@ -355,9 +356,83 @@ def _paired_failure_note(reason: Any) -> str:
     return f"概览图未能注册（{r}）：{why}；{tail}"
 
 
+def _img_px_transform(result: Any) -> tuple[float, float, int, int] | None:
+    """从诊断元数据解出 prepared → 原图坐标的换算参数 ``(s, y0, ow, oh)``。
+
+    ``original_hw`` 缺失（旧结果 / 模板派生 / 未裁剪画像）时返回 None，
+    调用方保持像素字段原样——旧数据兼容。
+    """
+    dg = getattr(result, "diagnostics", None) or {}
+    vp = dg.get("vision_prep") or {}
+    orig_hw = vp.get("original_hw")
+    prep_hw = vp.get("prepared_hw")
+    if not orig_hw or not prep_hw:
+        return None
+    try:
+        oh, ow = int(orig_hw[0]), int(orig_hw[1])
+        pw = int(prep_hw[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if min(oh, ow, pw) <= 0:
+        return None
+    s = ow / pw
+    cf = dg.get("map_crop_applied")
+    y0 = float(cf[0]) * oh if cf else 0.0
+    return s, y0, ow, oh
+
+
+def _to_original_img_px(payload: dict[str, Any]) -> dict[str, Any]:
+    """把响应里的像素字段从 prepared 坐标系换算到**原图**坐标系。
+
+    覆盖前端「原始截图」叠绘用到的全部字段：
+    - ``image_size`` → 真实原图尺寸（前端据此算显示比例）；
+    - ``track_polyline_img_px`` → 新增字段，原图坐标轨迹折线
+      （``track_polyline_px`` 保持 prepared 语义不动——模板真值
+      沉淀与比对在用，改动会污染飞轮）；
+    - ``anchors_used`` / ``anchors_rejected`` 的 ``px/py``；
+    - ``road_fit.candidate_shift_px`` → 换算成原图像素增量
+      （位移是刚性平移的像素表达，按缩放比换算，无 y0 偏移）。
+    """
+    t = _img_px_transform(payload.get("_result_ref"))
+    # _result_ref 由调用方临时塞入，换算完移除
+    payload.pop("_result_ref", None)
+    if t is None:
+        return payload
+    s, y0, ow, oh = t
+    payload["image_size"] = [ow, oh]
+    pl = payload.get("track_polyline_px")
+    if pl:
+        payload["track_polyline_img_px"] = [
+            [round(x * s, 1), round(y * s + y0, 1)] for x, y in pl
+        ]
+    for key in ("anchors_used", "anchors_rejected"):
+        items = payload.get(key) or []
+        out = []
+        for a in items:
+            if isinstance(a, dict) and "px" in a and "py" in a:
+                a = dict(a)
+                a["px"] = round(float(a["px"]) * s, 1)
+                a["py"] = round(float(a["py"]) * s + y0, 1)
+            out.append(a)
+        payload[key] = out
+    rf = payload.get("road_fit") or {}
+    cs = rf.get("candidate_shift_px")
+    if cs and len(cs) == 2:
+        rf = dict(rf)
+        rf["candidate_shift_px"] = [round(float(cs[0]) * s, 1),
+                                    round(float(cs[1]) * s, 1)]
+        payload["road_fit"] = rf
+    return payload
+
+
 def _build_payload_from(result: Any, shot_id: str, shot_url: str) -> dict[str, Any]:
-    """把 PipelineResult 打包成接口返回结构。"""
-    return {
+    """把 PipelineResult 打包成接口返回结构。
+
+    像素字段的坐标契约：``track_polyline_px`` 等保持管线内部的
+    prepared 坐标系（模板真值链路依赖），前端叠绘字段经
+    ``_to_original_img_px`` 统一换算到原图坐标系。
+    """
+    payload = {
         "ok": result.confidence > 0 and result.track_points > 0,
         "shot_id": shot_id,
         "shot_url": shot_url,
@@ -381,6 +456,8 @@ def _build_payload_from(result: Any, shot_id: str, shot_url: str) -> dict[str, A
         "map_matched": result.map_matched,
         "image_size": list(result.image_size),
     }
+    payload["_result_ref"] = result
+    return _to_original_img_px(payload)
 
 
 async def _preparse_ride_summary(
@@ -419,6 +496,40 @@ async def _preparse_ride_summary(
     return parse_summary_image_bytes(data)
 
 
+def _fallback_summary_from_main(
+    full_img: Any,
+    crop_frac: tuple[float, float],
+) -> dict[str, Any] | None:
+    """没传概要图时，从主截图被裁掉的底部统计卡片兜底解析概要。
+
+    小米运动健康等 App 把「距离 / 时长 / 开始时间」直接印在主截图
+    底部卡片上，``map_crop_v`` 裁剪后 pipeline 看不到它——若用户也
+    没单独传概要图，配准的**外部尺度先验**与时长-里程物理闸门就全部
+    失明。实测后果（2026-11-24 网页端）：同一张小米截图，CLI 传了
+    --summary 落点正确，网页端没传概要，2 锚点模型的尺度爆炸无拦截，
+    轨迹整体偏出约 40km。返回 None 表示条带里解析不出字段。
+    """
+    try:
+        h = int(full_img.shape[0])
+        y0 = int(float(crop_frac[1]) * h)
+        if h - y0 < 40:  # 条带太薄，OCR 没有意义
+            return None
+        from .ride_summary import parse_summary_from_region
+
+        out = parse_summary_from_region(full_img[y0:])
+    except Exception:  # noqa: BLE001 — 兜底失败静默，不影响主流程
+        return None
+    if not out:
+        return None
+    notes = list(out.get("notes") or [])
+    notes.append(
+        "未单独传概要图：已从主截图底部统计卡片解析出运动概要"
+        "（作为里程/时长先验参与校准）"
+    )
+    out["notes"] = notes
+    return out
+
+
 async def _attach_ride_summary(
     payload: dict[str, Any],
     summary_file: UploadFile | None,
@@ -437,17 +548,24 @@ async def _attach_ride_summary(
     pipeline 供尺度先验已经解析过一次，这里直接复用，省一次 OCR。
     注意 cross_check 仍要重算——它依赖 payload 的几何里程，
     前置解析时还不知道。
+
+    ``pre_parsed`` 也可以在**没传概要文件**时单独出现（来自主截图
+    底部卡片的兜底解析，见 ``_fallback_summary_from_main``）：此时
+    照常并入 payload，让里程交叉校验与时长-里程物理闸门生效。
     """
-    if summary_file is None or not (summary_file.filename or "").strip():
+    has_file = bool(
+        summary_file is not None and (summary_file.filename or "").strip())
+    if not has_file and pre_parsed is None:
         return
-    try:
-        data = await summary_file.read()
-        # 运动概要图不落盘（诊断落盘在 _preparse_ride_summary）；只有
-        # 调用方要把记录存进 COS 时才收集字节。
-        if byte_sink is not None:
-            byte_sink.append(data)
-    except Exception:
-        data = b""
+    if has_file:
+        try:
+            data = await summary_file.read()
+            # 运动概要图不落盘（诊断落盘在 _preparse_ride_summary）；只有
+            # 调用方要把记录存进 COS 时才收集字节。
+            if byte_sink is not None:
+                byte_sink.append(data)
+        except Exception:
+            data = b""
     if pre_parsed is not None:
         summary = dict(pre_parsed)
         summary.pop("cross_check", None)
@@ -883,6 +1001,7 @@ async def recognize_multi(
 
     saved: list[tuple[str, Path]] = []
     imgs: list[np.ndarray] = []
+    first_full_img: np.ndarray | None = None
     for f in files:
         data = await f.read()
         if len(data) > max_bytes:
@@ -897,10 +1016,15 @@ async def recognize_multi(
             img = imread_unicode(shot_path)
         except (ValueError, FileNotFoundError) as exc:
             raise HTTPException(status_code=400, detail=f"图片解析失败: {exc}") from exc
-        # 画像带 map_crop_v 时逐图裁出地图区再拼接：App UI 卡片与轨迹
+        # 画像级输入准备（裁剪 + 归一化）逐图执行：App UI 卡片与轨迹
         # 同色系（高德速度图例条/红心/缩略图），留着会污染掩膜并让
-        # SIFT 拿相同的卡片特征乱配（实测 8 图画布徽章全部误检）。
-        img = crop_map_region(img, profile.vision)
+        # SIFT 拿相同的卡片特征乱配（实测 8 图画布徽章全部误检）；
+        # 归一化让各图内容尺度一致、徽章面积窗口始终在标定状态。
+        if first_full_img is None:
+            # 第 1 张原图保留：没传概要图时，其底部统计卡片是尺度
+            # 先验的唯一来源（见 _fallback_summary_from_main）。
+            first_full_img = img
+        img, _ = prepare_input_image(img, profile.vision)
         saved.append((shot_id, shot_path))
         imgs.append(img)
 
@@ -920,6 +1044,10 @@ async def recognize_multi(
     # 就绪（见 _preparse_ride_summary）。结果同时供 _attach_ride_summary
     # 复用，整次请求只 OCR 概要图一次。
     summary_pre = await _preparse_ride_summary(summary)
+    if summary_pre is None and first_full_img is not None:
+        _mcf = getattr(profile.vision, "map_crop_v", None)
+        if _mcf:
+            summary_pre = _fallback_summary_from_main(first_full_img, tuple(_mcf))
 
     # --- 拼接 ---
     stitch_info: dict[str, Any] = {}
@@ -967,6 +1095,8 @@ async def recognize_multi(
             # 多图本来就有当次地理配准的真值路径，auto 模式绝不让模板
             # 召回短路它（2026-11-14 事故）；「优先模板」显式选择。
             skip_template_recall=tpl_skip,
+            # 上传时已逐图 prepare_input_image，pipeline 内不得二次处理
+            img_is_prepared=True,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc
@@ -1148,8 +1278,16 @@ async def recognize(
         img = imread_unicode(shot_path)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=f"图片解析失败: {exc}") from exc
-    # 画像带 map_crop_v 时裁出地图区（概要页走独立通道，不经过这里）
-    img = crop_map_region(img, profile.vision)
+    # 画像带 map_crop_v 时裁出地图区（概要页走独立通道，不经过这里）。
+    # 保留原图与裁剪比例：没传概要图时，主图被裁掉的底部统计卡片
+    # （小米「13.09 公里 / 00:59:52」等）是尺度先验的唯一来源，
+    # 见 _fallback_summary_from_main。
+    full_img = img
+    crop_frac = getattr(profile.vision, "map_crop_v", None) or None
+    # 画像级输入准备（裁剪 + 分辨率归一化，见 prepare_input_image）。
+    # meta 传回 pipeline 写进 diagnostics：此前 server 裁剪不记录，
+    # visuals 反投影会整体画偏（裁掉多少偏多少）。
+    img, prep_meta = prepare_input_image(img, profile.vision)
 
     # 城市级低缩放截图的路网精修要联网拉路网（实测 40-80 秒），
     # 放在主流程里会让识别请求长时间挂起。这里改成：
@@ -1194,7 +1332,7 @@ async def recognize(
             except (ValueError, FileNotFoundError) as exc:
                 raise HTTPException(
                     status_code=400, detail=f"细节图解析失败: {exc}") from exc
-            imgs.append(crop_map_region(dimg, profile.vision))
+            imgs.append(prepare_input_image(dimg, profile.vision)[0])
         if imgs:
             paired_mode = True
             n_details = len(imgs)
@@ -1227,6 +1365,8 @@ async def recognize(
     tpl_skip = _template_mode_skip(template, paired_mode)
     # 概要图前置解析（尺度先验），与 multi 端点相同（见其注释）。
     summary_pre = await _preparse_ride_summary(summary)
+    if summary_pre is None and crop_frac:
+        summary_pre = _fallback_summary_from_main(full_img, crop_frac)
     try:
         result = _pipeline.run(
             run_img,
@@ -1239,6 +1379,11 @@ async def recognize(
             # paired 模式（带细节图）默认走当次地理配准真值；「优先模板」
             # 由 template 入参显式选择（2026-11-14 事故教训）。
             skip_template_recall=tpl_skip,
+            # 上传时已 prepare_input_image（单图/细节图），pipeline 内
+            # 不得二次处理；逐图 meta 只对单图直跑分支有效（canvas 是
+            # 拼接空间，逐图裁剪/缩放信息不适用）。
+            img_is_prepared=True,
+            prep_meta=None if paired_mode else prep_meta,
         )
     except Exception as exc:  # noqa: BLE001 — 兜底，避免单次请求打挂服务
         raise HTTPException(status_code=500, detail=f"识别过程出错: {exc}") from exc
@@ -1395,7 +1540,7 @@ def _need_background_refine(
 
 def _build_payload(result: Any, shot_id: str, shot_path: Path) -> dict[str, Any]:
     ext = shot_path.suffix.lower() or ".jpg"
-    return {
+    payload = {
         "ok": result.confidence > 0 and result.track_points > 0,
         "shot_id": shot_id,
         "shot_url": f"/api/shots/{shot_id}{ext}",
@@ -1419,6 +1564,8 @@ def _build_payload(result: Any, shot_id: str, shot_path: Path) -> dict[str, Any]
         "map_matched": result.map_matched,
         "image_size": list(result.image_size),
     }
+    payload["_result_ref"] = result
+    return _to_original_img_px(payload)
 
 
 def _inherit_refine_fields(payload: dict[str, Any], prev: dict[str, Any]) -> None:

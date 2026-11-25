@@ -75,12 +75,13 @@ class SourceProfile:
     """
 
 
-# 当前唯一注册的画像：美团骑行。参数值与模块化之前完全一致——
-# VisionConfig 的默认值就是为美团截图标定的。
+# 美团骑行。参数值与模块化之前完全一致——VisionConfig 的默认值就是
+# 为美团截图标定的。标定样本短边 1260（samples/meituan_ride_shanghai.jpg
+# 1260×2720），视觉提取前归一化到该宽度。
 MEITUAN = SourceProfile(
     id="meituan",
     title="美团骑行",
-    vision=VisionConfig(),
+    vision=VisionConfig(vision_ref_short_side=1260),
     distance_positive=("里程", "本次", "骑行", "行程", "全程", "共计", "合计", "距离"),
     distance_negative=("免费", "累计", "套餐", "赠送", "优惠", "已骑", "封顶"),
     ride_labels=("本次骑行", "本次消耗", "本次减碳"),
@@ -117,6 +118,11 @@ AMAP = SourceProfile(
         end_hsv_range2=(0, 0, 0, 0, 0, 0),
         badge_min_area=1500,
         badge_max_area=20000,
+        # 分辨率归一化基准（2026-11-25 补测）：标定样本 samples/ride_motion.jpg
+        # 为 1260×2720，按 map_crop_v=(0.065,0.44) 裁出 1260×1020 地图区，
+        # 裁剪后短边 = 1020 —— 与 badge_min_area/max_area 的标定口径一致
+        #（标定分辨率输入裁剪后零缩放直通，像素参数行为不变）。
+        vision_ref_short_side=1020,
         # POI 标注偏移与美团同量级（标注排版决定），容差先沿用 200m。
         ransac_inlier_m=200.0,
     ),
@@ -163,13 +169,12 @@ XINGZHE = SourceProfile(
         badge_min_area=150,
         badge_max_area=3000,
         badge_min_fill=0.25,
-        # 轨迹线宽 ~8px，闭运算核略收窄防相邻道路粘连
-        track_close_kernel=7,
-        track_open_kernel=5,
         # 终点邻域碎片：白色「终」徽章 + 蓝色定位点把底部「跑两遍」的
         # U 形折返切成独立小连通域（实测 364px、质心约 (333,1079)）。
         # 闭环管线（loop_course）会把它桥接进主轨迹。
-        endpoint_fragment_detect=(100, 80),
+        # 内容尺度相对形式：radius=2.55×badge_d、min_area=0.052×badge_d²
+        #（等价于 640 宽标定图上的绝对 (100px, 80px²)，badge_d=39.2）。
+        endpoint_fragment_detect_rel=(2.55, 0.052),
         # 闭环赛道：宁波样本起点=终点（用户确认），走中国邮路闭环追踪。
         # 实测：主轨迹弧长 2476px ≈ 32.2km（比例尺 77px=1km），对比
         # App 记录 34.67km 误差 7%；旧开环管线 25.2km 误差 27%。
@@ -181,9 +186,12 @@ XINGZHE = SourceProfile(
         # 路网吸附交付：闭环描迹的绝对位置偏差（~300-500m）与骨架锯齿
         # 会让画出来的线斜穿街区；吸附后每段沿街（2026-11-18）。
         road_snap_deliver=True,
-        # 内容尺度标尺：掩膜核（close_kernel=7）是对旧「起点罗盘箭头」
-        # 的直径 39.2px 标定的。起点换成蓝点（直径 31.4）后自动反推会把
-        # 核缩到 5，掩膜断口激增——显式锁定标定值。
+        # 视觉预归一化：标定样本 xingzhe_ningbo.jpg 为 640×1136。
+        vision_ref_short_side=640,
+        # 内容尺度标尺：显式锁定标定值（640×1136 标定样本上罗盘箭头
+        # 直径 39.2px）。起点换成蓝点后自动反推会缩水，显式锁定更稳；
+        # 配合 vision_ref_short_side=640 归一化后，任意分辨率的输入
+        # 都回到标定尺度，锁定值始终成立。
         scale_badge_d=39.2,
         # 卫星底图 POI 标注偏移与美团同量级，容差沿用。
         ransac_inlier_m=200.0,
@@ -195,13 +203,74 @@ XINGZHE = SourceProfile(
     ride_labels=("距离", "骑行距离"),
 )
 
-# 画像注册表：新增来源（xiaomi / keep ...）在这里加条目，
-# 并按模块 docstring 的标定指南填参数。**不要**在这里做未标定的占位
-# 条目——切换到没标定过的画像等于全链路盲跑。
+# 小米运动健康（2026-11-23 接入测试版，按用户提供的 864×1920 户外跑步
+# 概览截图标定）。这不是把小米参数抄成高德：
+#   * 地图只占整屏上部约 54%，下方是白色运动概要卡片；服务端在视觉提取
+#     前裁掉卡片，概要 OCR 仍使用原图独立解析。
+#   * 轨迹是高饱和速度渐变：红/橙/黄主体 + 绿色快速段。主轨迹像素的
+#     HSV 色相约 H[0,40] 与 H[40,85]，S/V 均较高；两条色带取并集。
+#   * 绿色点（约 x=334,y=796）与红色点（约 x=324,y=929）相距约 134px，
+#     不能套用行者的闭环成对徽章规则，先按开环处理。
+#   * 这张样本的起/终点图标和轨迹同色，默认徽章检测面积阈值不能直接沿用；
+#     先关闭徽章硬检测（面积设为很小），依赖轨迹主连通域提取，后续拿到
+#     更多样本后再补小米专用 marker 逻辑。
+#   * 统计卡片显示「13.09 公里」「运动时长」「活动卡路里」，所以概要词表
+#     明确加入这些文案；速度/配速/心率不是里程候选。
+XIAOMI = SourceProfile(
+    id="xiaomi",
+    title="小米运动健康",
+    vision=VisionConfig(
+        track_hsv_range=(
+            (0, 140, 120, 40, 255, 255),    # 红→橙→黄
+            (40, 140, 120, 85, 255, 255),   # 绿色快速段
+        ),
+        map_crop_v=(0.0, 0.54),
+        start_hsv_range=(35, 110, 80, 90, 255, 255),
+        end_hsv_range=(0, 100, 80, 12, 255, 255),
+        end_hsv_range2=(170, 100, 80, 179, 255, 255),
+        # 轨迹本身会形成大连通域，当前样本未完成稳定的徽章几何标定。
+        # 设为 1 让提取链路不因缺徽章而早退，后续用更多样本收紧。
+        badge_min_area=1,
+        badge_max_area=20000,
+        badge_min_fill=0.0,
+        # 视觉预归一化：标定样本为 864×1920（另有 1.25× 的 1080×2400
+        # 变体，归一化后两者提取行为一致，见 tests/test_resolution_normalization）。
+        vision_ref_short_side=864,
+        # 小米路线实测是闭环：起点绿点 → 主干上行 → 顶部菱形环 → 右侧
+        # 绿色快速段下行 → 回到起点附近 → 红点终点（2026-11-23 余姚
+        # 13.09km 样本）。开环模式只描出上行半程（805px），右下行段被
+        # POI 文字打断后整段丢失；闭环中国邮路追踪 + 碎片桥接能描出
+        # 全程 1700px，隐含尺度 7.7 m/px 与概要里程自洽。
+        loop_course=True,
+        loop_bridge_fragments=True,
+        # 起点绿定位点与终点红徽章相距 133px（走廊段约 1.2km），行者式
+        # 「成对相邻」约束会把走廊上的红色轨迹块配成终点——关闭。
+        pair_loop_badges=False,
+        # 棒棒糖路线：交付排序 起点→走廊→环→走廊→起点→终点。
+        split_loop_delivery=True,
+        # 绿点/红徽章颜色落在轨迹色带内，且外围有花瓣状 UI 晕圈（定位
+        # 气泡、徽章挂饰），半径达 ~42px——只挖中心会留下「绕洞的环」，
+        # 邮路 walk 绕环徘徊、弧长虚高 20%+。45px（864×1920 样本标定）
+        # 恰好覆盖整个团块：实测弧长 1857px 与几何估计 1810px 差 3%，
+        # 隐含尺度 7.05 m/px。缺口由 _reconnect_marker_blobs 连弦补线。
+        # 45px 是按 864×1920 标定样本实测的（该图 badge_d=41.83）；
+        # 给出基准后运行时按实测 badge_d 缩放，1.25× 分辨率图自动变 56px。
+        erase_marker_blobs_r=45,
+        marker_erase_ref_badge_d=41.83,
+        ransac_inlier_m=200.0,
+    ),
+    distance_positive=("公里", "千米", "距离", "户外跑步", "跑步", "运动"),
+    distance_negative=("累计", "历史", "本周", "本月", "年度", "最快", "平均配速"),
+    ride_labels=("公里", "户外跑步", "活动卡路里"),
+)
+
+# 画像注册表：新增来源（keep ...）在这里加条目。只有已用真实样本做过
+# 基础标定的画像才能注册；小米当前是「可测试初版」，绝对定位仍需更多样本。
 PROFILES: dict[str, SourceProfile] = {
     "meituan": MEITUAN,
     "amap": AMAP,
     "xingzhe": XINGZHE,
+    "xiaomi": XIAOMI,
 }
 
 DEFAULT_PROFILE_ID = "meituan"

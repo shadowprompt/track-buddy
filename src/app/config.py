@@ -145,10 +145,17 @@ class VisionConfig:
     # 同色系（速度图例条/红心/内嵌地图缩略图），会在拼接前逐图裁掉，
     # 见 ``cv_utils.crop_map_region``。None = 不裁（美团默认，零变化）。
     map_crop_v: tuple | None = None
-    # 闭运算核：跨过道路描边造成的断点
-    track_close_kernel: int = 11
-    # 开运算核：细长笔画（文字笔画宽约 2-3px）被滤掉，轨迹线宽约 8-10px
-    track_open_kernel: int = 5
+
+    # 视觉预归一化参考短边（px，None=不归一化）：视觉提取前把输入等比
+    # 缩放到该短边。为什么需要——本配置里仍有一批按「标定样本分辨率」
+    # 实测的绝对像素参数（badge_min_area/max_area 面积窗口随分辨率²
+    # 缩放、行者 scale_badge_d 锁定值等），等比放大的截图会让它们全部
+    # 失准（2026-11-24 小米 1.25× 截图实测：抹除半径/容差失效 → 弧长
+    # 少 25% → 配准尺度爆炸）。归一化后所有标定值在任意分辨率下都回到
+    # 标定状态，等价于「全部参数相对化」，但标定值无需重标。取值 =
+    # 该画像标定样本的短边（美团 1260、行者 640、小米 864）。
+    # OCR 概要解析 / 地理编码不走此通道，仍用原图。
+    vision_ref_short_side: int | None = None
 
     # OCR
     ocr_min_score: float = 0.55
@@ -170,8 +177,16 @@ class VisionConfig:
     # 使其碎成独立连通域而被主轨迹提取丢弃。闭环赛道（loop_course=True）
     # 时该碎片会被**桥接进主轨迹**；关闭闭环时仅检测并在 notes 报告
     # （开环骨架上强行接入会乱线/里程虚高，见 HANDOVER §24.8）。None = 关闭。
-    #   结构：(radius_px, min_area_px)
+    #   结构：(radius_px, min_area_px)——按标定分辨率实测的绝对像素。
     endpoint_fragment_detect: tuple | None = None
+
+    # 终点折返段检测的**内容尺度相对形式**（优先于上面的绝对形式）：
+    #   (radius_per_badge, min_area_per_badge_d2)
+    # radius = k1 × badge_d（实测徽章直径），min_area = k2 × badge_d²。
+    # 行者标定值换算：radius 100/39.2≈2.55，min_area 80/39.2²≈0.052。
+    # 相对形式随截图分辨率自动缩放（2026-11-25 分辨率归一化的一部分；
+    # 配合 vision_ref_short_side 后两者等价，此处相对化是双保险）。
+    endpoint_fragment_detect_rel: tuple | None = None
 
     # 闭环赛道：起点与终点为同一位置（行者等 App 的环线骑跑常见形态）。
     # 启用后 extract_track 走专用管线：
@@ -191,6 +206,36 @@ class VisionConfig:
     # 独立域丢弃，导致识别路线明显比原图少一截。桥接判据：线状 + 到
     # 主域最近距离 ≤4×badge_d，避免吸附底图团块。仅闭环启用。
     loop_bridge_fragments: bool = False
+
+    # 闭环赛道：起终点徽章「成对相邻」定位（行者绿起红终相距 39-47px）。
+    # 小米运动健康的起（绿定位点）终（红徽章）相距可达百余 px（真实距离
+    # 1km+，棒棒糖路线的走廊段），相邻约束反而会把走廊上的红色轨迹块
+    # 配成「终点」（2026-11-23 余姚样本实测配到 (363,852)，真徽章在
+    # (324,929)）。False = 沿用「面积最大」的常规检测。
+    pair_loop_badges: bool = True
+
+    # 棒棒糖路线交付排序（loop_course 的后处理）：起点与终点都在走廊上
+    # 且不重合时，邮路 walk 只覆盖每条边一次（走廊不翻倍），且欧拉端点
+    # 落在「环底结点/末端尖角」而非真实起终点。启用后按语义重排：
+    #   起点 → 走廊 → 环 → 走廊 → 起点 → 终点
+    # 需要 walk 的终端恰好是环底结点（途中 revisit），否则回退原 walk。
+    # 行者起点=终点，不适用；小米 True。
+    split_loop_delivery: bool = False
+
+    # 起终点徽章/定位点团块抹除半径（px，0=关闭）：小米的绿定位点与红
+    # 徽章颜色落在轨迹色带内，会在掩膜里形成 ~26px 厚团块——骨架化后
+    # 生出辐条，邮路 walk 在团块里原地徘徊（实测底段 153px 直线走了
+    # 518px，弧长虚高 ~20%，连带尺度校准失准）。抹除后骨架线端点直指
+    # 徽章中心，再按邻域像素向中心连弦补线。
+    erase_marker_blobs_r: int = 0
+
+    # 抹除半径的标定基准 badge_d（None=不缩放，用绝对像素）：抹除半径
+    # 是按某张参考截图实测的像素值，而徽章直径是逐图实测的内容尺度。
+    # 给出基准后，运行时按 ``badge_d / marker_erase_ref_badge_d`` 缩放
+    # 抹除半径，等比分辨率的截图（如 864×1920 的 1.25× 倍 1080×2400）
+    # 就能复用同一标定。2026-11-24 实测：不缩放时 45px 挖不净 1.25× 图
+    # 的花瓣晕圈，walk 弧长虚高、棒棒糖重排整体失效。
+    marker_erase_ref_badge_d: float | None = None
 
     # 路网温和吸附交付（snaproute.gentle_snap）：把离路 ≤60m 的像素描迹
     # 点投影到 OSM 路网上作为主交付，修「画出来的线不在马路上」；离路

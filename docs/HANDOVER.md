@@ -9,11 +9,12 @@
 代码唯一真源仓库：`D:\Dev\track-buddy`
 （GitHub: `https://github.com/shadowprompt/track-buddy`，public，MIT）。
 
-> **项目现状（2026-11-21）**：已从「美团骑行截图识别」通用化为
+> **项目现状（2026-11-23）**：已从「美团骑行截图识别」通用化为
 > **track-buddy 运动截图识别**，来源 App 由「输入源画像」参数化，见 §23；
 > 配套微信小程序已上线（登录走 gateway，记录存腾讯 COS），网页版与 CLI
-> 同步可用。已接入三个画像：**美团 / 高德 / 行者**——行者画像含闭环赛道
-> 管线（中国邮路追踪 + 断裂段桥接 + 成对徽章定位，见 §24.9/24.17/24.20）。
+> 同步可用。已接入四个画像：**美团 / 高德 / 行者 / 小米运动健康**——行者画像含闭环赛道
+> 管线（中国邮路追踪 + 断裂段桥接 + 成对徽章定位，见 §24.9/24.17/24.20）；
+> 小米当前为首张真实户外跑步概览截图驱动的可测试初版，绝对位置仍需多样本验证。
 > 地理编码已单源化（`MAP_GEOCODING_ORDER=amap`，本地经服务器中转复用
 > 高额度 key，见 §24.12 / docs/amap_relay.md）。**下一个开发目标：FIT
 > 格式导出；进一步提升绝对位置精度（锚点标注偏移仍是天花板）。**
@@ -7006,7 +7007,166 @@ python src/tools/calibrate_profile.py samples/amap_1.jpg --profile amap
 `track_hsv_range` / 徽章 HSV / 面积阈值，再更新
 `test_amap_profile_initial_params_locked` 锚点。
 
-### 23.9 amap 真实样本精标 + 多图链路修复（2026-11-16 当日）
+### 23.8b 概要先验兜底：主截图底部卡片（2026-11-24 网页端事故）
+
+**「CLI 对、网页错」的同图分叉根因。** 同一张小米截图：CLI 传
+`--summary` 落点正确；网页端没传概要图 → `distance_hint_km=None` →
+外部尺度先验与时长-里程物理闸门全部失明 → 2 锚点（热情世界杯杨/姜庵）
+模型的尺度爆炸无拦截，轨迹整体偏出约 40km（落进泗门镇一带）。而小米
+的距离/时长**就印在主截图底部统计卡片上**——被 `map_crop_v` 裁掉后
+pipeline 看不见，等于守着先验瞎跑。
+
+修复（三层兜底，全部默认生效）：
+
+- `ride_summary.parse_summary_from_region(img)`：对图像区域做概要
+  解析的共用入口（OCR + `parse_ride_summary`，无字段返回 None）。
+- server（单图/多图端点）：没传概要图且画像带 `map_crop_v` 时，保留
+  裁剪前原图，对被裁掉的底部条带调用兜底解析（`_fallback_summary_from_main`），
+  结果作为 `summary_pre` 参与尺度先验；`_attach_ride_summary` 改为
+  接受「无概要文件但 pre_parsed 非空」——兜底概要照常进
+  `payload["ride_summary"]`，里程交叉校验与物理速度闸门一并生效。
+- pipeline（CLI/直跑）：`run()` 自行裁剪时同样保留底部条带，
+  `distance_hint_km` 缺失时兜底解析补先验。
+
+实测（out/xiaomi_v8_nosummary，不传概要图、默认 provider 顺序）：与传
+`--summary` 的 v7 完全一致——交付 13.193km、scale 7.293 m/px、路网
+归属鄞奉路/澄浪南路（奉化江沿岸）。回归 231 passed
+（server/pipeline/visual/multishot/refine/xiaomi/xingzhe/source/
+summary/export）。测试新增：`_attach_ride_summary` 接受无文件的
+pre_parsed、`parse_summary_from_region` 空图安全。
+
+### 23.9b 分辨率归一化：vision_ref_short_side 预缩放（2026-11-25）
+
+**背景**：小米 1.25× 等比截图（1080×2400 vs 标定 864×1920）暴露了
+「按标定分辨率实测的绝对像素参数」在全链路的分辨率依赖（§24.21 修了
+抹除半径/容差/配对上限三处，但徽章**面积窗口** `badge_min/max_area`
+（随分辨率²缩放）、行者 `scale_badge_d=39.2` 锁定值、行者
+`endpoint_fragment_detect=(100,80)` 仍是绝对的；历史上传已有
+2850×4945 / 3864×4177 / 6694×9896 等大图进过系统）。
+
+**方案对比**：逐参数改相对（badge_d 比例系数） vs 输入预归一化。
+选后者：一次 resize 让全部标定值原样生效（等价于「全参数相对化」但
+零重标定）、改动集中单入口、行为可用合成缩放样本验证。纯相对化的
+结构性缺陷：badge 检测的面积窗口是**入场筛选**而 badge_d 恰从检测
+结果量出（先有鸡还是先有蛋），必须引入预估计且估计失败时无兜底——
+`Scale.BADGE_D_MIN/MAX` clamp 因此保留为安全网（相对为主、绝对为界）。
+
+**实现**：
+- `VisionConfig.vision_ref_short_side`：meituan 1260 / xingzhe 640 /
+  xiaomi 864（各自标定样本短边）；amap 标定样本分辨率未记录，None=
+  维持现状，待下次高德样本补测。
+- `pipeline.prepare_input_image`：裁剪（crop_v 相对原图高度）→ 等比
+  缩放到参考短边（INTER_AREA 缩小 / CUBIC 放大，±2px 容差内跳过），
+  返回 meta `{"crop_v", "prepared_hw"}`。
+- `RidePipeline.run(..., prep_meta=)`：server 预处理路径把 meta 传回，
+  diagnostics 下发 `vision_prep.prepared_hw`（`map_crop_applied` 兼容
+  键不变）。**顺带修了一个潜在 bug**：server 单图端点此前裁剪不记录
+  crop，overlay 反投影会整体画偏（裁掉多少偏多少）；且
+  `_fallback_summary_from_main` 被用 3 参数调用（签名只有 2 个），
+  无概要图的网页请求会 TypeError。
+- `visuals._registration`：按 `vision_prep.prepared_hw` 精确复现缩放，
+  overlay / road_verify / chart 反投影逐像素对齐。
+- server 单图/多图/细节图入口统一走 `prepare_input_image`；多图拼接
+  画布不适用逐图 meta（`prep_meta=None if paired_mode`）。
+- `endpoint_fragment_detect_rel=(radius_per_badge, min_area_per_badge_d2)`：
+  行者切换到相对形式 (2.55, 0.052)，绝对形式保留为回退。
+- **死配置清理**：`track_close_kernel` / `track_open_kernel` 无任何代码
+  读取（track.py 全用 scale 派生核），已删除。
+
+**验证**：`tests/test_resolution_normalization.py` 8 项——把标定样本
+合成 1.25×（行者/小米）/0.5×（美团）缩放图跑完整提取链，断言 prepared
+尺寸只由画像决定、徽章定位 ≤8px、弧长 ≤8% 漂移；行者/小米/美团三样本
+全过。端到端：1080×2400 小米图 CLI 复跑，提取弧长 1861px（864 原图
+1857px），overlay 逐像素贴合，交付 13.234km vs 概要 13.09km（1.1%）。
+回归：resolution/xiaomi/xingzhe/source/anchor/ride_summary/export
+141 passed + server/pipeline/visual/multishot/refine/track/loop
+116 passed。内核已同步两份技能目录。
+
+**遗留**：~~高德画像待补测标定样本短边后启用归一化~~ → 已于 2026-11-25
+补齐（见 §23.9c）：标定样本从 uploads 模板飞轮找回（amap_ride_shanghai.jpg，
+1260×2720），裁剪后短边 1020，AMAP.vision_ref_short_side=1020 生效。
+4K 级输入归一化后 OCR 的 POI 文字变小（与标定状态一致，理论上无回归），
+首个 4K 真实样本出现时复核一次锚点数量即可。
+
+### 23.9c amap 短边补测：vision_ref_short_side=1020（2026-11-25）
+
+**状态：四画像全部启用分辨率归一化，amap 遗留项关闭。**
+
+标定样本找回过程：`samples/ride_motion.jpg` 并非高德样本（实为户外跑步页，
+花瓣地图水印、纯绿轨迹），2026-11-21 的 `out/amap_only_rerun/amap_run_3p73km`
+只是拿它跑了 amap 画像。真样本通过 `data/route_templates.json` 的模板飞轮
+找回：`tpl_1794799987`（profile=amap）→ shot `1794799494_c36f39d3.jpg`
+（data/uploads，2026-11-16 上海 3.68km 骑行，高德地图水印）。已归档为
+`samples/amap_ride_shanghai.jpg`（样本不入库原则不变，.gitignore 仍排除）。
+
+实测：1260×2720（与美团标定机同档），map_crop_v=(0.065,0.44) 裁出
+1260×1020 → 裁剪后短边 **1020**。标定分辨率输入裁剪后零缩放直通，
+badge_min_area/max_area 等像素参数行为不变。基础提取验证：弧长 1070.9px
+= 模板 length_px 1070.91（逐位吻合），起终点徽章均定位。
+
+改动：AMAP.vision_ref_short_side=1020（source_profile.py）；
+test_resolution_normalization.py 加 amap 参数化用例 + 1.25× 样本不变性
+用例（10 项全过）；test_source_profile 快照断言更新；
+test_track_shape / test_user_multishot_real 的 `test_real_samples_not_broken`
+改为画像感知（_PROFILE_SAMPLES 映射：amap 样本走 prepare_input_image +
+AMAP.vision，其余仍走默认 CONFIG）。
+
+教训：**标定样本必须当时归档进 samples/**——这次靠模板飞轮的 px_points
+存档才找回真样本，若模板也过期就只能重测。全量回归 783 项 passed。
+
+### 23.9 接入记录：xiaomi（小米运动健康）闭环精修（2026-11-23 当日二次）
+
+**状态：轨迹提取全对（形状/顺序/里程），绝对位置仍为 2 锚点近似。**
+
+首测差评后二次解剖：开环模式只描出上行半程 805px，右侧下行段被 POI 文字
+打断整段丢失；实测该路线是**闭环棒棒糖**——起点绿点(334,796)→走廊上行→
+顶部菱形环→走廊原路返回→绿点→红徽章终点(324,929)。三项画像级修复：
+
+- `loop_course=True + loop_bridge_fragments=True`：闭环邮路追踪描出全程。
+  同时 `pair_loop_badges=False`——行者式「成对相邻」约束（gap≤图高 8%
+  ≈83px）对小米不成立（起终点相距 133px=走廊 ~1.2km），会把走廊上的
+  红色轨迹块配成「终点」(363,852)，污染端点拟合。
+- `erase_marker_blobs_r=45`：绿定位点/红徽章颜色落在轨迹色带内，外围
+  花瓣状 UI 晕圈半径 ~42px；只挖中心会留下「绕洞的环」，walk 绕环徘徊
+  （底段 153px 直线走出 518px，弧长虚高 20%+）。45px 抹除 + 新函数
+  `_reconnect_marker_blobs` 按环带像素分侧连弦补线，弧长 1857px 与
+  几何估计 1810px 差 3%。
+- `split_loop_delivery=True` + `_lollipop_order`：邮路奇度配对 100px
+  上限不复制走廊（500px 超限），欧拉端点落在环底结点/尖端。按语义重排
+  起点→走廊→环→走廊→起点→终点，端点精确对齐绿点/红徽章。
+
+实测（余姚样本→宁波鄞奉路一带）：8/8 锚点、RMSE 261→183m、交付
+13.193km vs 概要 13.09km（0.8%）、scale 7.293 m/px、路网归属沿奉化江
+道路与截图走向一致。`visuals._delivered_coords` 顺带修掉配准失败时
+`KeyError: 'features'` 的不可读报错。新增 config 字段
+`pair_loop_badges / split_loop_delivery / erase_marker_blobs_r`
+（默认全关，既有画像行为不变）。测试补 `_lollipop_order` 单元用例，
+xiaomi/xingzhe/source/anchor 73 passed。
+
+### 23.9a 接入记录：xiaomi（小米运动健康）可测试初版（2026-11-23）
+
+**状态：已注册并可供网页/API 测试；不是绝对位置精标完成。**
+
+首张真实样本为 864×1920 的「小米运动健康｜户外跑步」概览截图，标定到
+`src/app/source_profile.py` 的 `XIAOMI`：
+
+- 地图区约占整图上部 54%，使用 `map_crop_v=(0.0, 0.54)`；概要卡片
+  仍由独立 OCR 通道读取，不参与轨迹视觉提取。
+- 轨迹为红/橙/黄主体加绿色快速段，使用两条高饱和 HSV 色带并集：
+  `H[0,40], H[40,85]`，`S>=140, V>=120`。
+- 当前按开环处理：`loop_course=False`。样本中绿色定位点和红色点相距约
+  134px，尚不足以证明起终点重合，不能套行者的闭环成对徽章逻辑。
+- 当前徽章面积不作为硬失败条件，避免把小米轨迹同色的定位点/终点误当成
+  美团大徽章；后续样本需继续标定起终点检测，尤其要区分地图 POI 红色图标。
+- 概要词表覆盖「公里 / 户外跑步 / 运动 / 活动卡路里」，负向词覆盖累计、
+  历史、平均配速等统计干扰。
+
+回归测试为 `tests/test_xiaomi_profile.py`，当前只验证来源注册、地图裁剪、
+渐变掩膜、里程词表和开环语义；不把单张样本的绝对地理位置当作已验证结论。
+拿到更多小米概览/动态轨迹截图后，继续补 marker、锚点质量、路网验证和多图
+拼接验收。
+
+### 23.10 amap 真实样本精标 + 多图链路修复（2026-11-16 当日）
 
 用户用网页版试了高德 8 图多图识别（上海 3.68km 骑行），失败现场
 `data/last_result.json`（「轨迹提取失败：掩膜为空」）。逐层排查出
